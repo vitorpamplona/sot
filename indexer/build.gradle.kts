@@ -14,6 +14,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     // Quartz parses/serialises events with kotlinx-serialization-json.
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // Quartz's SQLiteEventStore uses the bundled Android-x SQLite driver; pull
+    // the JVM variant explicitly so BundledSQLiteDriver is on our classpath.
+    implementation("androidx.sqlite:sqlite-bundled:2.6.2")
 }
 
 kotlin {

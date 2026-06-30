@@ -96,6 +96,49 @@ class VespaClient(
         send(docUrl(subject), body.toString())
     }
 
+    /** Remove one observer's score cell from a subject's doc (NIP-09 deletion of a 30382). */
+    fun removeScore(subject: String, observer: String) {
+        val body =
+            buildJsonObject {
+                put(
+                    "fields",
+                    buildJsonObject {
+                        put(
+                            "quality_scores",
+                            buildJsonObject {
+                                put(
+                                    "remove",
+                                    buildJsonObject {
+                                        put(
+                                            "addresses",
+                                            buildJsonArray { add(buildJsonObject { put("user", observer) }) },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            }
+        send(docUrl(subject), body.toString())
+    }
+
+    /** Blank the profile fields (NIP-09 deletion of a kind:0); keep the doc so its scores survive. */
+    fun blankProfile(pubkey: String) {
+        val body =
+            buildJsonObject {
+                put(
+                    "fields",
+                    buildJsonObject {
+                        for (f in listOf("name", "display_name", "about", "picture", "banner", "nip05", "lud06", "lud16", "website")) {
+                            put(f, buildJsonObject { put("assign", "") })
+                        }
+                    },
+                )
+            }
+        send(docUrl(pubkey), body.toString())
+    }
+
     private fun send(url: String, json: String) {
         val req =
             HttpRequest

@@ -18,6 +18,40 @@ Two ways to get past that, selectable with `--mode`:
 
 Both write the same documents into Vespa.
 
+## `sync` mode — EventStore-backed projection (recommended)
+
+`indexer sync` is the correct, NIP-85-faithful pipeline. A local Quartz
+`ObservableEventStore` (SQLite) is the **source of truth**; Vespa is a
+**projection** of its change feed:
+
+```
+sync events into the store ──► store.changes (Insert/Delete) ──► VespaProjection ──► Vespa
+```
+
+- **kind 0** → upsert profile.
+- **kind 10040** (`TrustProviderListEvent`) → learn `serviceKey → observer` for the
+  `30382:rank` provider.
+- **kind 30382** (`ContactCardEvent`) → upsert `quality_scores{OBSERVER} = rank`,
+  where OBSERVER is the 10040 author — **not** the 30382 signer (a per-observer
+  *service key*). This is what Brainstorm itself does
+  (`batch_upsert_scores(observer=observer)`); keying by the signer is wrong and
+  makes `--observer <user>` queries miss.
+- **kind 5** (`DeletionEvent`) → erase the profile/score from Vespa.
+
+Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
+stored 10040s → (3) sync each provider's 30382 from its relay hint.
+
+```bash
+indexer sync --max-events 25000                 # full
+indexer sync --profiles false --max-providers 15 --fetch-timeout 25   # quick scores-only
+```
+
+Flags: `--db <path>` (SQLite, default `events.db`), `--seeds <urls…>`,
+`--max-providers N`, `--fetch-timeout secs`, `--profiles true|false`.
+
+> Stage B (negentropy-preferred sync + persisted `since` cursors for cheap
+> re-runs) and Stage C (kind-10002 outbox relay discovery) build on this.
+
 ## Requirements
 
 - JDK 21+

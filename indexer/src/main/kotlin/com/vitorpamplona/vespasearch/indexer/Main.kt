@@ -70,6 +70,34 @@ fun main(args: Array<String>) {
     val client = NostrClient(socketBuilder, scope)
     val log: (String) -> Unit = { println("${ts()} $it"); System.out.flush() }
 
+    // EventStore-backed pipeline: store is source of truth, Vespa is a projection.
+    // Scores are keyed by the OBSERVER (10040 author), resolved from the service key.
+    if (stage == "sync") {
+        val dbPath = arg(args, "--db", "events.db")
+        val seeds = argList(args, "--seeds", listOf(
+            "wss://purplepag.es",
+            "wss://relay.damus.io",
+            "wss://profiles.nostr1.com",
+            DEFAULT_SCORE_RELAY,
+            DEFAULT_PROFILE_RELAY,
+        ))
+        val fetchTimeout = arg(args, "--fetch-timeout", "30").toLong() * 1000
+        val maxProviders = arg(args, "--max-providers", "0").toInt()
+        val syncProfiles = arg(args, "--profiles", "true").toBooleanStrict()
+        val writers = java.util.concurrent.Executors.newFixedThreadPool(16)
+        val store = openStore(dbPath)
+        val projection = VespaProjection(store, vespa, writers, log)
+        runBlocking { runSync(client, store, projection, seeds, maxEvents, log, fetchTimeout, maxProviders, syncProfiles) }
+        writers.shutdown()
+        writers.awaitTermination(120, java.util.concurrent.TimeUnit.SECONDS)
+        log("DONE sync - profiles=${projection.profiles.get()} scores=${projection.scores.get()} " +
+            "deletions=${projection.deletions.get()} unresolved=${projection.unresolved.get()}")
+        store.close()
+        client.close()
+        System.out.flush()
+        kotlin.system.exitProcess(0)
+    }
+
     // Vespa writes run on a small pool so they don't block the relay socket
     // reader thread one-PUT-at-a-time. Drained before exit.
     val writers = java.util.concurrent.Executors.newFixedThreadPool(16)
