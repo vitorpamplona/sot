@@ -26,12 +26,14 @@ brainstorm_server/              # VERBATIM upstream query logic + minimal local 
   app/utils/observer.py
   app/core/{config,loggr}.py    #   ← LOCAL shims (not upstream) so the above runs standalone
 docker-compose.yml              # local single-node Vespa + deploy sidecar
+indexer/                        # Kotlin loader (Quartz + NIP-77 negentropy) -> Vespa
+  src/main/kotlin/...           #   negentropy-sync kind:0 + kind:30382 straight into Vespa
 tools/                          # LOCAL experiment harness (not upstream)
-  load_nostr.py                 #   pull kind:0 profiles + kind:3 follow graph -> Vespa
   search.py                     #   run one query, show ranked hits + match-features
   compare.py                    #   A/B ranking variants over a query set
   searchlib.py                  #   thin wrapper reusing vespa._build_yql
   deploy.sh                     #   redeploy vespa-app after editing doc.sd
+  load_nostr.py                 #   (legacy) Python REQ loader, superseded by indexer/
 requirements.txt
 ```
 
@@ -53,26 +55,29 @@ requirements.txt
 
 ## Quickstart
 
-Requires Docker + Python 3.11+.
+Requires Docker, JDK 21 + Gradle 8.5+ (for the loader), and Python 3.11+ (for
+the search/experiment tools).
 
 ```bash
 # 1. Bring up Vespa and deploy the vendored app package (schema + ranking)
 docker compose up -d vespa
 docker compose up vespa-deploy        # waits for /ApplicationStatus then exits
 
-# 2. Install the harness deps
+# 2. Load data from the same sources production uses, via the Kotlin/Quartz
+#    negentropy loader (full-set sync, not capped at one relay page):
+#    - kind:0 profiles    from wss://wot.grapevine.network
+#    - NIP-85 kind:30382 GrapeRank scores from wss://nip85-staging.nosfabrica.com
+cd indexer && gradle run --args="all --max-events 25000" && cd ..
+
+# 3. Install the search-tool deps and search (use the observer whose scores you loaded)
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-
-# 3. Load data from the same sources production uses:
-#    - kind:0 profiles from wss://wot.grapevine.network
-#    - real GrapeRank scores (NIP-85 kind:30382) from wss://nip85-staging.nosfabrica.com
-python tools/load_nostr.py all --limit 5000
-
-# 4. Search (use the observer whose scores you loaded)
 python tools/search.py "vitor"
 python tools/search.py "vitor" --observer <grapevine_pubkey> --hits 20
 ```
+
+> The Python `tools/load_nostr.py` still works as a simpler REQ-based loader, but
+> it's capped at ~500 events per relay page; `indexer/` supersedes it.
 
 `search.py` prints each hit's `relevance` and the match-features
 (`user_score`, `text_score`, `quality_boost`) so you can see *why* it ranks
@@ -102,12 +107,11 @@ from the command line (`--feature w_gram=15`) and switch rank-profiles
 
 `quality_scores{observer}` is production's GrapeRank output, published by
 Brainstorm as NIP-85 *trusted assertions* (kind `30382`): author = the
-grapevine/observer pubkey, `d` tag = subject, `rank` tag = 0..100.
-`tools/load_nostr.py nip85` pulls these from `wss://nip85-staging.nosfabrica.com`
-and writes one tensor cell `quality_scores{author} = rank` per subject doc, so
-every observer that published assertions gets its own ranking perspective.
-Ranks are already on the 0..100 scale the `quality_boost` sigmoid expects — no
-rescaling — and they feed through the upstream `vespa.upsert_score`.
+grapevine/observer pubkey, `d` tag = subject, `rank` tag = 0..100. The `nip85`
+loader stage pulls these from `wss://nip85-staging.nosfabrica.com` and writes one
+tensor cell `quality_scores{author} = rank` per subject doc, so every observer
+that published assertions gets its own ranking perspective. Ranks are already on
+the 0..100 scale the `quality_boost` sigmoid expects — no rescaling.
 
 > Note: search from the **observer whose scores you loaded** (`--observer
 > <grapevine_pubkey>`). The server's hardcoded default observer only matters if
