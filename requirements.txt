@@ -1,0 +1,5 @@
+# Local experiment harness dependencies. The vendored upstream vespa.py uses
+# httpx; the Nostr loader uses websockets. Nothing else is required to run the
+# local search (Vespa itself runs in Docker via docker-compose.yml).
+httpx>=0.27
+websockets>=12.0
