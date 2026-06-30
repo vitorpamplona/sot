@@ -42,15 +42,33 @@ Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
 stored 10040s → (3) sync each provider's 30382 from its relay hint.
 
 ```bash
-indexer sync --max-events 25000                 # full
+indexer sync --max-events 25000                                # full, from seed relays
+indexer sync --discover true --max-relays 200                  # discover relays via kind-10002 first
 indexer sync --profiles false --max-providers 15 --fetch-timeout 25   # quick scores-only
 ```
 
-Flags: `--db <path>` (SQLite, default `events.db`), `--seeds <urls…>`,
-`--max-providers N`, `--fetch-timeout secs`, `--profiles true|false`.
+**Incremental by default.** Each (relay, kind) sync prefers **NIP-77 negentropy**
+seeded with what the store already holds (so only the delta transfers); if the
+relay refuses it (`maxSyncEvents`) or stalls on the id-fetch, it falls back to
+**`fetchAllPages(since = lastSync − slack)`**. Per-relay capability and per-kind
+cursors are persisted to `<db>.state.json`, so re-runs only pull new events (a
+second run over the same data does ~0 work).
 
-> Stage B (negentropy-preferred sync + persisted `since` cursors for cheap
-> re-runs) and Stage C (kind-10002 outbox relay discovery) build on this.
+**Discovery (`--discover`).** A bounded NIP-65 outbox crawl: sync kind-10002 from
+the seeds, add the relays they advertise to the pool, repeat for `--max-rounds`
+or until `--max-relays`, persisting the pool so re-runs don't rediscover.
+
+Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
+`--seeds <urls…>`, `--discover true|false`, `--max-rounds N`, `--max-relays N`,
+`--max-providers N`, `--fetch-timeout secs`, `--profiles true|false`,
+`--max-events N`.
+
+> Note: per-relay syncs run sequentially today; over a large discovered pool the
+> first full run is slow (each relay does a negentropy attempt + fallback).
+> Parallelizing the network fetch (keeping store writes serial) is the obvious
+> next speedup. The robust per-relay negentropy→pages logic is exactly what the
+> Quartz feature request in `../docs/quartz-negentropy-sync-prompt.md` would fold
+> into the library.
 
 ## Requirements
 

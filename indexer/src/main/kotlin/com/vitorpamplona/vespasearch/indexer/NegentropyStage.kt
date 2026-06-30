@@ -43,8 +43,20 @@ class NegentropyStage(
     private val onEvent: (Event) -> Unit,
     private val log: (String) -> Unit,
     private val maxInFlight: Int = 8,
+    // Events we already hold for this filter — negentropy only fetches the delta.
+    private val localEvents: List<Event> = emptyList(),
+    // When false, a NEG-ERR finishes the stage (download nothing) and sets
+    // [fellBack] so the caller can fall back to a paginated fetch instead of
+    // the built-in capped REQ.
+    private val fallbackToReq: Boolean = true,
 ) : RelayConnectionListener,
     INegentropyListener {
+    /** Set if the relay refused negentropy (NEG-ERR) for this filter. */
+    @Volatile var fellBack = false
+        private set
+
+    /** How many ids reconciliation said we were missing (known after completion). */
+    val neededCount: Int get() = synchronized(lock) { needed.size }
     private val manager = NegentropyManager(this)
     private val subId = "neg-" + (filter.kinds?.joinToString("_") ?: "all")
     private val relayClient: IRelayClient = BasicRelayClient(relayUrl, socketBuilder, this)
@@ -75,8 +87,8 @@ class NegentropyStage(
 
     // ---- relay connection callbacks ----
     override fun onConnected(relay: IRelayClient, pingMillis: Int, compressed: Boolean) {
-        log("[${short()}] connected; starting negentropy reconciliation")
-        manager.startSync(relay, subId, filter, emptyList())
+        log("[${short()}] connected; starting negentropy (local set: ${localEvents.size})")
+        manager.startSync(relay, subId, filter, localEvents)
     }
 
     override fun onIncomingMessage(relay: IRelayClient, msgStr: String, msg: Message) {
@@ -135,8 +147,14 @@ class NegentropyStage(
     }
 
     override fun onError(relay: NormalizedRelayUrl, subId: String, reason: String) {
-        log("[${short()}] negentropy error: $reason - falling back to a plain REQ")
+        fellBack = true
         negDone = true
+        if (!fallbackToReq) {
+            log("[${short()}] negentropy error: $reason - caller will fall back")
+            finish()
+            return
+        }
+        log("[${short()}] negentropy error: $reason - falling back to a plain REQ")
         synchronized(lock) {
             if (fetchStarted) return
             fetchStarted = true

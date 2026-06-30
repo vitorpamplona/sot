@@ -1,67 +1,65 @@
 package com.vitorpamplona.vespasearch.indexer
 
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import java.util.Collections
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Stage-A pipeline: sync events into the store; the [VespaProjection] (running on
- * the store's change feed) writes them to Vespa.
+ * Full pipeline. The store is the source of truth; [VespaProjection] mirrors its
+ * change feed into Vespa. [RelaySyncer] prefers negentropy and falls back to
+ * paginated `since` fetches, advancing per-relay cursors in [SyncState] so
+ * periodic re-runs only pull the delta.
  *
- *   Phase 1: kind 0 / 10040 / 5 from seed relays
- *   Phase 2: read stored 10040s -> (serviceKey, relayHint) for `30382:rank`
- *   Phase 3: kind 30382 per provider, from its relay hint only
+ *   (optional) DISCOVER: bounded kind-10002 outbox crawl -> relay pool
+ *   phase 1: 10040 / 5 / 0 from the relay set
+ *   phase 2: resolve `30382:rank` providers from stored 10040s
+ *   phase 3: each provider's 30382 from its relay hint
  *
- * Scores land keyed by the OBSERVER (10040 author), matching Brainstorm — the
- * projection resolves serviceKey -> observer. Uses fetchAllPages here; the
- * negentropy-preferred syncer + cursors come in stage B.
+ * Scores land keyed by the OBSERVER (10040 author), matching Brainstorm.
  */
 suspend fun runSync(
     client: NostrClient,
+    socketBuilder: WebsocketBuilder,
     store: ObservableEventStore,
     projection: VespaProjection,
+    state: SyncState,
+    statePath: String,
     seedRelays: List<String>,
     maxEvents: Int,
     log: (String) -> Unit,
     fetchTimeoutMs: Long = 30_000,
     maxProviders: Int = 0,
     syncProfiles: Boolean = true,
+    discover: Boolean = false,
+    maxRounds: Int = 3,
+    maxRelays: Int = 200,
 ) = coroutineScope {
     val projJob = launch { projection.run() }
-    var emitted = 0
+    val syncer = RelaySyncer(client, socketBuilder, store, state, log, fetchTimeoutMs = fetchTimeoutMs)
+    val limit = if (maxEvents > 0) maxEvents else null
 
-    suspend fun syncInto(relayUrl: String, filter: Filter): Int {
-        val relay = RelayUrlNormalizer.normalizeOrNull(relayUrl) ?: return 0
-        val buf = Collections.synchronizedList(ArrayList<Event>())
-        val n = withTimeoutOrNull(fetchTimeoutMs) {
-            client.fetchAllPages(relay, listOf(filter)) { ev -> buf.add(ev) }
-        } ?: 0
-        val accepted = store.batchInsert(ArrayList(buf)).count { it is IEventStore.InsertOutcome.Accepted }
-        emitted += accepted
-        return n
-    }
+    val relays =
+        if (discover) {
+            Discovery(syncer, store, state, log).crawl(seedRelays, maxRounds, maxRelays).toList()
+        } else {
+            seedRelays
+        }
 
-    val k0 = Filter(kinds = listOf(MetadataEvent.KIND), limit = if (maxEvents > 0) maxEvents else null)
-    log("=== phase 1: kind 0 / 10040 / 5 from ${seedRelays.size} seed relays ===")
-    for (r in seedRelays) {
-        val nList = syncInto(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)))
-        val nDel = syncInto(r, Filter(kinds = listOf(DeletionEvent.KIND)))
-        val nProf = if (syncProfiles) syncInto(r, k0) else 0
-        log("[sync] ${short(r)}  10040=$nList  del=$nDel  kind0=$nProf")
+    log("=== phase 1: 10040 / 5 / 0 from ${relays.size} relay(s) ===")
+    for (r in relays) {
+        val nl = syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)))
+        val nd = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)))
+        val np = if (syncProfiles) syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND), limit = limit)) else null
+        log("[sync] ${short(r)}  10040=${nl.inserted}${neg(nl)}  del=${nd.inserted}  kind0=${np?.inserted ?: "-"}")
     }
 
     log("=== phase 2: resolve rank providers from stored 10040s ===")
@@ -77,20 +75,30 @@ suspend fun runSync(
 
     log("=== phase 3: kind 30382 per provider, from its relay hint ===")
     for ((service, relay) in providers) {
-        val buf = Collections.synchronizedList(ArrayList<Event>())
-        val filter = Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = if (maxEvents > 0) maxEvents else null)
-        withTimeoutOrNull(fetchTimeoutMs) { client.fetchAllPages(relay, listOf(filter)) { ev -> buf.add(ev) } }
-        val accepted = store.batchInsert(ArrayList(buf)).count { it is IEventStore.InsertOutcome.Accepted }
-        emitted += accepted
-        log("[sync] provider ${service.take(12)} @ ${short(relay.url)}: ${buf.size} assertions")
+        val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = limit))
+        log("[sync] provider ${service.take(12)} @ ${short(relay.url)}: +${o.inserted}/${o.downloaded}${neg(o)}")
     }
 
-    // Let the projection drain the change feed before we stop.
-    log("=== draining projection ($emitted events) ===")
-    withTimeoutOrNull(120_000) {
-        while (projection.processedCount() < emitted) delay(200)
-    }
+    log("=== draining projection ===")
+    drainUntilIdle(projection)
     projJob.cancel()
+    SyncState.save(statePath, state)
+    log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")
 }
+
+/** Wait until the projection has been idle (no new changes processed) for a beat. */
+private suspend fun drainUntilIdle(projection: VespaProjection, idleMs: Long = 3000, maxMs: Long = 120_000) {
+    var last = -1
+    var stable = 0L
+    var total = 0L
+    while (stable < idleMs && total < maxMs) {
+        delay(300)
+        total += 300
+        val p = projection.processedCount()
+        if (p == last) stable += 300 else { last = p; stable = 0 }
+    }
+}
+
+private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""
 
 private fun short(url: String) = url.removePrefix("wss://").removePrefix("ws://").trimEnd('/')

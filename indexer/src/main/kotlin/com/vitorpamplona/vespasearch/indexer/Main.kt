@@ -84,10 +84,18 @@ fun main(args: Array<String>) {
         val fetchTimeout = arg(args, "--fetch-timeout", "30").toLong() * 1000
         val maxProviders = arg(args, "--max-providers", "0").toInt()
         val syncProfiles = arg(args, "--profiles", "true").toBooleanStrict()
+        val discover = arg(args, "--discover", "false").toBooleanStrict()
+        val maxRounds = arg(args, "--max-rounds", "3").toInt()
+        val maxRelays = arg(args, "--max-relays", "200").toInt()
+        val statePath = arg(args, "--state", "$dbPath.state.json")
+        val state = SyncState.load(statePath)
         val writers = java.util.concurrent.Executors.newFixedThreadPool(16)
         val store = openStore(dbPath)
         val projection = VespaProjection(store, vespa, writers, log)
-        runBlocking { runSync(client, store, projection, seeds, maxEvents, log, fetchTimeout, maxProviders, syncProfiles) }
+        runBlocking {
+            runSync(client, socketBuilder, store, projection, state, statePath, seeds, maxEvents, log,
+                fetchTimeout, maxProviders, syncProfiles, discover, maxRounds, maxRelays)
+        }
         writers.shutdown()
         writers.awaitTermination(120, java.util.concurrent.TimeUnit.SECONDS)
         log("DONE sync - profiles=${projection.profiles.get()} scores=${projection.scores.get()} " +

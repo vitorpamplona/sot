@@ -1,6 +1,7 @@
 plugins {
     // Quartz 1.12.6 ships Kotlin 2.4 metadata, so the compiler must be >= 2.4.
     kotlin("jvm") version "2.4.0"
+    kotlin("plugin.serialization") version "2.4.0"
     application
 }
 
