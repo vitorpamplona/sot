@@ -1,13 +1,22 @@
-# indexer — Kotlin/Quartz negentropy loader
+# indexer — Kotlin/Quartz loader
 
 Loads Nostr data into the local Vespa using **[Amethyst's Quartz](https://github.com/vitorpamplona/amethyst)**
-library, syncing over **NIP-77 negentropy** and writing events **straight into
-Vespa** (no intermediate event store). This replaces the Python REQ loader
-(`../tools/load_nostr.py`).
+library, writing events **straight into Vespa** (no intermediate event store).
+This replaces the Python REQ loader (`../tools/load_nostr.py`).
 
-Why negentropy: a plain Nostr `REQ` is capped by the relay (≈500 events on the
-relays we use). Negentropy reconciles the relay's *entire* matching set, so the
-profile index isn't limited to the first page.
+A plain Nostr `REQ` is capped by the relay (≈500 events on the relays we use).
+Two ways to get past that, selectable with `--mode`:
+
+- **`pages` (default)** — Quartz's `INostrClient.fetchAllPages`, which walks
+  `until` cursors page by page until the set is drained. Simple, robust, and
+  works on **every** relay. This is the recommended path.
+- **`negentropy`** — NIP-77 set reconciliation (`NegentropyManager`). Only
+  fetches ids you're missing, so it's faster for *re-syncs*, but a relay will
+  refuse to reconcile a set larger than its `negentropy.maxSyncEvents` (strfry
+  default 1,000,000). `nip85-staging` returns `NEG-ERR blocked: too many query
+  results` for the full kind-30382 set, so use `pages` there.
+
+Both write the same documents into Vespa.
 
 ## Requirements
 
@@ -43,6 +52,7 @@ gradle installDist
 
 | flag | default | meaning |
 | --- | --- | --- |
+| `--mode <pages\|negentropy>` | `pages` | fetch strategy (see above) |
 | `--vespa <url>` | `http://localhost:8080` (or `$VESPA_URL`) | Vespa document API base |
 | `--relays <urls...>` | `wss://wot.grapevine.network` | relays for kind:0 profiles |
 | `--score-relays <urls...>` | `wss://nip85-staging.nosfabrica.com` | relays for kind:30382 assertions |
@@ -56,8 +66,9 @@ gradle installDist
 | concern | Quartz API used |
 | --- | --- |
 | relay transport | `BasicOkHttpWebSocket.Builder` (OkHttp), direct egress |
-| single-relay client | `BasicRelayClient(url, socketBuilder, listener)` |
-| negentropy sync | `NegentropyManager.startSync(...)` + `INegentropyListener` (NIP-77) |
+| client | `NostrClient(socketBuilder, scope)` |
+| paged fetch (default) | `INostrClient.fetchAllPages(relay, filters, onEvent)` |
+| negentropy sync (opt-in) | `NegentropyManager.startSync(...)` + `INegentropyListener` (NIP-77) |
 | kind:0 parsing | `MetadataEvent.contactMetaData()` → `UserMetadata` |
 | kind:30382 parsing | `ContactCardEvent.aboutUser()` (subject) + `.rank()` (0–100) |
 
@@ -65,15 +76,17 @@ gradle installDist
 `vespa.py` uses, so the index contents are identical regardless of which loader
 filled them.
 
-## Design notes / limitations
+## Design notes
 
-- **Bounded fetch.** Reconciled ids are downloaded through at most 8 concurrent
-  REQ subscriptions, refilled on EOSE — relays cap subscriptions per connection,
-  so firing thousands at once stalls after the first few.
-- **Cap + memory.** `--max-events` also bounds how many ids are buffered during
-  reconciliation, so syncing against a relay holding millions of events (the
-  grapevine relay reports ~3.5M kind:0) doesn't blow the heap.
-- **Negentropy fallback.** Some relays refuse to reconcile a very large set
-  (`nip85-staging` returns "too many query results"). The stage falls back to a
-  plain capped `REQ` and logs it. Paginating that fallback by `until` windows to
-  pull more than one relay page is a natural next step.
+- **Cap.** `--max-events` bounds ingest per stage. In `pages` mode it's the
+  `Filter.limit`; relays hold far more than you want locally (the grapevine
+  relay reports ~3.5M kind:0).
+- **Write failures are logged, not swallowed.** A down or feed-blocked Vespa
+  shows up as `writeFailures=N` in the final line plus the first few errors —
+  not a silent "0 upserted".
+- **negentropy mode internals.** `NegentropyStage` enumerates the relay's full
+  id set, then downloads it through at most 8 concurrent REQ subscriptions
+  (refilled on EOSE — relays cap subscriptions per connection). `--max-events`
+  also bounds id buffering so a huge set doesn't blow the heap. On a relay that
+  refuses full reconciliation it falls back to one capped `REQ` and logs it;
+  `pages` mode is the better choice there.
