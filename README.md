@@ -100,24 +100,14 @@ from the command line (`--feature w_gram=15`) and switch rank-profiles
 
 ### Quality scores
 
-`quality_scores{observer}` is production's GrapeRank output. The loader has two
-sources for it:
-
-- **`nip85` (real GrapeRank)** — Brainstorm publishes scores as NIP-85 *trusted
-  assertions* (kind `30382`): author = the grapevine/observer pubkey, `d` tag =
-  subject, `rank` tag = 0..100. `tools/load_nostr.py nip85` pulls these from
-  `wss://nip85-staging.nosfabrica.com` and writes one tensor cell
-  `quality_scores{author} = rank` per subject doc, so every observer that
-  published assertions gets its own ranking perspective. Ranks are already on
-  the 0..100 scale the `quality_boost` sigmoid expects — no rescaling. This is
-  what `all` uses.
-- **`scores-proxy` (offline fallback)** — when you can't reach the score relay,
-  this seeds a transparent proxy from the observer's kind:3 follow graph
-  (`score(t) = how many of the observer's follows also follow t`), tunable via
-  `--direct-base` / `--scale`. Itself an equation to experiment with.
-
-Either way the Vespa side is identical; both feed through the upstream
-`vespa.upsert_score` / `batch_upsert_scores`.
+`quality_scores{observer}` is production's GrapeRank output, published by
+Brainstorm as NIP-85 *trusted assertions* (kind `30382`): author = the
+grapevine/observer pubkey, `d` tag = subject, `rank` tag = 0..100.
+`tools/load_nostr.py nip85` pulls these from `wss://nip85-staging.nosfabrica.com`
+and writes one tensor cell `quality_scores{author} = rank` per subject doc, so
+every observer that published assertions gets its own ranking perspective.
+Ranks are already on the 0..100 scale the `quality_boost` sigmoid expects — no
+rescaling — and they feed through the upstream `vespa.upsert_score`.
 
 > Note: search from the **observer whose scores you loaded** (`--observer
 > <grapevine_pubkey>`). The server's hardcoded default observer only matters if

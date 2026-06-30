@@ -6,18 +6,21 @@ Two stages, runnable independently:
             into Vespa via the *upstream* `upsert_profile` — identical field
             mapping to production.
 
-  scores    Build an observer's `quality_scores` from the kind:3 follow graph
-            and feed them via the *upstream* `batch_upsert_scores`. This is a
-            transparent, tunable Web-of-Trust *proxy* for GrapeRank (see
-            `score_from_follow_graph`): score(t) = how many of the observer's
-            follows also follow t. Swap this for real GrapeRank output when you
-            have it — the Vespa side is unchanged.
+  nip85     Real GrapeRank scores, published by Brainstorm as NIP-85 trusted
+            assertions (kind:30382). Each event: author = grapevine/observer
+            pubkey, `d` tag = subject pubkey, `rank` tag = 0..100. Each becomes
+            one cell quality_scores{author}=rank on the subject's doc, fed via
+            the *upstream* `upsert_score`.
 
-Default source relay matches upstream strfry-router.conf: wss://wot.grapevine.network.
+  all       profiles + nip85.
+
+Default relays match upstream: kind:0 from wss://wot.grapevine.network,
+kind:30382 from wss://nip85-staging.nosfabrica.com.
 
 Examples:
   python tools/load_nostr.py profiles --limit 5000
-  python tools/load_nostr.py scores --observer <hex> --max-expand 400
+  python tools/load_nostr.py nip85 --limit 5000             # all observers' scores
+  python tools/load_nostr.py nip85 --observer <hex>         # one observer's scores
   python tools/load_nostr.py all --limit 5000
 """
 import argparse
@@ -33,7 +36,6 @@ sys.path.insert(0, os.path.join(_ROOT, "brainstorm_server"))
 import websockets  # noqa: E402
 
 from app.core import vespa  # noqa: E402  (upstream, vendored verbatim)
-from app.utils.observer import default_observer_pubkey  # noqa: E402
 
 DEFAULT_RELAYS = ["wss://wot.grapevine.network"]
 # Brainstorm publishes GrapeRank as NIP-85 trusted assertions (kind 30382)
@@ -83,7 +85,7 @@ async def req(
 
 
 def _newest_by_pubkey(events: list[dict]) -> dict[str, dict]:
-    """Keep only the newest event per author (kind:0 / kind:3 are replaceable)."""
+    """Keep only the newest event per author (kind:0 is replaceable)."""
     best: dict[str, dict] = {}
     for e in events:
         pk = e.get("pubkey")
@@ -106,15 +108,6 @@ def _parse_profile(event: dict) -> dict | None:
         if src in content and dst not in content:
             content[dst] = content[src]
     return {f: content.get(f) for f in vespa.PROFILE_FIELDS}
-
-
-def _p_tags(event: dict) -> list[str]:
-    """Pubkeys this contact-list (kind:3) event follows."""
-    out = []
-    for tag in event.get("tags", []) or []:
-        if len(tag) >= 2 and tag[0] == "p" and isinstance(tag[1], str):
-            out.append(tag[1].lower())
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -148,97 +141,6 @@ async def load_profiles(relays: list[str], limit: int, timeout: float) -> int:
 
     await asyncio.gather(*(feed(pk, ev) for pk, ev in profiles.items()))
     print(f"[profiles] fed {ok}/{len(profiles)} profiles")
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# scores (follow-graph proxy for GrapeRank)
-# ---------------------------------------------------------------------------
-async def _contact_lists(
-    relays: list[str], authors: list[str], timeout: float, batch: int = 100
-) -> dict[str, list[str]]:
-    """Fetch kind:3 for many authors (batched author filters)."""
-    result: dict[str, list[str]] = {}
-    for relay in relays:
-        for i in range(0, len(authors), batch):
-            chunk = authors[i : i + batch]
-            evs = await req(
-                relay, {"kinds": [3], "authors": chunk}, timeout=timeout
-            )
-            for pk, ev in _newest_by_pubkey(evs).items():
-                # first relay wins unless a newer one shows up
-                if pk not in result:
-                    result[pk] = _p_tags(ev)
-    return result
-
-
-def score_from_follow_graph(
-    follows: list[str],
-    follows_of_follows: dict[str, list[str]],
-    *,
-    direct_base: int = 30,
-    scale: float = 1.0,
-    cap: int = 100,
-) -> dict[str, int]:
-    """A transparent WoT proxy for GrapeRank.
-
-    score(t) = (# of the observer's follows who also follow t) * scale,
-    with the observer's own direct follows floored at `direct_base` so they
-    stay rankable, and everything clamped to [1, cap] (int8-safe).
-
-    This is intentionally simple and easy to tweak — it is the first "equation"
-    you can experiment with on the data side, parallel to the rank-profile
-    equations on the Vespa side. Replace it wholesale with real GrapeRank
-    output when available.
-    """
-    follow_set = set(follows)
-    counts: dict[str, int] = {}
-    for f in follows:
-        for t in follows_of_follows.get(f, []):
-            counts[t] = counts.get(t, 0) + 1
-
-    scores: dict[str, int] = {}
-    targets = set(counts) | follow_set
-    for t in targets:
-        raw = counts.get(t, 0) * scale
-        if t in follow_set:
-            raw = max(raw, direct_base)
-        s = int(round(raw))
-        if s > 0:
-            scores[t] = min(s, cap)
-    return scores
-
-
-async def load_scores(
-    relays: list[str],
-    observer: str,
-    max_expand: int,
-    timeout: float,
-    direct_base: int,
-    scale: float,
-) -> int:
-    print(f"[scores] observer={observer[:16]}… ; fetching its kind:3 follow list")
-    obs_lists = await _contact_lists(relays, [observer], timeout=timeout)
-    follows = obs_lists.get(observer, [])
-    if not follows:
-        print("[scores] observer has no kind:3 follow list on these relays — "
-              "nothing to score. Pass a different --observer.", file=sys.stderr)
-        return 0
-    print(f"[scores] observer follows {len(follows)} accounts")
-
-    expand = follows[:max_expand]
-    print(f"[scores] expanding kind:3 for {len(expand)} follows (2nd hop) ...")
-    fof = await _contact_lists(relays, expand, timeout=timeout)
-    print(f"[scores] got {len(fof)} contact lists")
-
-    scores = score_from_follow_graph(
-        follows, fof, direct_base=direct_base, scale=scale
-    )
-    print(f"[scores] computed {len(scores)} non-zero scores; feeding Vespa ...")
-
-    upserts = [(pk, sc) for pk, sc in scores.items()]
-    ok, failed = await vespa.batch_upsert_scores(upserts, [], observer)
-    print(f"[scores] fed {ok} scores ({failed} failed) for observer {observer[:16]}…")
     return ok
 
 
@@ -347,12 +249,12 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "stage",
-        choices=["profiles", "nip85", "scores-proxy", "all"],
+        choices=["profiles", "nip85", "all"],
         help="profiles=kind:0; nip85=real GrapeRank scores (kind:30382); "
-             "scores-proxy=follow-graph proxy; all=profiles+nip85",
+             "all=profiles+nip85",
     )
     ap.add_argument("--relays", nargs="+", default=DEFAULT_RELAYS,
-                    help="relays for kind:0 / kind:3 (profiles, proxy scores)")
+                    help="relays for kind:0 profile metadata")
     ap.add_argument("--score-relays", nargs="+", default=DEFAULT_SCORE_RELAYS,
                     help="relays for NIP-85 kind:30382 assertions")
     ap.add_argument("--limit", type=int, default=5000,
@@ -361,20 +263,11 @@ def main() -> None:
                     help="skip NIP-85 assertions with rank below this (keeps the "
                          "tensor sparse; 0 keeps everything)")
     ap.add_argument("--observer", default=None,
-                    help="hex pubkey whose follow graph seeds quality_scores "
-                         "(default: the server's default observer)")
-    ap.add_argument("--max-expand", type=int, default=400,
-                    help="how many of the observer's follows to expand for the "
-                         "2nd hop (bounds relay load)")
-    ap.add_argument("--direct-base", type=int, default=30,
-                    help="floor score for the observer's direct follows")
-    ap.add_argument("--scale", type=float, default=1.0,
-                    help="multiplier on the follow-of-follow count")
+                    help="for the nip85 stage, load only this author's assertions "
+                         "(default: every observer that published)")
     ap.add_argument("--timeout", type=float, default=20.0,
                     help="per-REQ idle timeout in seconds")
     args = ap.parse_args()
-
-    observer = args.observer or default_observer_pubkey()
 
     async def run() -> None:
         try:
@@ -387,11 +280,6 @@ def main() -> None:
                 await load_nip85(
                     args.score_relays, args.limit, args.timeout,
                     obs_filter, args.min_rank,
-                )
-            if args.stage == "scores-proxy":
-                await load_scores(
-                    args.relays, observer, args.max_expand, args.timeout,
-                    args.direct_base, args.scale,
                 )
         finally:
             await vespa.aclose()
