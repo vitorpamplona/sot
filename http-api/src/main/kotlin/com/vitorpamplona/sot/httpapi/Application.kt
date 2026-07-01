@@ -20,17 +20,16 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
 /**
- * HTTP search API exposing `GET /search/byText`. Thin: it resolves the observer
- * + query and delegates all search logic to [VespaSearch] in :query-engine.
- * Search improvements happen in query-engine (and vespa/doc.sd), shared with the
- * relay and CLI.
+ * HTTP search API exposing `GET /search`. Thin: it resolves the observer + query
+ * and delegates all search logic to [VespaSearch] in :query-engine. Search
+ * improvements happen in query-engine (and vespa/doc.sd), shared with the relay
+ * and CLI.
  */
 private val CONTROL = Regex("[\\x00-\\x1f\\x7f]")
 
-// Default observer when the caller doesn't pass one (matches the upstream default).
-private val DEFAULT_OBSERVER =
-    System.getenv("PERIODIC_GRAPERANK_PUBKEY")
-        ?: "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
+// Default web-of-trust observer when the caller doesn't pass one, from the
+// DEFAULT_OBSERVER env var. Empty means no default (every quality score is 0).
+private val DEFAULT_OBSERVER = System.getenv("DEFAULT_OBSERVER").orEmpty()
 
 private const val RESULTS_LIMIT = 400
 
@@ -75,7 +74,7 @@ fun main() {
     embeddedServer(Netty, port = port) {
         install(ContentNegotiation) { json() }
         routing {
-            get("/search/byText") {
+            get("/search") {
                 val text = (call.request.queryParameters["text"] ?: "").let { CONTROL.replace(it, "").trim() }
                 if (text.isEmpty()) {
                     call.respond(SearchResponse(text, 0, emptyList()))

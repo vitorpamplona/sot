@@ -25,11 +25,9 @@ import kotlinx.coroutines.launch
  * ([OptionalAuthPolicy]) picks the ranking observer. Transport is Ktor WebSockets.
  *
  * Env: INDEXER_DB (SQLite path), RELAY_URL (public ws url for NIP-42), RELAY_PORT,
- *      VESPA_URL, PERIODIC_GRAPERANK_PUBKEY (default observer).
+ *      VESPA_URL, DEFAULT_OBSERVER (fallback observer for unauthenticated clients).
  */
-private val DEFAULT_OBSERVER =
-    System.getenv("PERIODIC_GRAPERANK_PUBKEY")
-        ?: "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
+private val DEFAULT_OBSERVER = System.getenv("DEFAULT_OBSERVER").orEmpty()
 
 private val NIP11 =
     """{"name":"sot","description":"NIP-50 profile search ranked by Nostr web-of-trust",""" +

@@ -15,7 +15,7 @@ query-engine/   The search core (Kotlin lib): YQL builder + Vespa search client 
                 result model. Has unit tests.
 indexer/        Nostr -> Quartz EventStore -> Vespa. Negentropy sync (NIP-77) with
                 since-cursors; projects profiles + observer-keyed WoT scores.
-http-api/       Ktor service: GET /search/byText -> query-engine.
+http-api/       Ktor service: GET /search -> query-engine.
 relay/          Quartz relay server answering NIP-50 `search` REQs: rank in Vespa,
                 return the original signed kind-0 events from the indexer's store.
                 NIP-42 optional auth picks the ranking observer.
@@ -77,7 +77,7 @@ whether Vespa / http-api / relay are up.
 The same `query-engine` core is exposed two more ways:
 
 ```bash
-# HTTP JSON API on :8081  (GET /search/byText?text=vitor&observer=<pubkey>)
+# HTTP JSON API on :8081  (GET /search?text=vitor&observer=<pubkey>)
 gradle :http-api:run
 
 # NIP-50 search relay on :7777  (send a `search` REQ; NIP-42 auth picks the
@@ -86,7 +86,7 @@ gradle :relay:run
 ```
 
 Ports and the default observer are configurable via env: `HTTP_API_PORT`,
-`RELAY_PORT`, `RELAY_URL`, `INDEXER_DB`, `PERIODIC_GRAPERANK_PUBKEY`.
+`RELAY_PORT`, `RELAY_URL`, `INDEXER_DB`, `DEFAULT_OBSERVER`.
 
 ## The experiment loop
 

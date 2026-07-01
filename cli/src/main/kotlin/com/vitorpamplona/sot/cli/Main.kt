@@ -21,9 +21,12 @@ import java.time.Duration
  *   sot up | down            # docker compose for local Vespa
  *   sot deploy               # (re)deploy vespa to the config server
  */
-private val DEFAULT_OBSERVER =
-    System.getenv("PERIODIC_GRAPERANK_PUBKEY")
-        ?: "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
+/**
+ * Default web-of-trust observer (hex pubkey) when `--observer` is omitted, taken
+ * from the `DEFAULT_OBSERVER` env var. Unset means no default: text results
+ * still come back, but every `user_score` is 0 (no trust perspective applied).
+ */
+private val DEFAULT_OBSERVER = System.getenv("DEFAULT_OBSERVER").orEmpty()
 
 private fun flag(args: List<String>, name: String, default: String): String {
     val i = args.indexOf(name)
@@ -31,6 +34,18 @@ private fun flag(args: List<String>, name: String, default: String): String {
 }
 
 private fun has(args: List<String>, name: String) = args.contains(name)
+
+/** The `--observer` flag, else DEFAULT_OBSERVER; warns (once) if neither is set. */
+private fun observerOrWarn(args: List<String>): String {
+    val observer = flag(args, "--observer", DEFAULT_OBSERVER)
+    if (observer.isBlank()) {
+        System.err.println(
+            "note: no observer set - pass --observer <hex> or set DEFAULT_OBSERVER; " +
+                "results are not trust-ranked (every score is 0).",
+        )
+    }
+    return observer
+}
 
 fun main(argv: Array<String>) {
     val args = argv.toList()
@@ -66,7 +81,7 @@ private fun search(args: List<String>) {
         println("usage: search \"<query>\" [--observer <hex>] [--hits N] ...")
         return
     }
-    val observer = flag(args, "--observer", DEFAULT_OBSERVER)
+    val observer = observerOrWarn(args)
     val hits = flag(args, "--hits", "20").toInt()
     val rank = flag(args, "--rank", "name_and_quality_score_only")
     val vespaUrl = flag(args, "--vespa", System.getenv("VESPA_URL") ?: "http://localhost:8080")
@@ -114,7 +129,7 @@ private val DEFAULT_VARIANTS: Map<String, Variant> =
  * edit doc.sd (and redeploy) or a variant's features, then eyeball the deltas.
  */
 private fun compare(args: List<String>) {
-    val observer = flag(args, "--observer", DEFAULT_OBSERVER)
+    val observer = observerOrWarn(args)
     val topn = flag(args, "--topn", "5").toInt()
     val vespaUrl = flag(args, "--vespa", System.getenv("VESPA_URL") ?: "http://localhost:8080")
 
@@ -194,7 +209,7 @@ private fun status(args: List<String>) {
     fun line(name: String, ok: Boolean) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
     println("component status:")
     line("Vespa        ($vespa)", ping("$vespa/ApplicationStatus"))
-    line("http-api     ($api)", ping("$api/search/byText?text=_"))
+    line("http-api     ($api)", ping("$api/search?text=_"))
     line("relay        ($relay)", ping("$relay/", accept = "application/nostr+json"))
 }
 
