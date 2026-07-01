@@ -20,4 +20,4 @@ include(":common-query")
 include(":indexer")
 include(":http-api")
 include(":search-relay")
-// added as they are built: ":cli"
+include(":cli")

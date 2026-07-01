@@ -1,41 +1,52 @@
 # vespa-search
 
-A local replica of [Brainstorm](https://brainstorm.world/)'s Vespa-based Nostr
-profile search, built so you can **experiment with the ranking equations** and
-send the good ones back upstream.
+A Vespa-backed Nostr profile search ranked by the Nostr **web of trust**, built
+as a multi-module Kotlin project. It grew out of a local replica of
+[Brainstorm](https://brainstorm.world/)'s search and still compares against it
+(so ranking improvements can be sent upstream), but it's now a real project: an
+indexer, a shared search core, an HTTP API, a NIP-50 search relay, and a CLI.
 
-It mirrors two upstream repos:
-
-- **Index + ranking** — [`NosFabrica/brainstorm_one_click_deployment`](https://github.com/NosFabrica/brainstorm_one_click_deployment) → vendored under [`vespa-app/`](vespa-app)
-- **Query construction** — [`NosFabrica/brainstorm_server`](https://github.com/NosFabrica/brainstorm_server) → vendored under [`brainstorm_server/app/core/vespa.py`](brainstorm_server/app/core/vespa.py)
-
-Those files are copied **verbatim** so that any change you make diffs cleanly
-into an upstream pull request. All the local-only scaffolding (Docker compose,
-data loader, experiment CLIs) lives outside those paths and *reuses* the
-upstream code instead of forking it.
-
-## Layout
+## Modules (one Gradle build)
 
 ```
-vespa-app/                      # VERBATIM upstream Vespa app package (the index + equations)
-  schemas/doc.sd                #   ← rank-profiles live here: name_only,
-  services.xml                  #     name_and_quality_score_only, search_rank
-  hosts.xml
-brainstorm_server/              # VERBATIM upstream query logic + minimal local shims
-  app/core/vespa.py             #   ← YQL builder + ranking features (upstreamable)
-  app/utils/observer.py
-  app/core/{config,loggr}.py    #   ← LOCAL shims (not upstream) so the above runs standalone
-docker-compose.yml              # local single-node Vespa + deploy sidecar
-indexer/                        # Kotlin loader (Quartz + NIP-77 negentropy) -> Vespa
-  src/main/kotlin/...           #   negentropy-sync kind:0 + kind:30382 straight into Vespa
-tools/                          # LOCAL experiment harness (not upstream)
-  search.py                     #   run one query, show ranked hits + match-features
-  compare.py                    #   A/B ranking variants over a query set
-  searchlib.py                  #   thin wrapper reusing vespa._build_yql
-  deploy.sh                     #   redeploy vespa-app after editing doc.sd
-  load_nostr.py                 #   (legacy) Python REQ loader, superseded by indexer/
+vespa-app/          Vespa application package — schema + rank profiles (the "equations").
+                    doc.sd is language-agnostic and still upstreamable.
+common-query/       The search core (Kotlin lib): YQL builder + Vespa search client +
+                    result model. Ported from the upstream Python; has unit tests.
+indexer/            Nostr -> Quartz EventStore -> Vespa. Negentropy sync (NIP-77) with
+                    since-cursors; projects profiles + observer-keyed WoT scores.
+http-api/           Ktor service: GET /search/byText -> common-query.
+search-relay/       Quartz relay server answering NIP-50 `search` REQs: rank in Vespa,
+                    return the original signed kind-0 events from the indexer's store.
+                    NIP-42 optional auth picks the ranking observer.
+cli/                install / status / search from the terminal (reuses common-query).
+gradle/libs.versions.toml   shared versions (Quartz@JitPack, Ktor, coroutines, sqlite).
+
+brainstorm_server/  Python — kept as an upstream reference to diff against.
+tools/              Python — legacy experiment harness (search.py, compare.py, …).
+```
+
+Build everything: `gradle build`. Run a module: `gradle :cli:installDist` then
+`./cli/build/install/vespa-search/bin/vespa-search search "vitor"`.
+
+Quartz does the heavy Nostr lifting across modules (events, NIP-19/42/50/77, the
+relay server, the EventStore); Ktor serves HTTP/WebSocket.
+
+<details><summary>Legacy layout notes (Python reference)</summary>
+
+The Python `brainstorm_server/app/core/vespa.py` (YQL builder) and `vespa-app/`
+were originally vendored verbatim from
+[`NosFabrica/brainstorm_server`](https://github.com/NosFabrica/brainstorm_server)
+and [`NosFabrica/brainstorm_one_click_deployment`](https://github.com/NosFabrica/brainstorm_one_click_deployment)
+so changes diff cleanly upstream. `common-query` is the Kotlin port of that
+query logic; `doc.sd` remains the shared, upstreamable ranking artifact.
+
+```
+docker-compose.yml   local single-node Vespa + deploy sidecar
+tools/               search.py · compare.py · searchlib.py · deploy.sh · load_nostr.py (legacy loader)
 requirements.txt
 ```
+</details>
 
 ## How the production search works (what we replicated)
 
