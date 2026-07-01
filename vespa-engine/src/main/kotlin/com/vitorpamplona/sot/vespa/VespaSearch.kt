@@ -44,77 +44,83 @@ class VespaSearch(
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(),
 ) {
     fun search(queryText: String, observer: String, opts: SearchOptions = SearchOptions()): List<SearchHit> {
-        val words = queryText.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.take(MAX_QUERY_WORDS)
+        val words = queryText.trim().split(WHITESPACE).filter { it.isNotEmpty() }.take(MAX_QUERY_WORDS)
         if (words.isEmpty()) return emptyList()
         val joined = if (words.size >= 2) words.joinToString("") else null
-        val shortest = words.minOf { it.length }
-        val wGram = if (shortest <= 3) 20.0 else 5.0
 
-        var vespaHits = maxOf(opts.hits, 20)
-        if (!opts.includeZeroScore) vespaHits = maxOf(opts.hits * 5, 100)
-        vespaHits = minOf(vespaHits, 400) // Vespa default max-hits
+        val children =
+            getJson("$baseUrl/search/?" + encode(searchParams(words, joined, observer, opts)))["root"]
+                ?.jsonObject?.get("children")?.jsonArray ?: return emptyList()
 
-        val params = LinkedHashMap<String, String>()
-        params["yql"] = Yql.build(words, joined)
-        params["ranking"] = opts.rankProfile
-        params["ranking.features.query(user_q)"] = "{$observer:1.0}"
-        params["ranking.features.query(w_gram)"] = wGram.toString()
-        params["ranking.features.query(w_about)"] = "0.5"
-        params["hits"] = vespaHits.toString()
-        words.forEachIndexed { i, w -> params["w$i"] = w }
-        if (joined != null) params["wj"] = joined
-
-        val root = get(params)?.get("root")?.jsonObject ?: return emptyList()
-        val children = root["children"]?.jsonArray ?: return emptyList()
-
-        val out = ArrayList<SearchHit>()
-        for (h in children) {
-            val ho = h.jsonObject
-            val fieldsObj = ho["fields"]?.jsonObject ?: continue
-            val mf = fieldsObj["matchfeatures"]?.jsonObject
-            val trust = mf?.get("user_score")?.jsonPrimitive?.doubleOrNull
-            if (!opts.includeZeroScore && (trust ?: 0.0) <= 0.0) continue
-            val fields = stringFields(fieldsObj, drop = "matchfeatures")
-            out.add(
-                SearchHit(
-                    pubkey = fields["pubkey"] ?: "",
-                    relevance = ho["relevance"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-                    trust = trust,
-                    fields = fields,
-                ),
-            )
-            if (out.size >= opts.hits) break
-        }
-        return out
+        return children.asSequence()
+            .mapNotNull { toHit(it.jsonObject, opts) }
+            .take(opts.hits)
+            .toList()
     }
 
     /** Direct doc lookup by pubkey (hex), bypassing text search. Null if absent. */
     fun getDocument(pubkey: String): SearchHit? {
-        val req =
-            HttpRequest.newBuilder(URI.create("$baseUrl/document/v1/doc/doc/docid/$pubkey"))
-                .timeout(Duration.ofSeconds(30)).GET().build()
-        val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
+        val resp = send("$baseUrl/document/v1/doc/doc/docid/$pubkey")
         if (resp.statusCode() == 404) return null
-        if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
-        val fieldsObj = Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject ?: return null
         // quality_scores is a tensor object (not a primitive) — drop it from the string map.
-        val fields = stringFields(fieldsObj, drop = "quality_scores")
+        val fields = body(resp)["fields"]?.jsonObject?.let { stringFields(it, drop = "quality_scores") } ?: return null
         return SearchHit(pubkey = fields["pubkey"] ?: pubkey, relevance = null, trust = null, fields = fields)
     }
 
-    private fun get(params: Map<String, String>): JsonObject {
-        val qs = params.entries.joinToString("&") { enc(it.key) + "=" + enc(it.value) }
-        val req =
-            HttpRequest.newBuilder(URI.create("$baseUrl/search/?$qs"))
-                .timeout(Duration.ofSeconds(30)).GET().build()
-        val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
+    /** The Vespa `/search/` query parameters: recall (YQL) + the observer-weighted ranking inputs. */
+    private fun searchParams(words: List<String>, joined: String?, observer: String, opts: SearchOptions): Map<String, String> {
+        val wGram = if (words.minOf { it.length } <= 3) 20.0 else 5.0
+        val hits = (if (opts.includeZeroScore) maxOf(opts.hits, 20) else maxOf(opts.hits * 5, 100)).coerceAtMost(MAX_VESPA_HITS)
+        return buildMap {
+            put("yql", ProfileQuery.build(words, joined))
+            put("ranking", opts.rankProfile)
+            put("ranking.features.query(user_q)", "{$observer:1.0}")
+            put("ranking.features.query(w_gram)", wGram.toString())
+            put("ranking.features.query(w_about)", "0.5")
+            put("hits", hits.toString())
+            words.forEachIndexed { i, w -> put("w$i", w) }
+            if (joined != null) put("wj", joined)
+        }
+    }
+
+    /** One Vespa result child -> [SearchHit]; null if it has no fields or is a filtered zero-score hit. */
+    private fun toHit(node: JsonObject, opts: SearchOptions): SearchHit? {
+        val fieldsObj = node["fields"]?.jsonObject ?: return null
+        val trust = fieldsObj["matchfeatures"]?.jsonObject?.get("user_score")?.jsonPrimitive?.doubleOrNull
+        if (!opts.includeZeroScore && (trust ?: 0.0) <= 0.0) return null
+        val fields = stringFields(fieldsObj, drop = "matchfeatures")
+        return SearchHit(
+            pubkey = fields["pubkey"] ?: "",
+            relevance = node["relevance"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            trust = trust,
+            fields = fields,
+        )
+    }
+
+    private fun getJson(url: String): JsonObject = body(send(url))
+
+    private fun send(url: String): HttpResponse<String> =
+        http.send(
+            HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).GET().build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+
+    private fun body(resp: HttpResponse<String>): JsonObject {
         if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
         return Json.parseToJsonElement(resp.body()).jsonObject
     }
+
+    private fun encode(params: Map<String, String>): String =
+        params.entries.joinToString("&") { enc(it.key) + "=" + enc(it.value) }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     /** Vespa `fields` object -> String map, dropping [drop] (a non-primitive like a tensor). */
     private fun stringFields(fields: JsonObject, drop: String): Map<String, String> =
         fields.filterKeys { it != drop }.mapValues { (_, v) -> v.jsonPrimitive.contentOrNull ?: "" }
+
+    private companion object {
+        val WHITESPACE = Regex("\\s+")
+        const val MAX_VESPA_HITS = 400 // Vespa default max-hits
+    }
 }
