@@ -81,18 +81,14 @@ Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 
 ## Run
 
-The CLI runs the indexer in-process — this is the normal way:
+This module is a **library** — it has no `main`. The CLI is the composition
+root: `sot index` (see `cli/Index.kt`) wires up the store, Vespa client, and
+projection from `.env`/flags and calls into `runSync`.
 
 ```bash
 sot index profiles --max-events 25000   # kind:0 profiles (negentropy full-set sync)
 sot index nip85 --max-events 25000       # kind:30382 NIP-85 Trusted Assertion scores
 sot index all                            # both (default stage)
-```
-
-Or run the module directly via Gradle (same args after `--args=`):
-
-```bash
-./gradlew :indexer:run --args="all"
 ```
 
 ### Flags
