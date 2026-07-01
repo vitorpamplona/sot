@@ -4,9 +4,9 @@
 > which includes the generalized `negentropySyncOrFetch` accessory. `settings.gradle.kts`
 > adds the `jitpack.io` repository.
 
-Loads Nostr data into the local Vespa using **[Amethyst's Quartz](https://github.com/vitorpamplona/amethyst)**
-library, writing events **straight into Vespa** (no intermediate event store).
-This replaces the Python REQ loader (`../tools/load_nostr.py`).
+Loads Nostr data using **[Amethyst's Quartz](https://github.com/vitorpamplona/amethyst)**
+into a Quartz **EventStore** (the source of truth), then projects profiles and
+observer-keyed web-of-trust scores into Vespa.
 
 A plain Nostr `REQ` is capped by the relay (≈500 events on the relays we use).
 Two ways to get past that, selectable with `--mode`:

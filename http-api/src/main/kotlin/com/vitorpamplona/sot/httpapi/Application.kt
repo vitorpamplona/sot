@@ -20,10 +20,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
 /**
- * HTTP search API — the Kotlin/Ktor replacement for brainstorm_server's
- * `/byText` router. Thin: it resolves the observer + query and delegates all
- * search logic to [VespaSearch] in :query-engine. Search improvements happen in
- * query-engine (and vespa/doc.sd), shared with the relay and CLI.
+ * HTTP search API exposing `GET /search/byText`. Thin: it resolves the observer
+ * + query and delegates all search logic to [VespaSearch] in :query-engine.
+ * Search improvements happen in query-engine (and vespa/doc.sd), shared with the
+ * relay and CLI.
  */
 private val CONTROL = Regex("[\\x00-\\x1f\\x7f]")
 

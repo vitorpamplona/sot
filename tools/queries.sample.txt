@@ -1,8 +1,0 @@
-# Sample query set for tools/compare.py — one query per line, # comments ignored.
-# Replace with queries that matter for your evaluation.
-vitor
-vitor pamplona
-alex
-jack
-nostr
-bitcoin

@@ -6,7 +6,7 @@
 #   docker compose up -d vespa            # start the engine
 #   docker compose up vespa-deploy        # deploy/activate ./vespa
 #
-# Re-run `tools/deploy.sh` after editing vespa/schemas/doc.sd to push
+# Re-run `sot deploy` after editing vespa/schemas/doc.sd to push
 # ranking-equation changes without recreating the container.
 
 services:

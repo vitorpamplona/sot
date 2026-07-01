@@ -5,9 +5,7 @@ const val MAX_QUERY_WORDS = 6
 
 /**
  * Builds the Vespa YQL for a profile search — the candidate-set half of the
- * "search equations". Ported faithfully from the upstream Python
- * `brainstorm_server/app/core/vespa.py` `_build_yql` family so improvements stay
- * diffable against it. The *ranking* half lives in `vespa/schemas/doc.sd`.
+ * "search equations". The *ranking* half lives in `vespa/schemas/doc.sd`.
  *
  * Each query word fans out into exact / prefix / (bounded) fuzzy `userInput`
  * clauses across name/display_name/about, plus discriminative trigram clauses
