@@ -1,25 +1,16 @@
 plugins {
-    // Quartz 1.12.6 ships Kotlin 2.4 metadata, so the compiler must be >= 2.4.
-    kotlin("jvm") version "2.4.0"
-    kotlin("plugin.serialization") version "2.4.0"
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization)
     application
 }
 
 dependencies {
-    // Amethyst's Quartz — Nostr event types, parsing, the NostrClient relay
-    // pool, and NIP-77 negentropy sync. KMP artifact; Gradle resolves the -jvm
-    // variant for this kotlin("jvm") project.
-    // JitPack build of amethyst @2cb058b323 — adds the generalized negentropy
-    // sync accessory we consume in RelaySyncer.
-    implementation("com.github.vitorpamplona.amethyst:quartz:2cb058b323")
-    // Quartz's JVM websocket transport is OkHttp-based (BasicOkHttpWebSocket).
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
-    // Quartz parses/serialises events with kotlinx-serialization-json.
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    // Quartz's SQLiteEventStore uses the bundled Android-x SQLite driver; pull
-    // the JVM variant explicitly so BundledSQLiteDriver is on our classpath.
-    implementation("androidx.sqlite:sqlite-bundled:2.6.2")
+    implementation(libs.quartz)
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.coroutines)
+    implementation(libs.kotlinx.serialization.json)
+    // Quartz's SQLiteEventStore uses the bundled Android-x SQLite driver.
+    implementation(libs.androidx.sqlite.bundled)
 }
 
 kotlin {

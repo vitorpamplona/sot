@@ -1,0 +1,19 @@
+[versions]
+kotlin = "2.4.0"
+# Quartz from JitPack (amethyst @ commit) — includes negentropySyncOrFetch.
+quartz = "2cb058b323"
+coroutines = "1.11.0"
+serialization = "1.7.3"
+sqlite = "2.6.2"
+okhttp = "5.4.0"
+
+[libraries]
+quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "quartz" }
+kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+androidx-sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "sqlite" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
