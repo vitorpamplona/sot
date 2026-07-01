@@ -54,7 +54,7 @@ class VespaProjection(
             try {
                 when (change) {
                     is StoreChange.Insert -> handle(change.event)
-                    is StoreChange.DeleteByFilter -> {} // we drive deletions via kind:5 events
+                    is StoreChange.DeleteByFilter -> handleVanish(change.filters)
                     is StoreChange.DeleteExpired -> {}
                 }
             } catch (e: Exception) {
@@ -104,6 +104,19 @@ class VespaProjection(
                     submit("del-score") { vespa.removeScore(subject, observer); deletions.incrementAndGet() }
                 }
             }
+        }
+    }
+
+    /**
+     * The store deleted events matching [filters] — a NIP-62 Request-to-Vanish
+     * (all of a user's events) or an explicit store delete. Mirror it into Vespa
+     * by blanking each affected author's profile. (Score cells keyed by a vanished
+     * *observer* aren't reversed here — Vespa can't remove one tensor label across
+     * every doc without knowing the subjects; those decay when the doc is re-fed.)
+     */
+    private suspend fun handleVanish(filters: List<Filter>) {
+        for (author in filters.flatMap { it.authors.orEmpty() }.toSet()) {
+            submit("vanish") { vespa.blankProfile(author); deletions.incrementAndGet() }
         }
     }
 

@@ -1,6 +1,7 @@
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -79,7 +80,10 @@ fun main(args: Array<String>) {
     // Vespa writes run on a small pool so they don't stall the relay socket
     // reader thread one PUT at a time. Drained before exit.
     val writers = java.util.concurrent.Executors.newFixedThreadPool(16)
-    val store = openStore(dbPath)
+    // This store's own relay identity (from env), so NIP-62 vanish requests
+    // scoped to our relay are honored. Set up here, at app start.
+    val relayUrl = RelayUrlNormalizer.normalize(System.getenv("RELAY_URL") ?: "ws://localhost:7777")
+    val store = openStore(dbPath, relayUrl)
     val projection = VespaProjection(store, vespa, writers, log)
 
     runBlocking {

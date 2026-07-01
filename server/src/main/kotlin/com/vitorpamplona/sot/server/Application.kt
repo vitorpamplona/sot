@@ -37,9 +37,10 @@ private val WEB_UI: String? by lazy {
 
 fun main() {
     val vespa = VespaSearch()
-    // Match the indexer: no SQLite FTS (search is Vespa). Same strategy on every opener.
-    val store = EventStore(Config.eventsDb, null, DefaultIndexingStrategy(indexFullTextSearch = false))
+    // relay identity (from env/.env) drives NIP-62 relay-scoped vanish; and no
+    // SQLite FTS (search is Vespa) — same store strategy as the indexer.
     val relayUrl = RelayUrlNormalizer.normalize(Config.relayUrl)
+    val store = EventStore(Config.eventsDb, relayUrl, DefaultIndexingStrategy(indexFullTextSearch = false))
     val relaySrv = buildRelayServer(vespa, store, Config.defaultObserver, relayUrl)
 
     embeddedServer(Netty, port = Config.serverPort) {
