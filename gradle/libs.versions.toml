@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.4.0"
-# Quartz from JitPack (amethyst @ commit) — includes negentropySyncOrFetch.
-quartz = "2cb058b323"
+# Quartz from JitPack (amethyst @ commit) — negentropySyncOrFetch + OptionalAuthPolicy.
+quartz = "33abc8acb9"
 coroutines = "1.11.0"
 serialization = "1.7.3"
 sqlite = "2.6.2"

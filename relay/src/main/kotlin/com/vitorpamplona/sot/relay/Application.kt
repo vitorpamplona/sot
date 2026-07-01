@@ -2,6 +2,7 @@ package com.vitorpamplona.sot.relay
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.EventSourceServer
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.OptionalAuthPolicy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.sot.query.VespaSearch
 import io.ktor.http.ContentType
