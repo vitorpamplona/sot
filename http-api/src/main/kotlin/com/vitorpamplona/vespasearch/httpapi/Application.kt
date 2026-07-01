@@ -2,6 +2,7 @@ package com.vitorpamplona.vespasearch.httpapi
 
 import com.vitorpamplona.quartz.nip19Bech32.Nip19Parser
 import com.vitorpamplona.quartz.nip19Bech32.entities.NPub
+import com.vitorpamplona.quartz.utils.Hex
 import com.vitorpamplona.vespasearch.query.SearchHit
 import com.vitorpamplona.vespasearch.query.SearchOptions
 import com.vitorpamplona.vespasearch.query.VespaSearch
@@ -25,7 +26,6 @@ import kotlinx.serialization.Serializable
  * common-query (and vespa-app/doc.sd), shared with the relay and CLI.
  */
 private val CONTROL = Regex("[\\x00-\\x1f\\x7f]")
-private val HEX64 = Regex("^[0-9a-fA-F]{64}$")
 
 // Default observer when the caller doesn't pass one (matches the upstream default).
 private val DEFAULT_OBSERVER =
@@ -63,7 +63,7 @@ private fun SearchHit.toResult() =
 
 /** hex pubkey, npub1..., or null. */
 private fun resolvePubkey(text: String): String? {
-    if (HEX64.matches(text)) return text.lowercase()
+    if (Hex.isHex64(text)) return text.lowercase()
     if (text.startsWith("npub1")) return (Nip19Parser.uriToRoute(text)?.entity as? NPub)?.hex
     return null
 }

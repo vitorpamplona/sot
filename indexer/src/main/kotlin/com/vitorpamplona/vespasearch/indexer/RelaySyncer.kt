@@ -52,7 +52,9 @@ class RelaySyncer(
         val capable = state.state(url).negentropyCapable
 
         suspend fun pageInto() {
-            withTimeoutOrNull(idleTimeoutMs) { client.fetchAllPages(relay, listOf(scoped)) { buf.add(it) } }
+            // Honor the ingest cap on the fallback path too (Filter.limit stops fetchAllPages).
+            val paged = if (maxEvents > 0) scoped.copy(limit = maxEvents) else scoped
+            withTimeoutOrNull(idleTimeoutMs) { client.fetchAllPages(relay, listOf(paged)) { buf.add(it) } }
         }
 
         if (capable == false) {
