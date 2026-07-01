@@ -1,15 +1,25 @@
 # Prompt: add a high-level negentropy *sync-and-download* accessory to Quartz
 
+> **Status: implemented — kept here as a design record.** Quartz shipped this as
+> `INostrClient.negentropySyncOrFetch` (returning `NegentropyOrFetchResult`:
+> `downloaded`, `pagedFallback`, `negentropy`, `fallbackCause`). **sot**'s
+> indexer now calls it directly from
+> [`indexer/.../RelaySyncer.kt`](../indexer/src/main/kotlin/com/vitorpamplona/sot/indexer/RelaySyncer.kt),
+> and the hand-rolled `NegentropyStage` described below was deleted. The shipped
+> result shape differs slightly from the API proposed here (see "Required API");
+> treat that section as the original request, not current Quartz.
+
 Paste the section below to an agent working in the **Amethyst / Quartz**
 repository (`github.com/vitorpamplona/amethyst`, module `quartz`). It asks for a
 reusable NIP-77 helper that delivers *events* (not just ids), mirroring the
 existing `fetchAllPages` accessory, so downstream apps stop hand-rolling the
 `NegentropyManager` dance.
 
-> Context for why this exists: a downstream project (a Nostr→Vespa indexer) had
-> to write a ~150-line `NegentropyStage` to do reconcile → fetch-missing →
-> upsert, and still couldn't handle relays that cap negentropy. That logic is
-> generic and belongs in Quartz. The prompt below generalizes it.
+> Context for why this exists: **sot** (this repo — a Nostr→Vespa web-of-trust
+> search) had to write a ~150-line `NegentropyStage` in its indexer to do
+> reconcile → fetch-missing → upsert, and still couldn't handle relays that cap
+> negentropy. That logic is generic and belongs in Quartz. The prompt below
+> generalizes it.
 
 ---
 
@@ -141,14 +151,21 @@ Semantics:
   (`nip85-staging.nosfabrica.com`, kind 30382) — must succeed via windowing
   and/or paging fallback, not error out.
 
-## Reference: the consumer this replaces
+## Reference: the consumer this replaced
 
-The downstream `NegentropyStage` (a Vespa indexer) implemented points 1–6 by
-hand and ultimately defaulted to `fetchAllPages` because it couldn't window
-around `maxSyncEvents`. Once this accessory lands, that consumer becomes:
+**sot**'s `NegentropyStage` implemented points 1–6 by hand and ultimately
+defaulted to `fetchAllPages` because it couldn't window around `maxSyncEvents`.
+With the accessory landed, that stage was deleted; `sot`'s `RelaySyncer` now
+calls the shipped API (which delivers events into a Quartz `EventStore`, from
+which a projection writes profiles + web-of-trust scores into Vespa):
 
 ```kotlin
-client.negentropySync(relay, Filter(kinds = listOf(0)), localIds = knownIds, maxEvents = 25_000) { ev ->
-    vespa.upsert(ev)
-}
+// indexer/.../RelaySyncer.kt — buf collects events, then store.batchInsert(buf)
+client.negentropySyncOrFetch(
+    relay, filter,
+    maxEvents = maxEvents,
+    fetchBatch = fetchBatch,
+    idleTimeoutMs = idleTimeoutMs,
+    onProgress = { needSoFar, _ -> /* track */ },
+) { ev -> buf.add(ev) }
 ```
