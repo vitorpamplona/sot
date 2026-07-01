@@ -7,21 +7,20 @@ import java.net.http.HttpResponse
 import java.time.Duration
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 
 /**
  * Writes ready-made objects to the local Vespa document API — the sink the
- * indexer's projection calls. Knows the Vespa schema, not Nostr. Payloads are
- * partial updates, `create=true`:
- *
- *  - upsertProfile -> PUT .../docid/<pubkey> with {"fields":{...assign...}}
- *  - upsertScore   -> PUT .../docid/<subject> with a `quality_scores` tensor cell
+ * indexer's projection calls. Knows the Vespa schema, not Nostr. Every write is
+ * a partial update (`create=true`): a `PUT .../docid/<id>` with a `{"fields":{…}}`
+ * body — profile fields for a [Profile], or a `quality_scores` tensor op for a score.
  */
-// The profile fields, each paired with its [Profile] accessor. One list drives
-// both the upsert (assign values) and the blanking (assign "").
+// The profile fields, each paired with its [Profile] accessor. Drives both the
+// upsert (assign values) and blanking (a Profile with only a pubkey).
 private val PROFILE_FIELDS: List<Pair<String, (Profile) -> String?>> =
     listOf(
         "name" to Profile::name,
@@ -46,74 +45,47 @@ class VespaClient(
             .proxy(java.net.ProxySelector.of(null))
             .build()
 
-    private fun docUrl(pubkey: String) =
-        "$baseUrl/document/v1/doc/doc/docid/$pubkey?create=true"
-
-    private fun assign(value: String?): JsonObject =
-        buildJsonObject { put("assign", value ?: "") }
-
     /** Partial-update the standard profile fields, creating the doc if absent. */
-    fun upsertProfile(p: Profile) {
-        val body =
-            buildJsonObject {
-                put(
-                    "fields",
-                    buildJsonObject {
-                        put("pubkey", assign(p.pubkey))
-                        for ((field, get) in PROFILE_FIELDS) put(field, assign(get(p)))
-                    },
-                )
-            }
-        send(docUrl(p.pubkey), body.toString())
-    }
-
-    /** Wrap a `quality_scores` tensor op in the `{"fields":{"quality_scores":{op:...}}}` envelope. */
-    private fun qualityScoresUpdate(op: String, inner: JsonObjectBuilder.() -> Unit): String =
-        buildJsonObject {
-            put("fields", buildJsonObject { put("quality_scores", buildJsonObject { put(op, buildJsonObject(inner)) }) })
-        }.toString()
-
-    /** Set quality_scores{observer}=rank on the subject's doc (upserts the tensor cell). */
-    fun upsertScore(subject: String, observer: String, rank: Int) {
-        val body =
-            qualityScoresUpdate("add") {
-                put(
-                    "cells",
-                    buildJsonArray {
-                        add(
-                            buildJsonObject {
-                                put("address", buildJsonObject { put("user", observer) })
-                                put("value", rank)
-                            },
-                        )
-                    },
-                )
-            }
-        send(docUrl(subject), body)
-    }
-
-    /** Remove one observer's score cell from a subject's doc (NIP-09 deletion of a 30382). */
-    fun removeScore(subject: String, observer: String) {
-        val body =
-            qualityScoresUpdate("remove") {
-                put("addresses", buildJsonArray { add(buildJsonObject { put("user", observer) }) })
-            }
-        send(docUrl(subject), body)
-    }
+    fun upsertProfile(p: Profile) =
+        putFields(p.pubkey) {
+            put("pubkey", assign(p.pubkey))
+            for ((field, get) in PROFILE_FIELDS) put(field, assign(get(p)))
+        }
 
     /** Blank the profile fields (NIP-09 deletion of a kind:0); keep the doc so its scores survive. */
-    fun blankProfile(pubkey: String) {
-        val body =
-            buildJsonObject {
-                put(
-                    "fields",
-                    buildJsonObject {
-                        for ((field, _) in PROFILE_FIELDS) put(field, assign(""))
-                    },
-                )
+    fun blankProfile(pubkey: String) = upsertProfile(Profile(pubkey))
+
+    /** Set quality_scores{observer}=rank on the subject's doc (upserts the tensor cell). */
+    fun upsertScore(subject: String, observer: String, rank: Int) =
+        putQualityScores(subject, "add") {
+            putJsonArray("cells") {
+                addJsonObject {
+                    putJsonObject("address") { put("user", observer) }
+                    put("value", rank)
+                }
             }
-        send(docUrl(pubkey), body.toString())
-    }
+        }
+
+    /** Remove one observer's score cell from a subject's doc (NIP-09 deletion of a 30382). */
+    fun removeScore(subject: String, observer: String) =
+        putQualityScores(subject, "remove") {
+            putJsonArray("addresses") {
+                addJsonObject { put("user", observer) }
+            }
+        }
+
+    /** Apply a tensor op (`add` / `remove`) to the subject doc's `quality_scores` field. */
+    private fun putQualityScores(subject: String, op: String, opBody: JsonObjectBuilder.() -> Unit) =
+        putFields(subject) { putJsonObject("quality_scores") { putJsonObject(op, opBody) } }
+
+    /** PUT a partial `{"fields": {…}}` update to [docId]'s doc, creating it if absent. */
+    private fun putFields(docId: String, fields: JsonObjectBuilder.() -> Unit) =
+        send(
+            "$baseUrl/document/v1/doc/doc/docid/$docId?create=true",
+            buildJsonObject { putJsonObject("fields", fields) }.toString(),
+        )
+
+    private fun assign(value: String?): JsonObject = buildJsonObject { put("assign", value ?: "") }
 
     private fun send(url: String, json: String) {
         val req =
