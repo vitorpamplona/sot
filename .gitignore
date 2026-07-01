@@ -5,3 +5,10 @@ venv/
 .env
 *.tgz
 .DS_Store
+
+# Gradle / build outputs (all modules)
+.gradle/
+build/
+**/build/
+!gradle/wrapper/
+.kotlin/
