@@ -5,8 +5,9 @@ plugins {
 
 dependencies {
     implementation(project(":query-engine"))
-    implementation(libs.quartz) // NIP-19 (npub/nprofile) + Hex parsing for --observer
-    implementation(libs.kotlinx.serialization.json) // NIP-05 lookup JSON
+    implementation(libs.quartz) // --observer: NIP-19 (npub/nprofile) + NIP-05 resolver
+    implementation(libs.okhttp) // OkHttp fetcher for Quartz's Nip05Client
+    implementation(libs.kotlinx.coroutines) // runBlocking around the suspend NIP-05 lookup
 }
 
 kotlin {

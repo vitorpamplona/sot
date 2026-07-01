@@ -1,43 +1,24 @@
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.quartz.nip19Bech32.Nip19Parser
-import com.vitorpamplona.quartz.nip19Bech32.entities.IPubKeyEntity
-import com.vitorpamplona.quartz.utils.Hex
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import com.vitorpamplona.quartz.nip05DnsIdentifiers.Nip05Client
+import com.vitorpamplona.quartz.nip05DnsIdentifiers.OkHttpNip05Fetcher
+import com.vitorpamplona.quartz.nip05DnsIdentifiers.resolveUserHexOrNull
+import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
 
 /**
- * Resolves the ranking observer from any of the forms a user might type:
- *  - a 64-char hex pubkey
- *  - a NIP-19 `npub1…` or `nprofile1…`
- *  - a NIP-05 identifier (`name@domain`), looked up over HTTPS
- *
- * The search core keys trust by hex pubkey, so everything funnels down to hex.
+ * Resolves the ranking observer to a hex pubkey. Quartz's [resolveUserHexOrNull]
+ * accepts any of the forms a user might type — a 64-char hex pubkey, a NIP-19
+ * `npub`/`nprofile`, or a NIP-05 identifier (`name@domain`, looked up over
+ * HTTPS) — and the search core keys trust by hex.
  */
+private val nip05 = Nip05Client(OkHttpNip05Fetcher { OkHttpClient() })
 
 /** Resolve [input] to a hex pubkey, or null if it isn't a recognizable observer. */
 internal fun resolveObserver(input: String): String? {
     val s = input.trim()
     if (s.isEmpty()) return null
-    if (Hex.isHex64(s)) return s.lowercase()
-    if (s.startsWith("npub1") || s.startsWith("nprofile1")) {
-        return (Nip19Parser.uriToRoute(s)?.entity as? IPubKeyEntity)?.hex
-    }
-    if ("@" in s) return resolveNip05(s)
-    return null
-}
-
-/** NIP-05: GET https://<domain>/.well-known/nostr.json?name=<local> -> names[<local>]. */
-private fun resolveNip05(id: String): String? {
-    val at = id.indexOf('@')
-    val local = id.substring(0, at).ifEmpty { "_" }
-    val domain = id.substring(at + 1)
-    if (domain.isEmpty()) return null
-    val body = httpGet("https://$domain/.well-known/nostr.json?name=$local") ?: return null
-    return runCatching {
-        Json.parseToJsonElement(body).jsonObject["names"]?.jsonObject?.get(local)?.jsonPrimitive?.content
-    }.getOrNull()
+    return runBlocking { resolveUserHexOrNull(s, nip05) }
 }
 
 /**
