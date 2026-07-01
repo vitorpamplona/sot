@@ -50,8 +50,12 @@ internal fun positionalArgs(args: List<String>, valuedFlags: Set<String>): List<
     while (i < args.size) {
         val a = args[i]
         when {
-            a in valuedFlags -> i++ // skip this flag's value
-            a.startsWith("--") -> {} // bare/boolean flag
+            // a valued flag: skip the flag AND its value
+            a in valuedFlags -> i++
+
+            // a bare/boolean flag: skip just the flag
+            a.startsWith("--") -> {}
+
             else -> out.add(a)
         }
         i++

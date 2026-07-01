@@ -127,7 +127,9 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
                     profiles.incrementAndGet()
                 }
             }
+
             is TrustProviderListEvent -> learn(ev)
+
             is ContactCardEvent -> {
                 val observer = serviceToObserver[ev.pubKey] ?: resolveObserver(ev.pubKey)
                 val subject = ev.aboutUser()
@@ -143,7 +145,9 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
                     }
                 }
             }
+
             is DeletionEvent -> handleDeletion(ev)
+
             else -> {}
         }
     }
@@ -161,6 +165,7 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
                         deletions.incrementAndGet()
                     }
                 }
+
                 ContactCardEvent.KIND -> {
                     val service = parts.getOrNull(1) ?: continue
                     val subject = parts.getOrNull(2) ?: continue

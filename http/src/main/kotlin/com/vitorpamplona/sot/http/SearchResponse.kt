@@ -23,9 +23,9 @@ package com.vitorpamplona.sot.http
 import com.vitorpamplona.sot.vespa.SearchHit
 import kotlinx.serialization.Serializable
 
-/**
- * The `GET /search` response model and its mapping from the query-engine's
- * [SearchHit]. This is the wire contract the web UI and other clients depend on.
+/*
+ * The `GET /search` response model and its mapping from the search core's
+ * SearchHit. This is the wire contract the web UI and other clients depend on.
  */
 
 /** One profile in a [SearchResponse]. */
