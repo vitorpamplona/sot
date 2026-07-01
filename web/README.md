@@ -17,11 +17,7 @@ with the API — so just run the server and open it:
 ```
 
 No CORS needed (same origin). To develop the page against a **remote** server,
-serve it however you like and point it with a query param:
-
-```
-http://localhost:8090/?api=https://sot.example.com
-```
+prefix the `fetch("/search?…")` path in `index.html` with that origin.
 
 `TRUST` is the observer's web-of-trust score for the profile
 (`quality_scores{observer}`); `RELEVANCE` is the text match score.

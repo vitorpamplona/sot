@@ -174,9 +174,8 @@
 
 <script>
 (() => {
-  // Same-origin by default (the sot server serves this page and /search). Override
-  // with ?api=http://host:port to point at a remote server.
-  const API_BASE = new URLSearchParams(location.search).get("api") ?? "";
+  // The sot server serves this page, so /search is same-origin. To develop the
+  // page against a remote server, prefix the fetch path with that origin.
 
   const POPUP_LIMIT = 8;
   const FULL_LIMIT = 40;
@@ -210,7 +209,7 @@
       const pk = await getUserPubkey();
       params.set("observer", pk);
     }
-    const r = await fetch(`${API_BASE}/search?${params}`, { signal });
+    const r = await fetch(`/search?${params}`, { signal });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const d = await r.json();
     const results = d.results || [];
