@@ -69,7 +69,7 @@ private fun storeReport(dbPath: String, vespaDocs: Int?) {
     println("    kind:30382  assertions    ${"%,d".format(assertions)}")
     if (vespaDocs != null) {
         val delta = vespaDocs - profiles
-        val note = if (delta >= 0) "score-only subjects add docs" else "MISSING profiles in Vespa"
-        println("    reconcile:  vespa docs ${"%,d".format(vespaDocs)} vs kind:0 ${"%,d".format(profiles)} (${"%+,d".format(delta)}; $note)")
+        val note = if (delta >= 0) "score-only subjects add profiles" else "MISSING profiles in Vespa"
+        println("    reconcile:  vespa profiles ${"%,d".format(vespaDocs)} vs profile events ${"%,d".format(profiles)} (${"%+,d".format(delta)}; $note)")
     }
 }
