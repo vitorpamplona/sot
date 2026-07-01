@@ -79,8 +79,8 @@ Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 - JDK 21+
 - Gradle 8.5+ on the PATH (no wrapper is committed — `services.gradle.org` isn't
   reachable from the build sandbox; run with your local `gradle`)
-- A running local Vespa (`docker compose up -d vespa && docker compose up vespa-deploy`
-  from the repo root)
+- A running local Vespa with the app deployed (`sot up`, or `docker compose up
+  -d vespa && sot deploy` from the repo root)
 
 ## Run
 

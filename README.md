@@ -55,7 +55,7 @@ committed). The `sot` CLI wraps the Docker steps; install it once with
 ```bash
 # 1. Bring up Vespa and deploy the app package (schema + ranking)
 sot up                                # docker compose up vespa + deploy vespa/
-#   equivalently: docker compose up -d vespa && docker compose up vespa-deploy
+#   equivalently: docker compose up -d vespa && sot deploy
 
 # 2. Load data via the Kotlin/Quartz negentropy indexer (full-set sync, not
 #    capped at one relay page):

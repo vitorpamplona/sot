@@ -218,23 +218,39 @@ private fun run(vararg cmd: String): Int {
     return ProcessBuilder(*cmd).inheritIO().start().waitFor()
 }
 
-private fun up(args: List<String>) {
-    if (run("docker", "compose", "up", "-d", "vespa") == 0) {
-        println("waiting for Vespa config server, then deploying vespa…")
-        run("docker", "compose", "up", "vespa-deploy")
+/** Poll [url] until it answers < 400 or [tries] attempts elapse, printing dots. */
+private fun waitUntil(url: String, tries: Int = 60, everyMs: Long = 2000): Boolean {
+    repeat(tries) {
+        if (ping(url)) return true
+        print("."); System.out.flush()
+        Thread.sleep(everyMs)
     }
+    return false
+}
+
+private fun up(args: List<String>) {
+    if (run("docker", "compose", "up", "-d", "vespa") != 0) return
+    print("waiting for Vespa config server")
+    if (!waitUntil("http://localhost:19071/state/v1/health")) {
+        println(" - timed out"); return
+    }
+    println(" ready; deploying vespa/ ...")
+    if (deploy(args) != 0) return
+    print("waiting for Vespa to serve the app")
+    println(if (waitUntil("http://localhost:8080/ApplicationStatus")) " ready." else " - timed out")
 }
 
 private fun down() {
     run("docker", "compose", "down")
 }
 
-private fun deploy(args: List<String>) {
+/** Package `vespa/` and POST it to the config server. Returns the curl exit code. */
+private fun deploy(args: List<String>): Int {
     val app = flag(args, "--app", "vespa")
     val config = flag(args, "--config", "localhost:19071")
     val tgz = "/tmp/vespa.tgz"
-    if (run("bash", "-c", "tar -czf $tgz -C '$app' .") != 0) return
-    run(
+    if (run("bash", "-c", "tar -czf $tgz -C '$app' .") != 0) return 1
+    return run(
         "bash", "-c",
         "curl -fSs --data-binary @$tgz -H 'Content-Type: application/x-gzip' " +
             "http://$config/application/v2/tenant/default/prepareandactivate",

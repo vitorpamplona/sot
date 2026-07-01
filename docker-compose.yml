@@ -1,13 +1,9 @@
-# Local single-node Vespa, mirroring the upstream brainstorm_one_click_deployment
-# `vespa` + `vespa-deploy` services. This brings up the same Vespa engine and
-# deploys the vendored ./vespa application package (schema + rank profiles),
-# so the local index and ranking are identical to production.
+# Local single-node Vespa engine. The application package (schema + rank
+# profiles under ./vespa) is deployed by the CLI, not by a compose sidecar:
 #
-#   docker compose up -d vespa            # start the engine
-#   docker compose up vespa-deploy        # deploy/activate ./vespa
-#
-# Re-run `sot deploy` after editing vespa/schemas/doc.sd to push
-# ranking-equation changes without recreating the container.
+#   sot up                       # start the engine, then deploy ./vespa
+#   docker compose up -d vespa   # just the engine (deploy separately)
+#   sot deploy                   # (re)deploy after editing vespa/schemas/doc.sd
 
 services:
   vespa:
@@ -26,37 +22,6 @@ services:
       retries: 60
       start_period: 60s
     restart: unless-stopped
-
-  vespa-deploy:
-    image: vespaengine/vespa
-    container_name: vespa-deploy
-    depends_on:
-      vespa:
-        condition: service_healthy
-    volumes:
-      - ./vespa:/app:ro
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        set -euo pipefail
-        echo "[vespa-deploy] packaging app..."
-        tar -czf /tmp/app.tgz -C /app .
-        echo "[vespa-deploy] prepareandactivate..."
-        curl -fSs --data-binary @/tmp/app.tgz \
-          -H 'Content-Type: application/x-gzip' \
-          http://vespa:19071/application/v2/tenant/default/prepareandactivate
-        echo "[vespa-deploy] waiting for container cluster to serve the app..."
-        for i in $$(seq 1 120); do
-          if curl -fSs -o /dev/null http://vespa:8080/ApplicationStatus; then
-            echo "[vespa-deploy] vespa is serving — ready."
-            exit 0
-          fi
-          sleep 2
-        done
-        echo "[vespa-deploy] timed out waiting for /ApplicationStatus" >&2
-        exit 1
-    restart: "no"
 
 volumes:
   vespa_var:
