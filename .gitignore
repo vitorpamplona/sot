@@ -12,3 +12,7 @@ build/
 **/build/
 !gradle/wrapper/
 .kotlin/
+
+# IDE
+.idea/
+*.iml
