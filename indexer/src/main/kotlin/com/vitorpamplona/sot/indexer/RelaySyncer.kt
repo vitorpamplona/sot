@@ -1,6 +1,7 @@
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
@@ -32,6 +33,11 @@ class RelaySyncer(
     private val fetchBatch: Int = 500,
     private val idleTimeoutMs: Long = 30_000,
     private val slackSecs: Long = 3600,
+    // Verify each event's id + Schnorr signature before storing. A relay is
+    // untrusted input: without this, a forged kind:0/30382/10040 could
+    // impersonate a profile or poison the web-of-trust scores. Always on in
+    // production; the seam exists only so tests can feed unsigned fixtures.
+    private val verifyEvents: Boolean = true,
 ) {
     data class Outcome(val inserted: Int, val usedNegentropy: Boolean, val downloaded: Int)
 
@@ -94,8 +100,19 @@ class RelaySyncer(
             }
         }
 
+        // Verify id + signature before storing — relays are untrusted input.
+        val toInsert = if (verifyEvents) {
+            val ok = ArrayList<Event>(buf.size)
+            var bad = 0
+            for (e in buf) if (runCatching { e.verify() }.getOrDefault(false)) ok.add(e) else bad++
+            if (bad > 0) log("  ! [$url] dropped $bad event(s) with invalid id/signature (kind $kind)")
+            ok
+        } else {
+            ArrayList(buf)
+        }
+
         val inserted =
-            store.batchInsert(ArrayList(buf)).count { it is IEventStore.InsertOutcome.Accepted }
+            store.batchInsert(toInsert).count { it is IEventStore.InsertOutcome.Accepted }
         state.mark(url, scope, nowSecs())
         return Outcome(inserted, usedNegentropy = usedNeg, buf.size)
     }

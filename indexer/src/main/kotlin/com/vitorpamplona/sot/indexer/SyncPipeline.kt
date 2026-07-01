@@ -44,6 +44,7 @@ suspend fun runSync(
     maxRounds: Int = 3,
     maxRelays: Int = 200,
     syncScores: Boolean = true,
+    verifyEvents: Boolean = true,
 ) {
     // Run the projection in its OWN supervised scope, not as a child of this
     // function's job. Otherwise a single failure while consuming the change feed
@@ -51,7 +52,7 @@ suspend fun runSync(
     // negentropy calls abort instantly and deliver nothing.
     val projScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     projScope.launch { projection.run() }
-    val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = fetchTimeoutMs)
+    val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = fetchTimeoutMs, verifyEvents = verifyEvents)
 
     try {
     val relays =
