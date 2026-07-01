@@ -44,8 +44,11 @@ class SearchEventSource(
                     }
                 if (hits.isEmpty()) continue
 
-                // One store query for every ranked author (not one per hit). kind:0 is
-                // replaceable, so the store already holds just the latest per author.
+                // One store query for all ranked authors, indexed by pubkey. The map isn't
+                // dedup (kind:0 is replaceable, so the store already returns one per author)
+                // — it lets us re-emit in Vespa's *rank* order below. A streaming
+                // query(filter, onEach) can't help: its callback is non-suspend (can't call
+                // emit) and would deliver rows in store order, dropping the ranking.
                 val byAuthor =
                     withContext(Dispatchers.IO) {
                         store
