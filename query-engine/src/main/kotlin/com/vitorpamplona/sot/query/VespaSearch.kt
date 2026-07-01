@@ -7,6 +7,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
@@ -35,7 +36,7 @@ data class SearchOptions(
 /**
  * The read side of the search core: builds the query (YQL + ranking features)
  * and calls Vespa's `/search/`, ranking by [observer]'s web-of-trust. Ported
- * from the upstream Python `vespa.py` `search()`; shared by http-api, the
+ * from the upstream Python `vespa.py` `search()`; shared by the http service, the
  * search relay, and the CLI.
  *
  * Blocking (JDK HttpClient) — call it off a worker/IO dispatcher from coroutines.
@@ -76,9 +77,7 @@ class VespaSearch(
             val mf = fieldsObj["matchfeatures"]?.jsonObject
             val userScore = mf?.get("user_score")?.jsonPrimitive?.doubleOrNull
             if (!opts.includeZeroScore && (userScore ?: 0.0) <= 0.0) continue
-            val fields =
-                fieldsObj.filterKeys { it != "matchfeatures" }
-                    .mapValues { (_, v) -> v.jsonPrimitive.contentOrNull ?: "" }
+            val fields = stringFields(fieldsObj, drop = "matchfeatures")
             out.add(
                 SearchHit(
                     pubkey = fields["pubkey"] ?: "",
@@ -102,22 +101,23 @@ class VespaSearch(
         if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
         val fieldsObj = Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject ?: return null
         // quality_scores is a tensor object (not a primitive) — drop it from the string map.
-        val fields =
-            fieldsObj.filterKeys { it != "quality_scores" }
-                .mapValues { (_, v) -> v.jsonPrimitive.contentOrNull ?: "" }
+        val fields = stringFields(fieldsObj, drop = "quality_scores")
         return SearchHit(pubkey = fields["pubkey"] ?: pubkey, relevance = null, userScore = null, fields = fields)
     }
 
-    private fun get(params: Map<String, String>) =
-        runCatching {
-            val qs = params.entries.joinToString("&") { enc(it.key) + "=" + enc(it.value) }
-            val req =
-                HttpRequest.newBuilder(URI.create("$baseUrl/search/?$qs"))
-                    .timeout(Duration.ofSeconds(30)).GET().build()
-            val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
-            if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
-            Json.parseToJsonElement(resp.body()).jsonObject
-        }.getOrThrow()
+    private fun get(params: Map<String, String>): JsonObject {
+        val qs = params.entries.joinToString("&") { enc(it.key) + "=" + enc(it.value) }
+        val req =
+            HttpRequest.newBuilder(URI.create("$baseUrl/search/?$qs"))
+                .timeout(Duration.ofSeconds(30)).GET().build()
+        val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
+        if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
+        return Json.parseToJsonElement(resp.body()).jsonObject
+    }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+
+    /** Vespa `fields` object -> String map, dropping [drop] (a non-primitive like a tensor). */
+    private fun stringFields(fields: JsonObject, drop: String): Map<String, String> =
+        fields.filterKeys { it != drop }.mapValues { (_, v) -> v.jsonPrimitive.contentOrNull ?: "" }
 }

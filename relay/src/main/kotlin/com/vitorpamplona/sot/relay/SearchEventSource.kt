@@ -40,7 +40,7 @@ class SearchEventSource(
 
                 val hits =
                     withContext(Dispatchers.IO) {
-                        vespa.search(term, observer, SearchOptions(hits = limit, includeZeroScore = true))
+                        vespa.search(term, observer, SearchOptions(hits = limit))
                     }
                 for (hit in hits) {
                     currentCoroutineContext().ensureActive() // honor CLOSE / disconnect

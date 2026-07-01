@@ -45,12 +45,12 @@
     box-shadow: 0 8px 24px rgba(0,0,0,.08);
     z-index: 10;
     display: none;
-    overflow: hidden;
+    max-height: 60vh;
+    overflow-y: auto;
   }
   .popup.open { display: block; }
-  .popup-col { max-height: 60vh; overflow-y: auto; }
-  .popup-col-head { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 8px 14px; background: #fafafa; border-bottom: 1px solid #eee; position: sticky; top: 0; display: flex; justify-content: space-between; }
-  .popup-col-head .timing { font-variant-numeric: tabular-nums; }
+  .popup-head { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 8px 14px; background: #fafafa; border-bottom: 1px solid #eee; position: sticky; top: 0; display: flex; justify-content: space-between; }
+  .popup-head .timing { font-variant-numeric: tabular-nums; }
   .popup-item {
     display: flex;
     gap: 10px;
@@ -174,7 +174,7 @@
 
 <script>
 (() => {
-  // The sot http-api base. Override with ?api=http://host:port for a remote one.
+  // The sot http service base. Override with ?api=http://host:port for a remote one.
   const API_BASE = new URLSearchParams(location.search).get("api") || "http://localhost:8081";
 
   const POPUP_LIMIT = 8;
@@ -246,7 +246,7 @@
   function renderPopup() {
     const count = s.hits.length;
     const meta = [s.error ? "" : `${count} of ${s.total ?? "?"}`, s.lastMs != null ? `${s.lastMs} ms` : ""].filter(Boolean).join(" · ");
-    const head = `<div class="popup-col-head"><span>Results</span><span class="timing">${meta}</span></div>`;
+    const head = `<div class="popup-head"><span>Results</span><span class="timing">${meta}</span></div>`;
     let body = statusBody("Loading&hellip;");
     if (body === null) {
       body = s.hits.slice(0, POPUP_LIMIT).map((h, j) => {
@@ -265,7 +265,7 @@
         </div>`;
       }).join("");
     }
-    $popup.innerHTML = `<div class="popup-col">${head + body}</div>`;
+    $popup.innerHTML = head + body;
   }
 
   function renderResult(h) {
@@ -315,41 +315,33 @@
     activeKey = idx;
   }
 
-  async function run(text, mode) {
+  // Own the request lifecycle: reset state, render the loading view, fetch, then
+  // render the result — but only if a newer request hasn't superseded this one.
+  async function run(text, mode, render) {
     const myId = ++s.requestId;
     const abortKey = mode === "popup" ? "popupAbort" : "fullAbort";
     if (s[abortKey]) s[abortKey].abort();
     s[abortKey] = new AbortController();
     s.loading = true; s.error = null;
+    if (mode === "full") s.hits = [];
+    render();
     const limit = mode === "popup" ? POPUP_LIMIT : FULL_LIMIT;
     const t0 = performance.now();
     try {
       const out = await search(text, s[abortKey].signal, limit);
-      if (myId !== s.requestId) return null;
+      if (myId !== s.requestId) return;
       s.hits = out.hits; s.total = out.total;
       s.lastMs = Math.round(performance.now() - t0); s.loading = false;
     } catch (e) {
-      if (myId !== s.requestId) return null;
-      if (e.name === "AbortError") return null;
+      if (myId !== s.requestId || e.name === "AbortError") return;
       s.error = e.message || String(e); s.hits = [];
       s.lastMs = Math.round(performance.now() - t0); s.loading = false;
     }
-    return mode;
+    render();
   }
 
-  function runPopup(text) {
-    openPopup();
-    s.loading = true; s.error = null;
-    renderPopup();
-    run(text, "popup").then(m => { if (m) renderPopup(); });
-  }
-  function runFull(text) {
-    closePopup();
-    $results.hidden = false;
-    s.loading = true; s.error = null; s.hits = [];
-    renderResults();
-    run(text, "full").then(m => { if (m) renderResults(); });
-  }
+  function runPopup(text) { openPopup(); run(text, "popup", renderPopup); }
+  function runFull(text) { closePopup(); $results.hidden = false; run(text, "full", renderResults); }
 
   $q.addEventListener("input", () => {
     const text = $q.value.trim();

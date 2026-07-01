@@ -20,5 +20,5 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.vitorpamplona.sot.httpapi.ApplicationKt")
+    mainClass.set("com.vitorpamplona.sot.http.ApplicationKt")
 }

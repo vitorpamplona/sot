@@ -18,6 +18,6 @@ rootProject.name = "sot"
 
 include(":query-engine")
 include(":indexer")
-include(":http-api")
+include(":http")
 include(":relay")
 include(":cli")

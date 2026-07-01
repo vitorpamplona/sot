@@ -13,7 +13,7 @@ import java.time.Duration
 /**
  * sot CLI: install/run the local components, check their health, and
  * search from the terminal. Search reuses :query-engine, so terminal results
- * match http-api and the relay exactly.
+ * match the http service and the relay exactly.
  *
  *   sot search "vitor" [--observer <hex>] [--hits N] [--rank P] [--only-ranked]
  *   sot compare "vitor" "alex" [--topn 5] [--variants variants.json]
@@ -34,6 +34,22 @@ private fun flag(args: List<String>, name: String, default: String): String {
 }
 
 private fun has(args: List<String>, name: String) = args.contains(name)
+
+/** Non-flag args, skipping each valued flag's value so it's never mistaken for a positional. */
+private fun positionalArgs(args: List<String>, valuedFlags: Set<String>): List<String> {
+    val out = ArrayList<String>()
+    var i = 0
+    while (i < args.size) {
+        val a = args[i]
+        when {
+            a in valuedFlags -> i++ // skip this flag's value
+            a.startsWith("--") -> {} // bare/boolean flag
+            else -> out.add(a)
+        }
+        i++
+    }
+    return out
+}
 
 /** The `--observer` flag, else DEFAULT_OBSERVER; warns (once) if neither is set. */
 private fun observerOrWarn(args: List<String>): String {
@@ -75,8 +91,10 @@ private fun usage() {
     )
 }
 
+private val SEARCH_VALUED_FLAGS = setOf("--observer", "--hits", "--rank", "--vespa")
+
 private fun search(args: List<String>) {
-    val query = args.firstOrNull { !it.startsWith("--") }
+    val query = positionalArgs(args, SEARCH_VALUED_FLAGS).firstOrNull()
     if (query == null) {
         println("usage: search \"<query>\" [--observer <hex>] [--hits N] ...")
         return
@@ -133,18 +151,7 @@ private fun compare(args: List<String>) {
     val topn = flag(args, "--topn", "5").toInt()
     val vespaUrl = flag(args, "--vespa", System.getenv("VESPA_URL") ?: "http://localhost:8080")
 
-    val flagsWithValue = setOf("--observer", "--topn", "--vespa", "--queries", "--variants")
-    val queries = ArrayList<String>()
-    var i = 0
-    while (i < args.size) {
-        val a = args[i]
-        when {
-            a in flagsWithValue -> i++ // skip this flag's value
-            a.startsWith("--") -> {} // unknown bare flag, ignore
-            else -> queries.add(a)
-        }
-        i++
-    }
+    val queries = positionalArgs(args, setOf("--observer", "--topn", "--vespa", "--queries", "--variants")).toMutableList()
     flag(args, "--queries", "").takeIf { it.isNotEmpty() }?.let { path ->
         java.io.File(path).readLines()
             .map { it.trim() }
@@ -209,7 +216,7 @@ private fun status(args: List<String>) {
     fun line(name: String, ok: Boolean) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
     println("component status:")
     line("Vespa        ($vespa)", ping("$vespa/ApplicationStatus"))
-    line("http-api     ($api)", ping("$api/search?text=_"))
+    line("http         ($api)", ping("$api/search?text=_"))
     line("relay        ($relay)", ping("$relay/", accept = "application/nostr+json"))
 }
 

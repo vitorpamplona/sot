@@ -1,4 +1,4 @@
-package com.vitorpamplona.sot.httpapi
+package com.vitorpamplona.sot.http
 
 import com.vitorpamplona.quartz.nip19Bech32.Nip19Parser
 import com.vitorpamplona.quartz.nip19Bech32.entities.NPub
@@ -90,13 +90,13 @@ fun main() {
                 val observer = call.request.queryParameters["observer"]?.let { resolvePubkey(it) } ?: DEFAULT_OBSERVER
                 val maxHits = (call.request.queryParameters["maxHits"]?.toIntOrNull() ?: 100).coerceIn(1, RESULTS_LIMIT)
                 val onlyRanked = call.request.queryParameters["onlyRanked"]?.toBoolean() ?: true
+                // A hex/npub query is a direct doc lookup; free text is a ranked search.
+                val queryPk = resolvePubkey(text)
 
                 val hits =
                     withContext(Dispatchers.IO) {
-                        // A hex/npub query is a direct doc lookup; free text is a ranked search.
-                        val pk = resolvePubkey(text)
-                        if (pk != null) {
-                            listOfNotNull(vespa.getDocument(pk))
+                        if (queryPk != null) {
+                            listOfNotNull(vespa.getDocument(queryPk))
                         } else {
                             vespa.search(text, observer, SearchOptions(hits = maxHits, includeZeroScore = !onlyRanked))
                         }
