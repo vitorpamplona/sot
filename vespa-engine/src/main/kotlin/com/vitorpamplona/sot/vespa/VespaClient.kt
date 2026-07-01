@@ -1,6 +1,5 @@
 package com.vitorpamplona.sot.vespa
 
-import com.vitorpamplona.quartz.nip01Core.metadata.UserMetadata
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -14,25 +13,26 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * Writes to the local Vespa document API — the projection sink for the event
- * store (see [VespaProjection]). Payloads are partial updates, `create=true`:
+ * Writes ready-made objects to the local Vespa document API — the sink the
+ * indexer's projection calls. Knows the Vespa schema, not Nostr. Payloads are
+ * partial updates, `create=true`:
  *
  *  - upsertProfile -> PUT .../docid/<pubkey> with {"fields":{...assign...}}
  *  - upsertScore   -> PUT .../docid/<subject> with a `quality_scores` tensor cell
  */
-// The kind-0 profile fields, each paired with its UserMetadata accessor. One
-// list drives both the upsert (assign values) and the deletion (assign "").
-private val PROFILE_FIELDS: List<Pair<String, (UserMetadata) -> String?>> =
+// The profile fields, each paired with its [Profile] accessor. One list drives
+// both the upsert (assign values) and the blanking (assign "").
+private val PROFILE_FIELDS: List<Pair<String, (Profile) -> String?>> =
     listOf(
-        "name" to { it.name },
-        "display_name" to { it.displayName },
-        "about" to { it.about },
-        "picture" to { it.picture },
-        "banner" to { it.banner },
-        "nip05" to { it.nip05 },
-        "lud06" to { it.lud06 },
-        "lud16" to { it.lud16 },
-        "website" to { it.website },
+        "name" to Profile::name,
+        "display_name" to Profile::displayName,
+        "about" to Profile::about,
+        "picture" to Profile::picture,
+        "banner" to Profile::banner,
+        "nip05" to Profile::nip05,
+        "lud06" to Profile::lud06,
+        "lud16" to Profile::lud16,
+        "website" to Profile::website,
     )
 
 class VespaClient(
@@ -52,19 +52,19 @@ class VespaClient(
     private fun assign(value: String?): JsonObject =
         buildJsonObject { put("assign", value ?: "") }
 
-    /** Partial-update the standard kind-0 profile fields, creating the doc if absent. */
-    fun upsertProfile(pubkey: String, m: UserMetadata) {
+    /** Partial-update the standard profile fields, creating the doc if absent. */
+    fun upsertProfile(p: Profile) {
         val body =
             buildJsonObject {
                 put(
                     "fields",
                     buildJsonObject {
-                        put("pubkey", assign(pubkey))
-                        for ((field, get) in PROFILE_FIELDS) put(field, assign(get(m)))
+                        put("pubkey", assign(p.pubkey))
+                        for ((field, get) in PROFILE_FIELDS) put(field, assign(get(p)))
                     },
                 )
             }
-        send(docUrl(pubkey), body.toString())
+        send(docUrl(p.pubkey), body.toString())
     }
 
     /** Wrap a `quality_scores` tensor op in the `{"fields":{"quality_scores":{op:...}}}` envelope. */

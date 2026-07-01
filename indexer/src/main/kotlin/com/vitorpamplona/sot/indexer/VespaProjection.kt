@@ -1,4 +1,4 @@
-package com.vitorpamplona.sot.vespa
+package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -9,14 +9,17 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.vespa.Profile
+import com.vitorpamplona.sot.vespa.VespaClient
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.delay
 
 /**
- * Projects the event store into Vespa. It consumes [ObservableEventStore.changes]
- * and turns each accepted event into a Vespa write:
+ * Projects the event store into Vespa. It registers with [ObservableEventStore.changes]
+ * and maps each accepted Nostr event into a ready-made object, then calls the
+ * schema-aware [VespaClient] (in :vespa-engine, which knows nothing about Nostr):
  *
  *  - kind 0  (MetadataEvent)        -> upsert profile fields
  *  - kind 30382 (ContactCardEvent)  -> upsert quality_scores{OBSERVER}=rank,
@@ -86,7 +89,20 @@ class VespaProjection(
         when (ev) {
             is MetadataEvent -> {
                 val md = ev.contactMetaData() ?: return
-                submit("profile") { vespa.upsertProfile(ev.pubKey, md); profiles.incrementAndGet() }
+                val profile =
+                    Profile(
+                        pubkey = ev.pubKey,
+                        name = md.name,
+                        displayName = md.displayName,
+                        about = md.about,
+                        picture = md.picture,
+                        banner = md.banner,
+                        nip05 = md.nip05,
+                        lud06 = md.lud06,
+                        lud16 = md.lud16,
+                        website = md.website,
+                    )
+                submit("profile") { vespa.upsertProfile(profile); profiles.incrementAndGet() }
             }
             is TrustProviderListEvent -> learn(ev)
             is ContactCardEvent -> {

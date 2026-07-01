@@ -7,8 +7,9 @@ import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 
 /**
  * The local event store is the single source of truth. Vespa is a projection of
- * it (the mapping lives in :vespa-engine's VespaProjection, which subscribes to
- * the `changes` feed below). SQLite persists every synced event so re-runs only
+ * it: [VespaProjection] subscribes to the `changes` feed below, maps each event
+ * to a plain object, and writes it via :vespa-engine's schema-aware VespaClient.
+ * SQLite persists every synced event so re-runs only
  * need the delta (negentropy `snapshotIdsForNegentropy` / `since` cursors), and
  * `ObservableEventStore` exposes a `changes` feed that drives the projection.
  *

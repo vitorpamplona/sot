@@ -17,10 +17,11 @@ simple web UI for development.
 ```
 vespa/          Vespa application package — schema + rank profiles (the ranking math).
 config/         Tiny lib: env/.env resolution + defaults (one place for host/port config).
-vespa-engine/   All Vespa access (Kotlin lib): YQL search + document writes + the
-                Nostr-kind -> Vespa-doc projection. Unit-tested.
-indexer/        Nostr only: pull events from relays into the Quartz EventStore
-                (NIP-77 negentropy sync + NIP-65 outbox discovery). No Vespa.
+vespa-engine/   Vespa access (Kotlin lib): YQL search + document writes over plain
+                objects (Profile / scores). Nostr-agnostic. Unit-tested.
+indexer/        Nostr -> Quartz EventStore (NIP-77 negentropy sync + NIP-65 outbox
+                discovery), plus the projection that maps store events into
+                vespa-engine's objects and writes them.
 http/           Library: the GET /search JSON API route.
 relay/          Library: the NIP-50 relay route; NIP-42 auth picks the observer.
 server/         One Ktor app on one port composing http + relay + the web UI.

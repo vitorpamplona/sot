@@ -5,11 +5,12 @@
 > adds the `jitpack.io` repository.
 
 Loads Nostr data using **[Amethyst's Quartz](https://github.com/vitorpamplona/amethyst)**
-into a Quartz **EventStore** (the source of truth) — and nothing more. Mapping the
-store into Vespa (kind:0 → profile, kind:30382 → trust score, …) is a separate
-concern that lives in **`:vespa-engine`** (`VespaProjection`), which subscribes to
-the store's `changes` feed. This module is pure Nostr: relay transport, negentropy
-sync, outbox discovery, and cursor bookkeeping.
+into a Quartz **EventStore** (the source of truth), then projects it into Vespa.
+`VespaProjection` subscribes to the store's `changes` feed, maps each Nostr event
+(kind:0 → profile, kind:30382 → trust score, …) into a plain object, and writes it
+via **`:vespa-engine`**'s `VespaClient` — the schema-aware writer that knows nothing
+about Nostr. So this module owns the Nostr↔Vespa mapping; `:vespa-engine` owns the
+Vespa wire format.
 
 A plain Nostr `REQ` is capped by the relay (≈500 events on the relays we use).
 Two ways to get past that, selectable with `--mode`:
@@ -117,10 +118,12 @@ sot index all                            # both (default stage)
 | paged fetch (default) | `INostrClient.fetchAllPages(relay, filters, onEvent)` |
 | negentropy sync | `INostrClient.negentropySyncOrFetch(...)` (NIP-77 + paged fallback, windows `max_sync_events`) |
 | store | `ObservableEventStore(EventStore(...))` — persists events, emits a `changes` feed |
+| kind:0 parsing | `MetadataEvent.contactMetaData()` → `UserMetadata` → `Profile` |
+| kind:30382 parsing | `ContactCardEvent.aboutUser()` (subject) + `.rank()` (0–100) |
 
-Event parsing (`MetadataEvent.contactMetaData()`, `ContactCardEvent.aboutUser()`/`.rank()`)
-and the Vespa document writes happen in the projection (`:vespa-engine`), not here —
-this module only fills the store.
+`VespaProjection` does the parsing above and hands ready-made objects (`Profile`,
+score triples) to `:vespa-engine`'s `VespaClient`, which owns the Vespa document-API
+wire format and knows nothing about Nostr.
 
 ## Design notes
 

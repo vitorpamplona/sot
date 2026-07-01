@@ -4,8 +4,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.indexer.SyncState
+import com.vitorpamplona.sot.indexer.VespaProjection
 import com.vitorpamplona.sot.vespa.VespaClient
-import com.vitorpamplona.sot.vespa.VespaProjection
 import com.vitorpamplona.sot.indexer.okHttpWebsocketBuilder
 import com.vitorpamplona.sot.indexer.openStore
 import com.vitorpamplona.sot.indexer.runSync

@@ -4,11 +4,8 @@ plugins {
 }
 
 dependencies {
+    // Nostr-agnostic: search + document writes over plain objects. No Quartz.
     implementation(libs.kotlinx.serialization.json)
-    // The write side (VespaClient/VespaProjection) maps Quartz events -> Vespa docs
-    // and consumes the event store's change feed.
-    implementation(libs.quartz)
-    implementation(libs.kotlinx.coroutines)
     testImplementation(kotlin("test"))
 }
 
