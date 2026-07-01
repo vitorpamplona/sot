@@ -19,21 +19,6 @@ import kotlinx.serialization.json.putJsonObject
  * a partial update (`create=true`): a `PUT .../docid/<id>` with a `{"fields":{…}}`
  * body — profile fields for a [Profile], or a `quality_scores` tensor op for a score.
  */
-// The profile fields, each paired with its [Profile] accessor. Drives both the
-// upsert (assign values) and blanking (a Profile with only a pubkey).
-private val PROFILE_FIELDS: List<Pair<String, (Profile) -> String?>> =
-    listOf(
-        "name" to Profile::name,
-        "display_name" to Profile::displayName,
-        "about" to Profile::about,
-        "picture" to Profile::picture,
-        "banner" to Profile::banner,
-        "nip05" to Profile::nip05,
-        "lud06" to Profile::lud06,
-        "lud16" to Profile::lud16,
-        "website" to Profile::website,
-    )
-
 class VespaClient(
     private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
 ) {
@@ -49,7 +34,7 @@ class VespaClient(
     fun upsertProfile(p: Profile) =
         putFields(p.pubkey) {
             put("pubkey", assign(p.pubkey))
-            for ((field, get) in PROFILE_FIELDS) put(field, assign(get(p)))
+            for ((field, value) in p.indexFields()) put(field, assign(value))
         }
 
     /** Blank the profile fields (NIP-09 deletion of a kind:0); keep the doc so its scores survive. */
