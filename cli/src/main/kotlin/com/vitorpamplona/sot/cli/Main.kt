@@ -13,7 +13,7 @@ import java.time.Duration
  * search from the terminal. Search reuses :query-engine, so terminal results
  * match the http service and the relay exactly.
  *
- *   sot search "vitor" [--observer <hex>] [--hits N] [--rank P] [--only-ranked]
+ *   sot search "vitor" [--observer <hex>] [--hits N] [--algo P] [--only-ranked]
  *   sot status
  *   sot up | down            # docker compose for local Vespa
  *   sot deploy               # (re)deploy vespa to the config server
@@ -77,7 +77,7 @@ private fun usage() {
         """
         sot - local Nostr profile search
 
-          search "<query>" [--observer <hex>] [--hits N] [--rank <profile>] [--only-ranked] [--vespa <url>]
+          search "<query>" [--observer <hex>] [--hits N] [--algo <profile>] [--only-ranked] [--vespa <url>]
           status  [--vespa <url>] [--http <url>] [--relay <url>]
           up                 start local Vespa (docker compose) and deploy vespa
           down               stop local Vespa
@@ -86,7 +86,7 @@ private fun usage() {
     )
 }
 
-private val SEARCH_VALUED_FLAGS = setOf("--observer", "--hits", "--rank", "--vespa")
+private val SEARCH_VALUED_FLAGS = setOf("--observer", "--hits", "--algo", "--vespa")
 
 private fun search(args: List<String>) {
     val query = positionalArgs(args, SEARCH_VALUED_FLAGS).firstOrNull()
@@ -96,17 +96,17 @@ private fun search(args: List<String>) {
     }
     val observer = observerOrWarn(args)
     val hits = flag(args, "--hits", "20").toInt()
-    val rank = flag(args, "--rank", "name_and_quality_score_only")
+    val algo = flag(args, "--algo", "name_and_quality_score_only")
     val vespaUrl = flag(args, "--vespa", System.getenv("VESPA_URL") ?: "http://localhost:8080")
     val onlyRanked = has(args, "--only-ranked")
 
     val results =
         VespaSearch(vespaUrl).search(
             query, observer,
-            SearchOptions(hits = hits, rankProfile = rank, includeZeroScore = !onlyRanked),
+            SearchOptions(hits = hits, rankProfile = algo, includeZeroScore = !onlyRanked),
         )
 
-    println("query=${query} ranking=$rank observer=${observer.take(12)}.. results=${results.size}")
+    println("query=${query} algo=$algo observer=${observer.take(12)}.. results=${results.size}")
     println("-".repeat(92))
     println("%2s  %11s  %6s  %-30s %s".format("#", "relevance", "trust", "name / display_name", "nip05"))
     println("-".repeat(92))
