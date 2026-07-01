@@ -1,28 +1,27 @@
 # web
 
 A tiny, dependency-free search UI for **sot** — one `index.html`, no build step.
-It calls the `http` (`GET /search`) and shows a single trust-ranked result
-list: a type-ahead popup as you type, full results on Enter, and a "Search as
-me" toggle that ranks by *your* web of trust via a NIP-07 extension (off = the
-server's `DEFAULT_OBSERVER`).
+It calls `GET /search` and shows a single trust-ranked result list: a type-ahead
+popup as you type, full results on Enter, and a "Search as me" toggle that ranks
+by *your* web of trust via a NIP-07 extension (off = the server's
+`DEFAULT_OBSERVER`).
 
 ## Run it
 
-Start the API (`./gradlew :http:run`, defaults to `:8081`), then open the
-page. Any static server works — the API sends permissive CORS, so a `file://`
-open works too:
+The `server` module serves this file itself (bundled as a resource), same-origin
+with the API — so just run the server and open it:
 
 ```bash
-# from the repo root
-cd web && python3 -m http.server 8090
-# open http://localhost:8090
+./gradlew :server:run
+# open http://localhost:7777
 ```
 
-Point it at a non-default API with a query param:
+No CORS needed (same origin). To develop the page against a **remote** server,
+serve it however you like and point it with a query param:
 
 ```
-http://localhost:8090/?api=http://localhost:8081
+http://localhost:8090/?api=https://sot.example.com
 ```
 
-That's the only knob. `TRUST` is the observer's web-of-trust score for the
-profile (`quality_scores{observer}`); `RELEVANCE` is the text match score.
+`TRUST` is the observer's web-of-trust score for the profile
+(`quality_scores{observer}`); `RELEVANCE` is the text match score.

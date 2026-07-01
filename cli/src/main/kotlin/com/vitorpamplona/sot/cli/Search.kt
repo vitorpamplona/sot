@@ -1,5 +1,6 @@
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.query.SearchOptions
 import com.vitorpamplona.sot.query.VespaSearch
 
@@ -19,7 +20,7 @@ internal fun search(args: List<String>) {
     val observer = observerOrWarn(args)
     val hits = flag(args, "--hits", "20").toInt()
     val algo = flag(args, "--algo", "name_and_quality_score_only")
-    val vespaUrl = flag(args, "--vespa", System.getenv("VESPA_URL") ?: "http://localhost:8080")
+    val vespaUrl = flag(args, "--vespa", Config.vespaUrl)
     val onlyRanked = has(args, "--only-ranked")
 
     val obsLabel = if (observer.isEmpty()) "(none)" else observer.take(12) + ".."

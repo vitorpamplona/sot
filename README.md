@@ -19,10 +19,11 @@ vespa/          Vespa application package — schema + rank profiles (the rankin
 query-engine/   Search core (Kotlin lib): YQL builder + Vespa client. Unit-tested.
 indexer/        Nostr -> Quartz EventStore -> Vespa. NIP-77 negentropy sync;
                 projects profiles + observer-keyed trust scores.
-http/           HTTP service: GET /search -> query-engine.
-relay/          NIP-50 search relay; NIP-42 auth picks the ranking observer.
-cli/            sot: status / search / up / deploy.
-web/            Search UI (one index.html) over the http service.
+http/           Library: the GET /search JSON API route.
+relay/          Library: the NIP-50 relay route; NIP-42 auth picks the observer.
+server/         One Ktor app on one port composing http + relay + the web UI.
+web/            Search UI (one index.html), served by the server (same origin).
+cli/            sot: init / status / search / up / deploy.
 ```
 
 ## Quickstart
@@ -42,18 +43,25 @@ sot search "vitor" --observer <pubkey>     # rank by one observer's trust
 ```
 
 Search as the observer whose scores you loaded: set `DEFAULT_OBSERVER` (or pass
-`--observer`) to a pubkey you've ingested trust scores for, otherwise every
-trust score is 0. `sot status` shows whether Vespa / http / relay are up.
+`--observer` — hex, npub, nprofile, or a NIP-05 `name@domain`) to a pubkey you've
+ingested trust scores for, otherwise every trust score is 0. `sot status` shows
+whether Vespa and the server are up (plus doc/event counts).
 
-## Serving search
+## The server
 
-The same core is exposed three more ways:
+One process on one port (`SERVER_PORT`, default `:7777`) serves everything but Vespa:
 
 ```bash
-./gradlew :http:run    # HTTP JSON on :8081  (GET /search?text=vitor&observer=<pubkey>)
-./gradlew :relay:run   # NIP-50 relay on :7777 (send a `search` REQ)
-cd web && python3 -m http.server 8090       # web UI -> the http service (CORS is on)
+./gradlew :server:run
+#   http://localhost:7777/            web UI (browser) or NIP-11 (Accept: application/nostr+json)
+#   http://localhost:7777/search      JSON API   (?text=vitor&observer=<pubkey>)
+#   ws://localhost:7777/              NIP-50 relay (send a `search` REQ; NIP-42 auth picks the observer)
 ```
 
-Env config: `VESPA_URL`, `EVENTS_DB`, `DEFAULT_OBSERVER`, `HTTP_PORT`,
-`RELAY_PORT`, `RELAY_URL`.
+## Configuration
+
+`sot init` writes a commented `.env`; the CLI **and** the server read it (a real
+environment variable still overrides any value). Keys: `VESPA_URL`,
+`VESPA_CONFIG_URL`, `SERVER_PORT`, `SERVER_URL`, `RELAY_URL`, `EVENTS_DB`,
+`DEFAULT_OBSERVER`. Docker only runs Vespa — point `VESPA_URL` at a remote Vespa
+to skip it.

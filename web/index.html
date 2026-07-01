@@ -174,8 +174,9 @@
 
 <script>
 (() => {
-  // The sot http service base. Override with ?api=http://host:port for a remote one.
-  const API_BASE = new URLSearchParams(location.search).get("api") || "http://localhost:8081";
+  // Same-origin by default (the sot server serves this page and /search). Override
+  // with ?api=http://host:port to point at a remote server.
+  const API_BASE = new URLSearchParams(location.search).get("api") ?? "";
 
   const POPUP_LIMIT = 8;
   const FULL_LIMIT = 40;

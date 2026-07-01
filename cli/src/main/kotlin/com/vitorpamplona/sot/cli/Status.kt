@@ -5,28 +5,28 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.config.Config
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.net.URLEncoder
 
-private const val DEFAULT_WEB = "http://localhost:8090"
-
-/** `sot status` — report whether Vespa / http / relay / web are reachable, plus data health. */
+/**
+ * `sot status` — report whether Vespa and the sot server are reachable, plus data
+ * health. The server hosts the web UI, /search API, and the NIP-50 relay on one port.
+ */
 internal fun status(args: List<String>) {
-    val vespa = flag(args, "--vespa", "http://localhost:8080")
-    val httpUrl = flag(args, "--http", "http://localhost:8081")
-    val relay = flag(args, "--relay", "http://localhost:7777")
+    val vespa = flag(args, "--vespa", Config.vespaUrl)
+    val server = flag(args, "--server", Config.serverUrl)
     fun line(name: String, ok: Boolean) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
 
     println("component status:")
     val docs = vespaDocCount(vespa)
     val docsLabel = docs?.let { "  ${"%,d".format(it)} docs" } ?: ""
-    line("Vespa        ($vespa)$docsLabel", ping("$vespa/ApplicationStatus"))
-    line("http         ($httpUrl)", ping("$httpUrl/search?text=_"))
-    line("relay        ($relay)", ping("$relay/", accept = "application/nostr+json"))
-    line("web          ($DEFAULT_WEB)", ping("$DEFAULT_WEB/"))
+    line("Vespa   ($vespa)$docsLabel", ping("$vespa/ApplicationStatus"))
+    // Probe the server root (web UI / NIP-11) — 200 regardless of Vespa, unlike /search.
+    line("server  ($server)", ping("$server/"))
 
-    storeReport(System.getenv("EVENTS_DB") ?: "events.db", docs)
+    storeReport(Config.eventsDb, docs)
 }
 
 /** Vespa's total indexed doc count, or null if it can't be read (catches "up but empty"). */
