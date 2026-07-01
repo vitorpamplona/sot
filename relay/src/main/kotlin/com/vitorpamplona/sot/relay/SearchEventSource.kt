@@ -42,15 +42,21 @@ class SearchEventSource(
                     withContext(Dispatchers.IO) {
                         vespa.search(term, observer, SearchOptions(hits = limit))
                     }
+                if (hits.isEmpty()) continue
+
+                // One store query for every ranked author (not one per hit), keeping the
+                // newest kind-0 per author; then emit in Vespa's rank order.
+                val newestByAuthor =
+                    withContext(Dispatchers.IO) {
+                        val map = HashMap<String, Event>()
+                        store
+                            .query<Event>(Filter(kinds = listOf(MetadataEvent.KIND), authors = hits.map { it.pubkey }))
+                            .forEach { e -> map.merge(e.pubKey, e) { a, b -> if (b.createdAt >= a.createdAt) b else a } }
+                        map
+                    }
                 for (hit in hits) {
                     currentCoroutineContext().ensureActive() // honor CLOSE / disconnect
-                    val event =
-                        withContext(Dispatchers.IO) {
-                            store
-                                .query<Event>(Filter(kinds = listOf(MetadataEvent.KIND), authors = listOf(hit.pubkey), limit = 1))
-                                .firstOrNull()
-                        }
-                    if (event != null) emit(event)
+                    newestByAuthor[hit.pubkey]?.let { emit(it) }
                 }
             }
         }
