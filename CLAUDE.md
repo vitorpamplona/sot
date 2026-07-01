@@ -60,7 +60,9 @@ Nostr events into `vespa`'s plain objects (`Profile`, score triples) and calls
 
 ## Build, run, test
 
-Use the committed wrapper `./gradlew` (Gradle 8.14.3).
+Use the committed wrapper `./gradlew` (Gradle 9.6.1; the wrapper fetches it from
+`downloads.gradle.org` — the direct host, since the canonical `services.gradle.org`
+URL redirects to GitHub releases, which some networks block).
 
 ```bash
 ./gradlew build                 # compile + test + spotlessCheck (the gate)
