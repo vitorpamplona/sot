@@ -20,14 +20,13 @@
  */
 package com.vitorpamplona.sot.server
 
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
-import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.http.searchApi
 import com.vitorpamplona.sot.relay.buildRelayServer
 import com.vitorpamplona.sot.relay.nostrRelay
 import com.vitorpamplona.sot.relay.relayInfoJson
+import com.vitorpamplona.sot.store.openEventStore
+import com.vitorpamplona.sot.store.relayIdentity
 import com.vitorpamplona.sot.vespa.VespaSearch
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
@@ -57,10 +56,9 @@ private val WEB_UI: String? by lazy {
 
 fun main() {
     val vespa = VespaSearch(Config.vespaUrl)
-    // relay identity (from env/.env) drives NIP-62 relay-scoped vanish; and no
-    // SQLite FTS (search is Vespa) — same store strategy as the indexer.
-    val relayUrl = RelayUrlNormalizer.normalize(Config.relayUrl)
-    val store = EventStore(Config.eventsDb, relayUrl, DefaultIndexingStrategy(indexFullTextSearch = false))
+    // One shared event store (see :event-store): relay identity from env for NIP-62, no SQLite FTS.
+    val relayUrl = relayIdentity()
+    val store = openEventStore()
     val relaySrv = buildRelayServer(vespa, store, Config.defaultObserver, relayUrl)
 
     embeddedServer(Netty, port = Config.serverPort) {

@@ -17,20 +17,26 @@ so you can point `VESPA_URL` at a remote Vespa and skip Docker.
 
 ```
 config        env/.env resolution + defaults. No deps. (com.vitorpamplona.sot.config)
+event-store   The ONE place that opens the shared Quartz EventStore (com.vitorpamplona.sot.store):
+                openEventStore() / openObservableStore() / relayIdentity(). Applies the
+                no-SQLite-FTS strategy + relay identity so no caller can get either wrong.
+              Depends on: :config, quartz, androidx-sqlite.
 vespa-engine  ALL Vespa access, Nostr-agnostic (com.vitorpamplona.sot.vespa):
                 read  — VespaSearch + ProfileQuery (YQL recall; ranking is in the schema)
                 write — VespaClient + Profile (+ Profile.indexFields())
               Depends on: kotlinx-serialization only.
 indexer       Nostr -> Quartz EventStore (com.vitorpamplona.sot.indexer):
                 RelaySyncer (NIP-77 negentropy + paged fallback), Discovery (NIP-65
-                outbox crawl), SyncPipeline.runSync(), SyncState (cursors), Store, Sockets.
+                outbox crawl), SyncPipeline.runSync(), SyncState (cursors), Sockets.
                 PLUS VespaProjection — maps store events -> Profile/score and calls VespaClient.
-              Depends on: :vespa-engine, quartz, coroutines, okhttp, androidx-sqlite.
+                Consumes an event store; never creates one (the composition root does).
+              Depends on: :vespa-engine, quartz, coroutines, okhttp.
 http          Library: the GET /search JSON route (Route.searchApi). -> :vespa-engine
 relay         Library: NIP-50 relay route + NIP-11 info + NIP-42 auth. -> :config, :vespa-engine
 server        Composition root: ONE Ktor app on ONE port (SERVER_PORT) = web UI +
-              /search + NIP-50 relay. -> :config, :vespa-engine, :http, :relay
-cli           `sot` command. Composition root for `sot index`. -> :config, :vespa-engine, :indexer
+              /search + NIP-50 relay. -> :config, :event-store, :vespa-engine, :http, :relay
+cli           `sot` command. Composition root for `sot index`.
+              -> :config, :event-store, :vespa-engine, :indexer
 ```
 
 Key rule: **`:vespa-engine` never imports a Nostr/Quartz type.** The indexer maps
@@ -107,7 +113,7 @@ identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always over
 
 ## Gotchas
 
-- The EventStore's SQLite full-text index is intentionally **off** (`DefaultIndexingStrategy(indexFullTextSearch = false)`) — search is Vespa's job. Every opener of the shared DB must use the same strategy.
+- Always open the event store through **`:event-store`** (`openEventStore` / `openObservableStore`). It's the single place that sets the two easy-to-get-wrong knobs: SQLite full-text index **off** (opening the same DB with a different strategy corrupts it — search is Vespa's job) and the store's **relay identity** from `RELAY_URL` (a null/foreign relay silently breaks NIP-62 vanish). Don't construct `EventStore` directly.
 - Event **signature verification is on by default** before storing (relays are untrusted;
   a forged kind:0/30382/10040 would poison the trust graph). The non-verifying path is a
   test-only seam.

@@ -5,12 +5,12 @@ plugins {
 
 dependencies {
     implementation(project(":config")) // env/.env resolution (the composition root reads it)
+    implementation(project(":event-store")) // open the shared event store for the relay
     implementation(project(":vespa-engine"))
     implementation(project(":http")) // GET /search route
     implementation(project(":relay")) // NIP-50 relay route
-    implementation(libs.quartz) // EventStore + RelayUrlNormalizer
+    implementation(libs.quartz) // IEventStore type for buildRelayServer
     implementation(libs.kotlinx.coroutines)
-    implementation(libs.androidx.sqlite.bundled) // open the SQLite event store
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.websockets)

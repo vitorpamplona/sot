@@ -21,13 +21,12 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.indexer.SyncState
 import com.vitorpamplona.sot.indexer.VespaProjection
 import com.vitorpamplona.sot.indexer.okHttpWebsocketBuilder
-import com.vitorpamplona.sot.indexer.openStore
 import com.vitorpamplona.sot.indexer.runSync
+import com.vitorpamplona.sot.store.openObservableStore
 import com.vitorpamplona.sot.vespa.VespaClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -104,9 +103,8 @@ internal fun index(args: List<String>) {
     val state = SyncState.load(statePath)
     // Vespa writes run on a small pool so they don't stall the relay socket reader.
     val writers = Executors.newFixedThreadPool(16)
-    // Our own relay identity (from env/.env), so relay-scoped NIP-62 vanish requests are honored.
-    val relayUrl = RelayUrlNormalizer.normalize(Config.relayUrl)
-    val store = openStore(dbPath, relayUrl)
+    // Shared event store (see :event-store): observable for its change feed -> projection.
+    val store = openObservableStore(dbPath)
     val projection = VespaProjection(store, vespa, writers, log)
 
     // Wire the store -> Vespa projection here; the indexer only fills the store.

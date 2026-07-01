@@ -17,6 +17,8 @@ simple web UI for development.
 ```
 vespa/          Vespa application package — schema + rank profiles (the ranking math).
 config/         Tiny lib: env/.env resolution + defaults (one place for host/port config).
+event-store/    Tiny lib: the one place that opens the shared Quartz event store
+                (no SQLite FTS + relay identity), so no caller can get it wrong.
 vespa-engine/   Vespa access (Kotlin lib): YQL search + document writes over plain
                 objects (Profile / scores). Nostr-agnostic. Unit-tested.
 indexer/        Nostr -> Quartz EventStore (NIP-77 negentropy sync + NIP-65 outbox
