@@ -1,3 +1,23 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 package com.vitorpamplona.sot.relay
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -30,36 +50,29 @@ private const val VERSION = "0.1"
  * Identity fields come from config (`.env`); the technical fields describe what
  * this server actually is — a read-only, optional-auth NIP-50 profile search.
  */
-fun relayInfoJson(): String =
-    relayInformation {
-        name = Config.serverName.ifBlank { "sot" }
-        Config.serverDescription.takeIf { it.isNotBlank() }?.let { description = it }
-        Config.serverIcon.takeIf { it.isNotBlank() }?.let { icon = it }
-        Config.serverPubkey.takeIf { it.isNotBlank() }?.let { pubkey = it } // admin contact
-        Config.serverOwner.takeIf { it.isNotBlank() }?.let { self = it } // relay operator/owner
-        software = SOFTWARE
-        version = VERSION
-        supports(1, 11, 42, 50) // NIP-01/11/42/50
-        limitation {
-            authRequired = false // NIP-42 optional (OptionalAuthPolicy)
-            paymentRequired = false
-            restrictedWrites = true // search-only: this relay doesn't accept event writes
-            defaultLimit = 50 // SearchEventSource: f.limit ?: 50
-            maxLimit = 400 // SearchEventSource: coerceIn(1, 400)
-        }
-    }.toJson()
+fun relayInfoJson(): String = relayInformation {
+    name = Config.serverName.ifBlank { "sot" }
+    Config.serverDescription.takeIf { it.isNotBlank() }?.let { description = it }
+    Config.serverIcon.takeIf { it.isNotBlank() }?.let { icon = it }
+    Config.serverPubkey.takeIf { it.isNotBlank() }?.let { pubkey = it } // admin contact
+    Config.serverOwner.takeIf { it.isNotBlank() }?.let { self = it } // relay operator/owner
+    software = SOFTWARE
+    version = VERSION
+    supports(1, 11, 42, 50) // NIP-01/11/42/50
+    limitation {
+        authRequired = false // NIP-42 optional (OptionalAuthPolicy)
+        paymentRequired = false
+        restrictedWrites = true // search-only: this relay doesn't accept event writes
+        defaultLimit = 50 // SearchEventSource: f.limit ?: 50
+        maxLimit = 400 // SearchEventSource: coerceIn(1, 400)
+    }
+}.toJson()
 
 /** Build the relay engine from the search core + local store; [relayUrl] is the public ws url for NIP-42. */
-fun buildRelayServer(
-    vespa: VespaSearch,
-    store: IEventStore,
-    defaultObserver: String,
-    relayUrl: NormalizedRelayUrl,
-): EventSourceServer =
-    EventSourceServer(
-        source = SearchEventSource(vespa, store, defaultObserver),
-        policyBuilder = { OptionalAuthPolicy(relayUrl) },
-    )
+fun buildRelayServer(vespa: VespaSearch, store: IEventStore, defaultObserver: String, relayUrl: NormalizedRelayUrl): EventSourceServer = EventSourceServer(
+    source = SearchEventSource(vespa, store, defaultObserver),
+    policyBuilder = { OptionalAuthPolicy(relayUrl) },
+)
 
 /** Mount the NIP-50 relay websocket on `/`. */
 fun Route.nostrRelay(server: EventSourceServer) {

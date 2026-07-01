@@ -1,3 +1,23 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -24,61 +44,44 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  *
  * Scores land keyed by the OBSERVER (10040 author), per NIP-85 Trusted Assertions.
  */
-suspend fun runSync(
-    client: NostrClient,
-    store: ObservableEventStore,
-    state: SyncState,
-    statePath: String,
-    seedRelays: List<String>,
-    maxEvents: Int,
-    log: (String) -> Unit,
-    fetchTimeoutMs: Long = 30_000,
-    maxProviders: Int = 0,
-    syncProfiles: Boolean = true,
-    discover: Boolean = false,
-    maxRounds: Int = 3,
-    maxRelays: Int = 200,
-    syncScores: Boolean = true,
-    verifyEvents: Boolean = true,
-) {
+suspend fun runSync(client: NostrClient, store: ObservableEventStore, state: SyncState, statePath: String, seedRelays: List<String>, maxEvents: Int, log: (String) -> Unit, fetchTimeoutMs: Long = 30_000, maxProviders: Int = 0, syncProfiles: Boolean = true, discover: Boolean = false, maxRounds: Int = 3, maxRelays: Int = 200, syncScores: Boolean = true, verifyEvents: Boolean = true) {
     val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = fetchTimeoutMs, verifyEvents = verifyEvents)
 
     try {
-    val relays =
-        if (discover) {
-            Discovery(syncer, store, state, log).crawl(seedRelays, maxRounds, maxRelays).toList()
-        } else {
-            seedRelays
+        val relays =
+            if (discover) {
+                Discovery(syncer, store, state, log).crawl(seedRelays, maxRounds, maxRelays).toList()
+            } else {
+                seedRelays
+            }
+
+        log("=== phase 1: ${if (syncScores) "10040 / " else ""}5${if (syncProfiles) " / 0" else ""} from ${relays.size} relay(s) ===")
+        for (r in relays) {
+            // 10040s (provider lists) only matter when we're resolving scores.
+            val nl = if (syncScores) syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND))) else null
+            val nd = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)))
+            val np = if (syncProfiles) syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = maxEvents) else null
+            log("[sync] ${short(r)}  10040=${nl?.let { "${it.inserted}${neg(it)}" } ?: "-"}  del=${nd.inserted}  kind0=${np?.inserted ?: "-"}")
         }
 
-    log("=== phase 1: ${if (syncScores) "10040 / " else ""}5${if (syncProfiles) " / 0" else ""} from ${relays.size} relay(s) ===")
-    for (r in relays) {
-        // 10040s (provider lists) only matter when we're resolving scores.
-        val nl = if (syncScores) syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND))) else null
-        val nd = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)))
-        val np = if (syncProfiles) syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = maxEvents) else null
-        log("[sync] ${short(r)}  10040=${nl?.let { "${it.inserted}${neg(it)}" } ?: "-"}  del=${nd.inserted}  kind0=${np?.inserted ?: "-"}")
-    }
+        if (syncScores) {
+            log("=== phase 2: resolve rank providers from stored 10040s ===")
+            var providers =
+                store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
+                    .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
+                    .distinct()
+            log("[sync] ${providers.size} rank provider(s)")
+            if (maxProviders > 0 && providers.size > maxProviders) {
+                providers = providers.take(maxProviders)
+                log("[sync] capped to $maxProviders providers for this run")
+            }
 
-    if (syncScores) {
-        log("=== phase 2: resolve rank providers from stored 10040s ===")
-        var providers =
-            store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
-                .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
-                .distinct()
-        log("[sync] ${providers.size} rank provider(s)")
-        if (maxProviders > 0 && providers.size > maxProviders) {
-            providers = providers.take(maxProviders)
-            log("[sync] capped to $maxProviders providers for this run")
+            log("=== phase 3: kind 30382 per provider, from its relay hint ===")
+            for ((service, relay) in providers) {
+                val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), maxEvents = maxEvents)
+                log("[sync] provider ${service.take(12)} @ ${short(relay.url)}: +${o.inserted}/${o.downloaded}${neg(o)}")
+            }
         }
-
-        log("=== phase 3: kind 30382 per provider, from its relay hint ===")
-        for ((service, relay) in providers) {
-            val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), maxEvents = maxEvents)
-            log("[sync] provider ${service.take(12)} @ ${short(relay.url)}: +${o.inserted}/${o.downloaded}${neg(o)}")
-        }
-    }
-
     } finally {
         SyncState.save(statePath, state)
         log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")

@@ -1,3 +1,23 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -18,6 +38,7 @@ import java.net.URLEncoder
 internal fun status(args: List<String>) {
     val vespa = flag(args, "--vespa", Config.vespaUrl)
     val server = flag(args, "--server", Config.serverUrl)
+
     fun line(name: String, ok: Boolean) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
 
     println("component status:")
@@ -34,7 +55,11 @@ internal fun status(args: List<String>) {
 private fun vespaDocCount(vespa: String): Int? {
     val yql = URLEncoder.encode("select * from doc where true", "UTF-8")
     val body = httpGet("$vespa/search/?yql=$yql&hits=0") ?: return null
-    return Regex("\"totalCount\"\\s*:\\s*(\\d+)").find(body)?.groupValues?.get(1)?.toIntOrNull()
+    return Regex("\"totalCount\"\\s*:\\s*(\\d+)")
+        .find(body)
+        ?.groupValues
+        ?.get(1)
+        ?.toIntOrNull()
 }
 
 /**
@@ -48,17 +73,18 @@ private fun storeReport(dbPath: String, vespaDocs: Int?) {
         println("  store: $dbPath (missing)")
         return
     }
-    val counts = runCatching {
-        runBlocking {
-            EventStore(dbPath, null, DefaultIndexingStrategy(indexFullTextSearch = false)).use { s ->
-                intArrayOf(
-                    s.count(Filter(kinds = listOf(MetadataEvent.KIND))),
-                    s.count(Filter(kinds = listOf(TrustProviderListEvent.KIND))),
-                    s.count(Filter(kinds = listOf(ContactCardEvent.KIND))),
-                )
+    val counts =
+        runCatching {
+            runBlocking {
+                EventStore(dbPath, null, DefaultIndexingStrategy(indexFullTextSearch = false)).use { s ->
+                    intArrayOf(
+                        s.count(Filter(kinds = listOf(MetadataEvent.KIND))),
+                        s.count(Filter(kinds = listOf(TrustProviderListEvent.KIND))),
+                        s.count(Filter(kinds = listOf(ContactCardEvent.KIND))),
+                    )
+                }
             }
-        }
-    }.getOrNull()
+        }.getOrNull()
     if (counts == null) {
         println("  store: $dbPath (unreadable)")
         return

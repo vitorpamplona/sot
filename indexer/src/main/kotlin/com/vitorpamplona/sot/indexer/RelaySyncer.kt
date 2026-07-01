@@ -1,3 +1,23 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -10,9 +30,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Syncs one (relay, filter) into the store using Quartz's generalized
@@ -71,13 +91,17 @@ class RelaySyncer(
             val res =
                 runCatching {
                     client.negentropySyncOrFetch(
-                        relay, scoped,
+                        relay,
+                        scoped,
                         maxEvents = maxEvents,
                         fetchBatch = fetchBatch,
                         idleTimeoutMs = idleTimeoutMs,
                         onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
                     ) { buf.add(it) }
-                }.getOrElse { log("  ! $url sync failed: ${it.message}"); null }
+                }.getOrElse {
+                    log("  ! $url sync failed: ${it.message}")
+                    null
+                }
             usedNeg = res?.pagedFallback == false
 
             // The library pages only on a NEG-ERR. A relay can also reconcile to
@@ -117,6 +141,5 @@ class RelaySyncer(
         return Outcome(inserted, usedNegentropy = usedNeg, buf.size)
     }
 
-    suspend fun sync(relay: NormalizedRelayUrl, filter: Filter, maxEvents: Int = 0): Outcome =
-        sync(relay.url, filter, maxEvents)
+    suspend fun sync(relay: NormalizedRelayUrl, filter: Filter, maxEvents: Int = 0): Outcome = sync(relay.url, filter, maxEvents)
 }

@@ -7,6 +7,8 @@ serialization = "1.7.3"
 sqlite = "2.6.2"
 okhttp = "5.4.0"
 ktor = "3.5.1"
+spotless = "8.8.0"
+ktlint = "1.7.1"
 
 [libraries]
 quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "quartz" }
@@ -24,3 +26,4 @@ ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+diffplug-spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

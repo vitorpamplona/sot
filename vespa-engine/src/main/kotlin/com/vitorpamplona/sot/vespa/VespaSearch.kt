@@ -1,11 +1,25 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 package com.vitorpamplona.sot.vespa
 
-import java.net.URI
-import java.net.URLEncoder
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.time.Duration
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -13,23 +27,20 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.net.URI
+import java.net.URLEncoder
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
 
 /** One ranked search result. [trust] is the observer's trust score for this doc. */
-data class SearchHit(
-    val pubkey: String,
-    val relevance: Double?,
-    val trust: Double?,
-    val fields: Map<String, String>,
-) {
+data class SearchHit(val pubkey: String, val relevance: Double?, val trust: Double?, val fields: Map<String, String>) {
     val name: String get() = fields["name"] ?: ""
     val displayName: String get() = fields["display_name"] ?: ""
 }
 
-data class SearchOptions(
-    val hits: Int = 50,
-    val rankProfile: String = "name_and_quality_score_only",
-    val includeZeroScore: Boolean = true,
-)
+data class SearchOptions(val hits: Int = 50, val rankProfile: String = "name_and_quality_score_only", val includeZeroScore: Boolean = true)
 
 /**
  * The read side of the search core: builds the query (YQL + ranking features)
@@ -39,10 +50,7 @@ data class SearchOptions(
  *
  * Blocking (JDK HttpClient) — call it off a worker/IO dispatcher from coroutines.
  */
-class VespaSearch(
-    private val baseUrl: String,
-    private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(),
-) {
+class VespaSearch(private val baseUrl: String, private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
     fun search(queryText: String, observer: String, opts: SearchOptions = SearchOptions()): List<SearchHit> {
         val words = queryText.trim().split(WHITESPACE).filter { it.isNotEmpty() }.take(MAX_QUERY_WORDS)
         if (words.isEmpty()) return emptyList()
@@ -99,25 +107,22 @@ class VespaSearch(
 
     private fun getJson(url: String): JsonObject = body(send(url))
 
-    private fun send(url: String): HttpResponse<String> =
-        http.send(
-            HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).GET().build(),
-            HttpResponse.BodyHandlers.ofString(),
-        )
+    private fun send(url: String): HttpResponse<String> = http.send(
+        HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).GET().build(),
+        HttpResponse.BodyHandlers.ofString(),
+    )
 
     private fun body(resp: HttpResponse<String>): JsonObject {
         if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
         return Json.parseToJsonElement(resp.body()).jsonObject
     }
 
-    private fun encode(params: Map<String, String>): String =
-        params.entries.joinToString("&") { enc(it.key) + "=" + enc(it.value) }
+    private fun encode(params: Map<String, String>): String = params.entries.joinToString("&") { enc(it.key) + "=" + enc(it.value) }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     /** Vespa `fields` object -> String map, dropping [drop] (a non-primitive like a tensor). */
-    private fun stringFields(fields: JsonObject, drop: String): Map<String, String> =
-        fields.filterKeys { it != drop }.mapValues { (_, v) -> v.jsonPrimitive.contentOrNull ?: "" }
+    private fun stringFields(fields: JsonObject, drop: String): Map<String, String> = fields.filterKeys { it != drop }.mapValues { (_, v) -> v.jsonPrimitive.contentOrNull ?: "" }
 
     private companion object {
         val WHITESPACE = Regex("\\s+")

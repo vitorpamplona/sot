@@ -1,3 +1,23 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
@@ -5,10 +25,10 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.indexer.SyncState
 import com.vitorpamplona.sot.indexer.VespaProjection
-import com.vitorpamplona.sot.vespa.VespaClient
 import com.vitorpamplona.sot.indexer.okHttpWebsocketBuilder
 import com.vitorpamplona.sot.indexer.openStore
 import com.vitorpamplona.sot.indexer.runSync
+import com.vitorpamplona.sot.vespa.VespaClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,7 +58,10 @@ private fun argList(args: List<String>, name: String, default: List<String>): Li
     if (i < 0) return default
     val out = mutableListOf<String>()
     var j = i + 1
-    while (j < args.size && !args[j].startsWith("--")) { out.add(args[j]); j++ }
+    while (j < args.size && !args[j].startsWith("--")) {
+        out.add(args[j])
+        j++
+    }
     return out.ifEmpty { default }
 }
 
@@ -74,7 +97,10 @@ internal fun index(args: List<String>) {
 
     val vespa = VespaClient(vespaUrl)
     val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))
-    val log: (String) -> Unit = { println("${ts()} $it"); System.out.flush() }
+    val log: (String) -> Unit = {
+        println("${ts()} $it")
+        System.out.flush()
+    }
     val state = SyncState.load(statePath)
     // Vespa writes run on a small pool so they don't stall the relay socket reader.
     val writers = Executors.newFixedThreadPool(16)
@@ -91,8 +117,20 @@ internal fun index(args: List<String>) {
 
     runBlocking {
         runSync(
-            client, store, state, statePath, plan.relays, maxEvents, log,
-            fetchTimeoutMs, maxProviders, plan.profiles, discover, maxRounds, maxRelays, plan.scores,
+            client,
+            store,
+            state,
+            statePath,
+            plan.relays,
+            maxEvents,
+            log,
+            fetchTimeoutMs,
+            maxProviders,
+            plan.profiles,
+            discover,
+            maxRounds,
+            maxRelays,
+            plan.scores,
         )
         log("draining projection ...")
         projection.awaitIdle()
@@ -102,8 +140,10 @@ internal fun index(args: List<String>) {
     log("draining Vespa writes ...")
     writers.shutdown()
     writers.awaitTermination(120, TimeUnit.SECONDS)
-    log("DONE $stage - profiles=${projection.profiles.get()} scores=${projection.scores.get()} " +
-        "deletions=${projection.deletions.get()} unresolved=${projection.unresolved.get()}")
+    log(
+        "DONE $stage - profiles=${projection.profiles.get()} scores=${projection.scores.get()} " +
+            "deletions=${projection.deletions.get()} unresolved=${projection.unresolved.get()}",
+    )
     store.close()
     client.close()
     System.out.flush()
