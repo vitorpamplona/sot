@@ -26,7 +26,7 @@ const val MAX_QUERY_WORDS = 6
 /**
  * Builds the query that selects candidate profile documents — the recall half of
  * the "search equations" (the YQL `where`). The *ranking* half lives in
- * `vespa/schemas/doc.sd`.
+ * `app/schemas/doc.sd` (in this module).
  *
  * Each query word fans out into exact / prefix / (bounded) fuzzy `userInput`
  * clauses across name/display_name/about, plus discriminative trigram clauses

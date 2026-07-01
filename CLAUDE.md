@@ -69,7 +69,7 @@ Use the committed wrapper `./gradlew` (Gradle 8.14.3).
 
 ./gradlew :cli:installDist      # build the CLI
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
-sot up                          # docker compose up Vespa + deploy vespa/ app package
+sot up                          # docker compose up Vespa + deploy vespa-engine/app
 sot index all                   # load profiles + NIP-85 scores (stages: all|profiles|nip85)
 sot search "vitor" --observer <hex|npub|nprofile|nip05>
 sot status                      # Vespa/server up? doc + event counts
@@ -108,7 +108,8 @@ identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always over
 - NIPs used: 05 (name@domain), 11 (relay info), 19 (npub/nprofile), 42 (auth picks the
   observer), 50 (search REQ), 62 (Request to Vanish -> delete from store + Vespa), 77
   (negentropy sync), 85 (Trusted Assertions: 10040 provider lists + 30382 scores).
-- Vespa schema is in `vespa/` (schema + rank profiles = the ranking math). The
+- Vespa schema is in `vespa-engine/app/` (schema + rank profiles = the ranking math),
+  next to the Kotlin that depends on it — change them together. The
   `quality_scores` field is a sparse tensor keyed by observer pubkey.
 
 ## Gotchas

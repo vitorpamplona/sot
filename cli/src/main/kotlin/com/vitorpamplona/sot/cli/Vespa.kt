@@ -24,7 +24,8 @@ import com.vitorpamplona.sot.config.Config
 
 /*
  * Local Vespa lifecycle: `up` / `down` via docker compose, and `deploy` of the
- * vespa/ application package to the config server. Endpoints come from Config
+ * application package (vespa-engine/app — schema + rank profiles, next to the
+ * Kotlin that depends on it) to the config server. Endpoints come from Config
  * (VESPA_URL / VESPA_CONFIG_URL), so moving Vespa's ports doesn't break these.
  */
 
@@ -34,7 +35,7 @@ private fun run(vararg cmd: String): Int {
     return ProcessBuilder(*cmd).inheritIO().start().waitFor()
 }
 
-/** `sot up` — start Vespa (docker compose) and deploy the vespa/ app package. */
+/** `sot up` — start Vespa (docker compose) and deploy the app package. */
 internal fun up(args: List<String>) {
     if (run("docker", "compose", "up", "-d", "vespa") != 0) return
     print("waiting for Vespa config server")
@@ -42,7 +43,7 @@ internal fun up(args: List<String>) {
         println(" - timed out")
         return
     }
-    println(" ready; deploying vespa/ ...")
+    println(" ready; deploying vespa-engine/app ...")
     if (deploy(args) != 0) return
     print("waiting for Vespa to serve the app")
     println(if (waitUntil("${Config.vespaUrl}/ApplicationStatus")) " ready." else " - timed out")
@@ -53,9 +54,9 @@ internal fun down() {
     run("docker", "compose", "down")
 }
 
-/** `sot deploy` — package vespa/ and POST it to the config server. Returns the curl exit code. */
+/** `sot deploy` — package the Vespa app and POST it to the config server. Returns the curl exit code. */
 internal fun deploy(args: List<String>): Int {
-    val app = flag(args, "--app", "vespa")
+    val app = flag(args, "--app", "vespa-engine/app")
     val configUrl = flag(args, "--config", Config.vespaConfigUrl)
     val tgz = "/tmp/vespa.tgz"
     if (run("bash", "-c", "tar -czf $tgz -C '$app' .") != 0) return 1

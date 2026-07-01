@@ -1,9 +1,9 @@
 # Local single-node Vespa engine. The application package (schema + rank
-# profiles under ./vespa) is deployed by the CLI, not by a compose sidecar:
+# profiles under ./vespa-engine/app) is deployed by the CLI, not by a compose sidecar:
 #
-#   sot up                       # start the engine, then deploy ./vespa
+#   sot up                       # start the engine, then deploy ./vespa-engine/app
 #   docker compose up -d vespa   # just the engine (deploy separately)
-#   sot deploy                   # (re)deploy after editing vespa/schemas/doc.sd
+#   sot deploy                   # (re)deploy after editing vespa-engine/app/schemas/doc.sd
 
 services:
   vespa:
