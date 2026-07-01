@@ -16,6 +16,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "sot"
 
+include(":config")
 include(":query-engine")
 include(":indexer")
 include(":http")

@@ -4,6 +4,7 @@ plugins {
 }
 
 dependencies {
+    implementation(project(":config")) // env/.env resolution (the composition root reads it)
     implementation(project(":query-engine"))
     implementation(project(":http")) // GET /search route
     implementation(project(":relay")) // NIP-50 relay route

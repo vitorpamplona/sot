@@ -16,6 +16,7 @@ simple web UI for development.
 
 ```
 vespa/          Vespa application package — schema + rank profiles (the ranking math).
+config/         Tiny lib: env/.env resolution + defaults (one place for host/port config).
 query-engine/   Search core (Kotlin lib): YQL builder + Vespa client. Unit-tested.
 indexer/        Nostr -> Quartz EventStore -> Vespa. NIP-77 negentropy sync;
                 projects profiles + observer-keyed trust scores.

@@ -3,6 +3,7 @@ plugins {
 }
 
 dependencies {
+    implementation(project(":config")) // NIP-11 relay identity from env/.env
     implementation(project(":query-engine"))
     implementation(libs.quartz) // relay server framework, events, NIP-42, NIP-50 Filter.search
     implementation(libs.kotlinx.coroutines)

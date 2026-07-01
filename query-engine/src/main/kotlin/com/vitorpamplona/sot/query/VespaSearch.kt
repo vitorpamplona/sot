@@ -40,7 +40,7 @@ data class SearchOptions(
  * Blocking (JDK HttpClient) — call it off a worker/IO dispatcher from coroutines.
  */
 class VespaSearch(
-    private val baseUrl: String = com.vitorpamplona.sot.config.Config.vespaUrl,
+    private val baseUrl: String,
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(),
 ) {
     fun search(queryText: String, observer: String, opts: SearchOptions = SearchOptions()): List<SearchHit> {
