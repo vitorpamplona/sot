@@ -7,21 +7,34 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * Writes straight into the local Vespa document API, byte-for-byte the same
- * partial-update payloads the upstream Python `vespa.py` sends:
+ * Writes to the local Vespa document API — the projection sink for the event
+ * store (see [VespaProjection]). Payloads are partial updates, `create=true`:
  *
- *  - upsertProfile -> PUT .../docid/<pubkey>?create=true with {"fields":{...assign...}}
- *  - upsertScore   -> PUT .../docid/<subject>?create=true with a tensor `add` cell
- *
- * No intermediate local event store — events synced from relays land directly
- * in the index.
+ *  - upsertProfile -> PUT .../docid/<pubkey> with {"fields":{...assign...}}
+ *  - upsertScore   -> PUT .../docid/<subject> with a `quality_scores` tensor cell
  */
+// The kind-0 profile fields, each paired with its UserMetadata accessor. One
+// list drives both the upsert (assign values) and the deletion (assign "").
+private val PROFILE_FIELDS: List<Pair<String, (UserMetadata) -> String?>> =
+    listOf(
+        "name" to { it.name },
+        "display_name" to { it.displayName },
+        "about" to { it.about },
+        "picture" to { it.picture },
+        "banner" to { it.banner },
+        "nip05" to { it.nip05 },
+        "lud06" to { it.lud06 },
+        "lud16" to { it.lud16 },
+        "website" to { it.website },
+    )
+
 class VespaClient(
     private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
 ) {
@@ -46,81 +59,46 @@ class VespaClient(
                 put(
                     "fields",
                     buildJsonObject {
-                        put("pubkey", buildJsonObject { put("assign", pubkey) })
-                        put("name", assign(m.name))
-                        put("display_name", assign(m.displayName))
-                        put("about", assign(m.about))
-                        put("picture", assign(m.picture))
-                        put("banner", assign(m.banner))
-                        put("nip05", assign(m.nip05))
-                        put("lud06", assign(m.lud06))
-                        put("lud16", assign(m.lud16))
-                        put("website", assign(m.website))
+                        put("pubkey", assign(pubkey))
+                        for ((field, get) in PROFILE_FIELDS) put(field, assign(get(m)))
                     },
                 )
             }
         send(docUrl(pubkey), body.toString())
     }
 
+    /** Wrap a `quality_scores` tensor op in the `{"fields":{"quality_scores":{op:...}}}` envelope. */
+    private fun qualityScoresUpdate(op: String, inner: JsonObjectBuilder.() -> Unit): String =
+        buildJsonObject {
+            put("fields", buildJsonObject { put("quality_scores", buildJsonObject { put(op, buildJsonObject(inner)) }) })
+        }.toString()
+
     /** Set quality_scores{observer}=rank on the subject's doc (upserts the tensor cell). */
     fun upsertScore(subject: String, observer: String, rank: Int) {
         val body =
-            buildJsonObject {
+            qualityScoresUpdate("add") {
                 put(
-                    "fields",
-                    buildJsonObject {
-                        put(
-                            "quality_scores",
+                    "cells",
+                    buildJsonArray {
+                        add(
                             buildJsonObject {
-                                put(
-                                    "add",
-                                    buildJsonObject {
-                                        put(
-                                            "cells",
-                                            buildJsonArray {
-                                                add(
-                                                    buildJsonObject {
-                                                        put("address", buildJsonObject { put("user", observer) })
-                                                        put("value", rank)
-                                                    },
-                                                )
-                                            },
-                                        )
-                                    },
-                                )
+                                put("address", buildJsonObject { put("user", observer) })
+                                put("value", rank)
                             },
                         )
                     },
                 )
             }
-        send(docUrl(subject), body.toString())
+        send(docUrl(subject), body)
     }
 
     /** Remove one observer's score cell from a subject's doc (NIP-09 deletion of a 30382). */
     fun removeScore(subject: String, observer: String) {
         val body =
-            buildJsonObject {
-                put(
-                    "fields",
-                    buildJsonObject {
-                        put(
-                            "quality_scores",
-                            buildJsonObject {
-                                put(
-                                    "remove",
-                                    buildJsonObject {
-                                        put(
-                                            "addresses",
-                                            buildJsonArray { add(buildJsonObject { put("user", observer) }) },
-                                        )
-                                    },
-                                )
-                            },
-                        )
-                    },
-                )
+            qualityScoresUpdate("remove") {
+                put("addresses", buildJsonArray { add(buildJsonObject { put("user", observer) }) })
             }
-        send(docUrl(subject), body.toString())
+        send(docUrl(subject), body)
     }
 
     /** Blank the profile fields (NIP-09 deletion of a kind:0); keep the doc so its scores survive. */
@@ -130,9 +108,7 @@ class VespaClient(
                 put(
                     "fields",
                     buildJsonObject {
-                        for (f in listOf("name", "display_name", "about", "picture", "banner", "nip05", "lud06", "lud16", "website")) {
-                            put(f, buildJsonObject { put("assign", "") })
-                        }
+                        for ((field, _) in PROFILE_FIELDS) put(field, assign(""))
                     },
                 )
             }

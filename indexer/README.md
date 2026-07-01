@@ -37,9 +37,8 @@ sync events into the store ──► store.changes (Insert/Delete) ──► Ves
   `30382:rank` provider.
 - **kind 30382** (`ContactCardEvent`) → upsert `quality_scores{OBSERVER} = rank`,
   where OBSERVER is the 10040 author — **not** the 30382 signer (a per-observer
-  *service key*). This is what Brainstorm itself does
-  (`batch_upsert_scores(observer=observer)`); keying by the signer is wrong and
-  makes `--observer <user>` queries miss.
+  *service key*), per NIP-85 Trusted Assertions. Keying by the signer is wrong
+  and makes `--observer <user>` queries miss.
 - **kind 5** (`DeletionEvent`) → erase the profile/score from Vespa.
 
 Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
@@ -88,7 +87,7 @@ Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 # kind:0 profiles (negentropy full-set sync, capped at --max-events)
 ./gradlew :indexer:run --args="profiles --max-events 25000"
 
-# kind:30382 NIP-85 GrapeRank scores
+# kind:30382 NIP-85 Trusted Assertion scores
 ./gradlew :indexer:run --args="nip85 --max-events 25000"
 
 # both

@@ -72,11 +72,7 @@ class VespaProjection(
                 val md = ev.contactMetaData() ?: return
                 submit("profile") { vespa.upsertProfile(ev.pubKey, md); profiles.incrementAndGet() }
             }
-            is TrustProviderListEvent -> {
-                ev.serviceProviders()
-                    .filter { it.service == ProviderTypes.rank }
-                    .forEach { serviceToObserver[it.pubkey] = ev.pubKey }
-            }
+            is TrustProviderListEvent -> learn(ev)
             is ContactCardEvent -> {
                 val observer = serviceToObserver[ev.pubKey] ?: resolveObserver(ev.pubKey)
                 val subject = ev.aboutUser()
@@ -111,15 +107,16 @@ class VespaProjection(
         }
     }
 
+    /** Record a 10040's `30382:rank` providers as service-key -> observer mappings. */
+    private fun learn(list: TrustProviderListEvent) {
+        list.serviceProviders()
+            .filter { it.service == ProviderTypes.rank }
+            .forEach { serviceToObserver[it.pubkey] = list.pubKey }
+    }
+
     /** Fall back to the store when a 30382's service key wasn't seen as a 10040 insert yet. */
     private suspend fun resolveObserver(serviceKey: String): String? {
-        serviceToObserver[serviceKey]?.let { return it }
-        val lists = store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
-        for (l in lists) {
-            for (p in l.serviceProviders()) {
-                if (p.service == ProviderTypes.rank) serviceToObserver[p.pubkey] = l.pubKey
-            }
-        }
+        store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND))).forEach(::learn)
         return serviceToObserver[serviceKey]
     }
 
