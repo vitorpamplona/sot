@@ -6,8 +6,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventSource
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.sot.query.SearchOptions
-import com.vitorpamplona.sot.query.VespaSearch
+import com.vitorpamplona.sot.vespa.SearchOptions
+import com.vitorpamplona.sot.vespa.VespaSearch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive

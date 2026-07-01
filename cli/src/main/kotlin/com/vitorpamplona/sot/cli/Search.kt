@@ -1,8 +1,8 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.sot.config.Config
-import com.vitorpamplona.sot.query.SearchOptions
-import com.vitorpamplona.sot.query.VespaSearch
+import com.vitorpamplona.sot.vespa.SearchOptions
+import com.vitorpamplona.sot.vespa.VespaSearch
 
 private val SEARCH_VALUED_FLAGS = setOf("--observer", "--hits", "--algo", "--vespa")
 

@@ -5,7 +5,7 @@ import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.http.searchApi
-import com.vitorpamplona.sot.query.VespaSearch
+import com.vitorpamplona.sot.vespa.VespaSearch
 import com.vitorpamplona.sot.relay.buildRelayServer
 import com.vitorpamplona.sot.relay.relayInfoJson
 import com.vitorpamplona.sot.relay.nostrRelay

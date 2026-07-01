@@ -6,7 +6,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.policies.OptionalAuthPoli
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip11RelayInfo.relayInformation
 import com.vitorpamplona.sot.config.Config
-import com.vitorpamplona.sot.query.VespaSearch
+import com.vitorpamplona.sot.vespa.VespaSearch
 import io.ktor.server.routing.Route
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame

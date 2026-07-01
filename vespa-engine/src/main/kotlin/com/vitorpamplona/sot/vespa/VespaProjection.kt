@@ -1,4 +1,4 @@
-package com.vitorpamplona.sot.indexer
+package com.vitorpamplona.sot.vespa
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -12,6 +12,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.delay
 
 /**
  * Projects the event store into Vespa. It consumes [ObservableEventStore.changes]
@@ -46,7 +47,22 @@ class VespaProjection(
     private val processed = AtomicInteger(0)
     private val failures = AtomicInteger(0)
 
-    fun processedCount() = processed.get()
+    /**
+     * Suspend until the change feed has been idle — nothing newly processed for
+     * [idleMs] — or [maxMs] elapses. Call after the sync finishes to let the
+     * projection catch up before the writers are drained.
+     */
+    suspend fun awaitIdle(idleMs: Long = 3000, maxMs: Long = 120_000) {
+        var last = -1
+        var stable = 0L
+        var total = 0L
+        while (stable < idleMs && total < maxMs) {
+            delay(300)
+            total += 300
+            val p = processed.get()
+            if (p == last) stable += 300 else { last = p; stable = 0 }
+        }
+    }
 
     /** Collect the change feed forever (launch in its own coroutine before syncing). */
     suspend fun run() {

@@ -1,6 +1,6 @@
 package com.vitorpamplona.sot.http
 
-import com.vitorpamplona.sot.query.SearchHit
+import com.vitorpamplona.sot.vespa.SearchHit
 import kotlinx.serialization.Serializable
 
 /**

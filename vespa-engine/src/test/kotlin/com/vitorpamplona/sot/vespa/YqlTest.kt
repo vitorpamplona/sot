@@ -1,4 +1,4 @@
-package com.vitorpamplona.sot.query
+package com.vitorpamplona.sot.vespa
 
 import kotlin.test.Test
 import kotlin.test.assertEquals

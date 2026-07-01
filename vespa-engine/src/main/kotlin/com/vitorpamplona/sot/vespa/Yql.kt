@@ -1,4 +1,4 @@
-package com.vitorpamplona.sot.query
+package com.vitorpamplona.sot.vespa
 
 /** Max query words we label / parametrize (mirrors the upstream server). */
 const val MAX_QUERY_WORDS = 6

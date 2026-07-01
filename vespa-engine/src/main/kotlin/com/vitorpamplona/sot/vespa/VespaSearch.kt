@@ -1,4 +1,4 @@
-package com.vitorpamplona.sot.query
+package com.vitorpamplona.sot.vespa
 
 import java.net.URI
 import java.net.URLEncoder

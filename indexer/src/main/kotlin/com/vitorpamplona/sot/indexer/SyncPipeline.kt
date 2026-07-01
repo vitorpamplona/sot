@@ -8,16 +8,12 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
- * Full pipeline. The store is the source of truth; [VespaProjection] mirrors its
- * change feed into Vespa. [RelaySyncer] prefers negentropy and falls back to
+ * Nostr sync pipeline. Fetches events from relays into the store — the source of
+ * truth — and nothing more; mapping the store into Vespa is a separate concern
+ * (a projection subscribes to the store's change feed, wired up by the caller).
+ * [RelaySyncer] prefers negentropy and falls back to
  * paginated `since` fetches, advancing per-relay cursors in [SyncState] so
  * periodic re-runs only pull the delta.
  *
@@ -31,7 +27,6 @@ import kotlinx.coroutines.launch
 suspend fun runSync(
     client: NostrClient,
     store: ObservableEventStore,
-    projection: VespaProjection,
     state: SyncState,
     statePath: String,
     seedRelays: List<String>,
@@ -46,12 +41,6 @@ suspend fun runSync(
     syncScores: Boolean = true,
     verifyEvents: Boolean = true,
 ) {
-    // Run the projection in its OWN supervised scope, not as a child of this
-    // function's job. Otherwise a single failure while consuming the change feed
-    // would cancel the whole scope — and the sync phases with it, making their
-    // negentropy calls abort instantly and deliver nothing.
-    val projScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    projScope.launch { projection.run() }
     val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = fetchTimeoutMs, verifyEvents = verifyEvents)
 
     try {
@@ -90,25 +79,9 @@ suspend fun runSync(
         }
     }
 
-    log("=== draining projection ===")
-    drainUntilIdle(projection)
     } finally {
-        projScope.cancel()
         SyncState.save(statePath, state)
         log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")
-    }
-}
-
-/** Wait until the projection has been idle (no new changes processed) for a beat. */
-private suspend fun drainUntilIdle(projection: VespaProjection, idleMs: Long = 3000, maxMs: Long = 120_000) {
-    var last = -1
-    var stable = 0L
-    var total = 0L
-    while (stable < idleMs && total < maxMs) {
-        delay(300)
-        total += 300
-        val p = projection.processedCount()
-        if (p == last) stable += 300 else { last = p; stable = 0 }
     }
 }
 

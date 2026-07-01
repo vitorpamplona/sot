@@ -5,8 +5,11 @@
 > adds the `jitpack.io` repository.
 
 Loads Nostr data using **[Amethyst's Quartz](https://github.com/vitorpamplona/amethyst)**
-into a Quartz **EventStore** (the source of truth), then projects profiles and
-observer-keyed web-of-trust scores into Vespa.
+into a Quartz **EventStore** (the source of truth) — and nothing more. Mapping the
+store into Vespa (kind:0 → profile, kind:30382 → trust score, …) is a separate
+concern that lives in **`:vespa-engine`** (`VespaProjection`), which subscribes to
+the store's `changes` feed. This module is pure Nostr: relay transport, negentropy
+sync, outbox discovery, and cursor bookkeeping.
 
 A plain Nostr `REQ` is capped by the relay (≈500 events on the relays we use).
 Two ways to get past that, selectable with `--mode`:
@@ -113,12 +116,11 @@ sot index all                            # both (default stage)
 | client | `NostrClient(socketBuilder, scope)` |
 | paged fetch (default) | `INostrClient.fetchAllPages(relay, filters, onEvent)` |
 | negentropy sync | `INostrClient.negentropySyncOrFetch(...)` (NIP-77 + paged fallback, windows `max_sync_events`) |
-| kind:0 parsing | `MetadataEvent.contactMetaData()` → `UserMetadata` |
-| kind:30382 parsing | `ContactCardEvent.aboutUser()` (subject) + `.rank()` (0–100) |
+| store | `ObservableEventStore(EventStore(...))` — persists events, emits a `changes` feed |
 
-`VespaClient` writes the *exact* document-API payloads the upstream Python
-`vespa.py` uses, so the index contents are identical regardless of which loader
-filled them.
+Event parsing (`MetadataEvent.contactMetaData()`, `ContactCardEvent.aboutUser()`/`.rank()`)
+and the Vespa document writes happen in the projection (`:vespa-engine`), not here —
+this module only fills the store.
 
 ## Design notes
 

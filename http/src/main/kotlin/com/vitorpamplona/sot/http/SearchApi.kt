@@ -1,8 +1,8 @@
 package com.vitorpamplona.sot.http
 
-import com.vitorpamplona.sot.query.SearchHit
-import com.vitorpamplona.sot.query.SearchOptions
-import com.vitorpamplona.sot.query.VespaSearch
+import com.vitorpamplona.sot.vespa.SearchHit
+import com.vitorpamplona.sot.vespa.SearchOptions
+import com.vitorpamplona.sot.vespa.VespaSearch
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get

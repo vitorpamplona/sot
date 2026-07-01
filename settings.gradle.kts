@@ -17,7 +17,7 @@ dependencyResolutionManagement {
 rootProject.name = "sot"
 
 include(":config")
-include(":query-engine")
+include(":vespa-engine")
 include(":indexer")
 include(":http")
 include(":relay")

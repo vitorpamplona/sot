@@ -1,4 +1,4 @@
-package com.vitorpamplona.sot.indexer
+package com.vitorpamplona.sot.vespa
 
 import com.vitorpamplona.quartz.nip01Core.metadata.UserMetadata
 import java.net.URI

@@ -4,14 +4,16 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.indexer.SyncState
-import com.vitorpamplona.sot.indexer.VespaClient
-import com.vitorpamplona.sot.indexer.VespaProjection
+import com.vitorpamplona.sot.vespa.VespaClient
+import com.vitorpamplona.sot.vespa.VespaProjection
 import com.vitorpamplona.sot.indexer.okHttpWebsocketBuilder
 import com.vitorpamplona.sot.indexer.openStore
 import com.vitorpamplona.sot.indexer.runSync
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -81,12 +83,21 @@ internal fun index(args: List<String>) {
     val store = openStore(dbPath, relayUrl)
     val projection = VespaProjection(store, vespa, writers, log)
 
+    // Wire the store -> Vespa projection here; the indexer only fills the store.
+    // Its own supervised scope so a projection error can't cancel the sync;
+    // launched before syncing, then drained after so it catches up before exit.
+    val projScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    projScope.launch { projection.run() }
+
     runBlocking {
         runSync(
-            client, store, projection, state, statePath, plan.relays, maxEvents, log,
+            client, store, state, statePath, plan.relays, maxEvents, log,
             fetchTimeoutMs, maxProviders, plan.profiles, discover, maxRounds, maxRelays, plan.scores,
         )
+        log("draining projection ...")
+        projection.awaitIdle()
     }
+    projScope.cancel()
 
     log("draining Vespa writes ...")
     writers.shutdown()
