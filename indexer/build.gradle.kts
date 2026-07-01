@@ -18,5 +18,5 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.vitorpamplona.vespasearch.indexer.MainKt")
+    mainClass.set("com.vitorpamplona.sot.indexer.MainKt")
 }

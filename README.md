@@ -1,4 +1,4 @@
-# vespa-search
+# sot
 
 A Vespa-backed Nostr profile search ranked by the Nostr **web of trust**, built
 as a multi-module Kotlin project. It grew out of a local replica of
@@ -9,17 +9,17 @@ indexer, a shared search core, an HTTP API, a NIP-50 search relay, and a CLI.
 ## Modules (one Gradle build)
 
 ```
-vespa-app/          Vespa application package — schema + rank profiles (the "equations").
+vespa/          Vespa application package — schema + rank profiles (the "equations").
                     doc.sd is language-agnostic and still upstreamable.
-common-query/       The search core (Kotlin lib): YQL builder + Vespa search client +
+query-engine/       The search core (Kotlin lib): YQL builder + Vespa search client +
                     result model. Ported from the upstream Python; has unit tests.
 indexer/            Nostr -> Quartz EventStore -> Vespa. Negentropy sync (NIP-77) with
                     since-cursors; projects profiles + observer-keyed WoT scores.
-http-api/           Ktor service: GET /search/byText -> common-query.
-search-relay/       Quartz relay server answering NIP-50 `search` REQs: rank in Vespa,
+http-api/           Ktor service: GET /search/byText -> query-engine.
+relay/       Quartz relay server answering NIP-50 `search` REQs: rank in Vespa,
                     return the original signed kind-0 events from the indexer's store.
                     NIP-42 optional auth picks the ranking observer.
-cli/                install / status / search from the terminal (reuses common-query).
+cli/                install / status / search from the terminal (reuses query-engine).
 gradle/libs.versions.toml   shared versions (Quartz@JitPack, Ktor, coroutines, sqlite).
 
 brainstorm_server/  Python — kept as an upstream reference to diff against.
@@ -27,18 +27,18 @@ tools/              Python — legacy experiment harness (search.py, compare.py,
 ```
 
 Build everything: `gradle build`. Run a module: `gradle :cli:installDist` then
-`./cli/build/install/vespa-search/bin/vespa-search search "vitor"`.
+`./cli/build/install/sot/bin/sot search "vitor"`.
 
 Quartz does the heavy Nostr lifting across modules (events, NIP-19/42/50/77, the
 relay server, the EventStore); Ktor serves HTTP/WebSocket.
 
 <details><summary>Legacy layout notes (Python reference)</summary>
 
-The Python `brainstorm_server/app/core/vespa.py` (YQL builder) and `vespa-app/`
+The Python `brainstorm_server/app/core/vespa.py` (YQL builder) and `vespa/`
 were originally vendored verbatim from
 [`NosFabrica/brainstorm_server`](https://github.com/NosFabrica/brainstorm_server)
 and [`NosFabrica/brainstorm_one_click_deployment`](https://github.com/NosFabrica/brainstorm_one_click_deployment)
-so changes diff cleanly upstream. `common-query` is the Kotlin port of that
+so changes diff cleanly upstream. `query-engine` is the Kotlin port of that
 query logic; `doc.sd` remains the shared, upstreamable ranking artifact.
 
 ```
@@ -59,7 +59,7 @@ requirements.txt
 - `name_and_quality_score_only` (the production profile) scores text relevance
   first (exact-token tier `2000+` vs. gram tier `300`), then in second-phase
   adds a logistic `quality_boost` gated by text quality. `search_rank` is a
-  simpler multiplicative alternative. Both are in `vespa-app/schemas/doc.sd`.
+  simpler multiplicative alternative. Both are in `vespa/schemas/doc.sd`.
 - The query (`app/core/vespa.py`) fans one user query into per-word groups of
   exact / prefix / fuzzy / trigram clauses across `name`, `display_name`,
   `about`, then over-fetches and re-filters.
@@ -98,7 +98,7 @@ where it does.
 
 There are two places to change the "search equations":
 
-1. **Ranking math** — edit `vespa-app/schemas/doc.sd` (the rank-profile
+1. **Ranking math** — edit `vespa/schemas/doc.sd` (the rank-profile
    expressions), then redeploy and re-test:
 
    ```bash
@@ -130,7 +130,7 @@ the 0..100 scale the `quality_boost` sigmoid expects — no rescaling.
 
 ## Upstreaming a change
 
-Because `vespa-app/` and `app/core/vespa.py` match upstream byte-for-byte, a
+Because `vespa/` and `app/core/vespa.py` match upstream byte-for-byte, a
 plain `diff` against the upstream file is your patch. Apply it to a checkout of
 the corresponding upstream repo and open the PR there. Do **not** upstream the
 `tools/`, `docker-compose.yml`, or the `config.py`/`loggr.py` shims.

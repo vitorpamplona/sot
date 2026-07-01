@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Redeploy the local Vespa application package after editing
-# vespa-app/schemas/doc.sd (or services.xml). Pushes the package straight to
+# vespa/schemas/doc.sd (or services.xml). Pushes the package straight to
 # the config server's prepareandactivate endpoint — no container recreate, so
 # iterating on ranking equations takes a few seconds.
 #
-#   tools/deploy.sh            # deploy ./vespa-app to localhost:19071
+#   tools/deploy.sh            # deploy ./vespa to localhost:19071
 #   VESPA_CONFIG=host:19071 tools/deploy.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/vespa-app"
+APP="$ROOT/vespa"
 CONFIG="${VESPA_CONFIG:-localhost:19071}"
 QUERY="${VESPA_QUERY:-localhost:8080}"
 
-tmp="$(mktemp /tmp/vespa-app.XXXXXX.tgz)"
+tmp="$(mktemp /tmp/vespa.XXXXXX.tgz)"
 trap 'rm -f "$tmp"' EXIT
 
 echo "[deploy] packaging $APP ..."

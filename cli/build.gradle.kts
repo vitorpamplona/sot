@@ -4,7 +4,7 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":common-query"))
+    implementation(project(":query-engine"))
 }
 
 kotlin {
@@ -12,6 +12,6 @@ kotlin {
 }
 
 application {
-    applicationName = "vespa-search"
-    mainClass.set("com.vitorpamplona.vespasearch.cli.MainKt")
+    applicationName = "sot"
+    mainClass.set("com.vitorpamplona.sot.cli.MainKt")
 }

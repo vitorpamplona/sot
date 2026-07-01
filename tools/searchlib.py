@@ -7,7 +7,7 @@ lets you swap the rank-profile and override any `ranking.features.query(...)`
 input from the command line.
 
 When the change you want is to the *equations themselves* (the rank-profile
-math), edit `vespa-app/schemas/doc.sd` and redeploy with `tools/deploy.sh`.
+math), edit `vespa/schemas/doc.sd` and redeploy with `tools/deploy.sh`.
 When the change is to *query construction* and you intend to upstream it, edit
 `brainstorm_server/app/core/vespa.py` directly.
 """

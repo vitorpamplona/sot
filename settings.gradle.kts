@@ -14,10 +14,10 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "vespa-search"
+rootProject.name = "sot"
 
-include(":common-query")
+include(":query-engine")
 include(":indexer")
 include(":http-api")
-include(":search-relay")
+include(":relay")
 include(":cli")

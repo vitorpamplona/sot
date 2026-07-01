@@ -1,17 +1,16 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
-    alias(libs.plugins.kotlin.serialization)
     application
 }
 
 dependencies {
     implementation(project(":query-engine"))
-    implementation(libs.quartz) // NIP-19 npub -> hex
+    implementation(libs.quartz) // relay server framework, events, NIP-42, NIP-50 Filter.search
     implementation(libs.kotlinx.coroutines)
+    implementation(libs.androidx.sqlite.bundled) // open the indexer's SQLite EventStore
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
-    implementation(libs.ktor.server.content.negotiation)
-    implementation(libs.ktor.serialization.json)
+    implementation(libs.ktor.server.websockets)
 }
 
 kotlin {
@@ -19,5 +18,5 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.vitorpamplona.sot.httpapi.ApplicationKt")
+    mainClass.set("com.vitorpamplona.sot.relay.ApplicationKt")
 }
