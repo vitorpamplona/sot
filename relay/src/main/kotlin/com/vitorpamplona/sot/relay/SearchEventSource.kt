@@ -44,19 +44,17 @@ class SearchEventSource(
                     }
                 if (hits.isEmpty()) continue
 
-                // One store query for every ranked author (not one per hit), keeping the
-                // newest kind-0 per author; then emit in Vespa's rank order.
-                val newestByAuthor =
+                // One store query for every ranked author (not one per hit). kind:0 is
+                // replaceable, so the store already holds just the latest per author.
+                val byAuthor =
                     withContext(Dispatchers.IO) {
-                        val map = HashMap<String, Event>()
                         store
                             .query<Event>(Filter(kinds = listOf(MetadataEvent.KIND), authors = hits.map { it.pubkey }))
-                            .forEach { e -> map.merge(e.pubKey, e) { a, b -> if (b.createdAt >= a.createdAt) b else a } }
-                        map
+                            .associateBy { it.pubKey }
                     }
                 for (hit in hits) {
                     currentCoroutineContext().ensureActive() // honor CLOSE / disconnect
-                    newestByAuthor[hit.pubkey]?.let { emit(it) }
+                    byAuthor[hit.pubkey]?.let { emit(it) }
                 }
             }
         }

@@ -25,4 +25,4 @@ http://localhost:8090/?api=http://localhost:8081
 ```
 
 That's the only knob. `TRUST` is the observer's web-of-trust score for the
-profile (`quality_scores{observer}`); `SCORE` is the text relevance.
+profile (`quality_scores{observer}`); `RELEVANCE` is the text match score.

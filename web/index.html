@@ -233,8 +233,8 @@
     return `<div class="avatar"></div>`;
   }
   const nameOf = (h) => h.name || h.displayName || (h.pubkey && h.pubkey.slice(0, 16)) || "(unnamed)";
-  const qualityOf = (h) => h.qualityScore ?? 0;
-  const scoreOf = (h) => h.relevance ?? null;
+  const trustOf = (h) => h.trust ?? 0;
+  const relevanceOf = (h) => h.relevance ?? null;
 
   function statusBody(loadingText) {
     if (s.error) return `<div class="error">${esc(s.error)}</div>`;
@@ -250,7 +250,7 @@
     let body = statusBody("Loading&hellip;");
     if (body === null) {
       body = s.hits.slice(0, POPUP_LIMIT).map((h, j) => {
-        const sc = scoreOf(h);
+        const sc = relevanceOf(h);
         return `
         <div class="popup-item" data-idx="${j}" role="option">
           ${avatarHtml(h.picture)}
@@ -259,7 +259,7 @@
             <div class="row-about">${esc(h.about || "")}</div>
           </div>
           <div class="row-meta">
-            <span class="q">${esc(fmt(qualityOf(h)))}</span>
+            <span class="q">${esc(fmt(trustOf(h)))}</span>
             ${sc != null ? `<span class="row-score">${esc(fmt(sc))}</span>` : ""}
           </div>
         </div>`;
@@ -274,7 +274,7 @@
     if (h.pubkey) props.push([`pubkey`, `<a href="https://njump.me/${esc(h.pubkey)}" target="_blank" rel="noopener noreferrer">${esc(h.pubkey)}</a>`]);
     const propEntries = props.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
     const dn = h.displayName;
-    const sc = scoreOf(h);
+    const sc = relevanceOf(h);
     return `
       <article class="result">
         <div class="result-header">
@@ -284,9 +284,9 @@
             ${dn && dn !== h.name ? `<div class="result-display">${esc(dn)}</div>` : ""}
           </div>
           <div class="quality">
-            <div class="quality-num">${esc(fmt(qualityOf(h)))}</div>
+            <div class="quality-num">${esc(fmt(trustOf(h)))}</div>
             <div class="quality-label">Trust</div>
-            ${sc != null ? `<div class="score-num">${esc(fmt(sc))}</div><div class="score-label">Score</div>` : ""}
+            ${sc != null ? `<div class="score-num">${esc(fmt(sc))}</div><div class="score-label">Relevance</div>` : ""}
           </div>
         </div>
         ${h.about ? `<div class="result-about">${esc(h.about)}</div>` : ""}

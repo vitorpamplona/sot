@@ -14,11 +14,11 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-/** One ranked search result. [userScore] is the observer's trust score for this doc. */
+/** One ranked search result. [trust] is the observer's trust score for this doc. */
 data class SearchHit(
     val pubkey: String,
     val relevance: Double?,
-    val userScore: Double?,
+    val trust: Double?,
     val fields: Map<String, String>,
 ) {
     val name: String get() = fields["name"] ?: ""
@@ -72,14 +72,14 @@ class VespaSearch(
             val ho = h.jsonObject
             val fieldsObj = ho["fields"]?.jsonObject ?: continue
             val mf = fieldsObj["matchfeatures"]?.jsonObject
-            val userScore = mf?.get("user_score")?.jsonPrimitive?.doubleOrNull
-            if (!opts.includeZeroScore && (userScore ?: 0.0) <= 0.0) continue
+            val trust = mf?.get("user_score")?.jsonPrimitive?.doubleOrNull
+            if (!opts.includeZeroScore && (trust ?: 0.0) <= 0.0) continue
             val fields = stringFields(fieldsObj, drop = "matchfeatures")
             out.add(
                 SearchHit(
                     pubkey = fields["pubkey"] ?: "",
                     relevance = ho["relevance"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-                    userScore = userScore,
+                    trust = trust,
                     fields = fields,
                 ),
             )
@@ -99,7 +99,7 @@ class VespaSearch(
         val fieldsObj = Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject ?: return null
         // quality_scores is a tensor object (not a primitive) — drop it from the string map.
         val fields = stringFields(fieldsObj, drop = "quality_scores")
-        return SearchHit(pubkey = fields["pubkey"] ?: pubkey, relevance = null, userScore = null, fields = fields)
+        return SearchHit(pubkey = fields["pubkey"] ?: pubkey, relevance = null, trust = null, fields = fields)
     }
 
     private fun get(params: Map<String, String>): JsonObject {

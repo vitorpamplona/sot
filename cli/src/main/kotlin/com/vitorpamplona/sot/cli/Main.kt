@@ -78,7 +78,7 @@ private fun usage() {
         sot - local Nostr profile search
 
           search "<query>" [--observer <hex>] [--hits N] [--rank <profile>] [--only-ranked] [--vespa <url>]
-          status  [--vespa <url>] [--api <url>] [--relay <url>]
+          status  [--vespa <url>] [--http <url>] [--relay <url>]
           up                 start local Vespa (docker compose) and deploy vespa
           down               stop local Vespa
           deploy [--app <dir>] [--config <host:port>]   redeploy the Vespa app package
@@ -108,13 +108,13 @@ private fun search(args: List<String>) {
 
     println("query=${query} ranking=$rank observer=${observer.take(12)}.. results=${results.size}")
     println("-".repeat(92))
-    println("%2s  %11s  %6s  %-30s %s".format("#", "relevance", "score", "name / display_name", "nip05"))
+    println("%2s  %11s  %6s  %-30s %s".format("#", "relevance", "trust", "name / display_name", "nip05"))
     println("-".repeat(92))
     results.forEachIndexed { i, h ->
         val label = (h.displayName.ifBlank { h.name }).take(30)
         val rel = h.relevance?.let { "%.2f".format(it) } ?: "-"
-        val sc = h.userScore?.let { "%.0f".format(it) } ?: "-"
-        println("%2d  %11s  %6s  %-30s %s".format(i + 1, rel, sc, label, h.fields["nip05"] ?: ""))
+        val tr = h.trust?.let { "%.0f".format(it) } ?: "-"
+        println("%2d  %11s  %6s  %-30s %s".format(i + 1, rel, tr, label, h.fields["nip05"] ?: ""))
     }
 }
 
@@ -129,12 +129,12 @@ private fun ping(url: String, accept: String? = null): Boolean =
 
 private fun status(args: List<String>) {
     val vespa = flag(args, "--vespa", "http://localhost:8080")
-    val api = flag(args, "--api", "http://localhost:8081")
+    val httpUrl = flag(args, "--http", "http://localhost:8081")
     val relay = flag(args, "--relay", "http://localhost:7777")
     fun line(name: String, ok: Boolean) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
     println("component status:")
     line("Vespa        ($vespa)", ping("$vespa/ApplicationStatus"))
-    line("http         ($api)", ping("$api/search?text=_"))
+    line("http         ($httpUrl)", ping("$httpUrl/search?text=_"))
     line("relay        ($relay)", ping("$relay/", accept = "application/nostr+json"))
 }
 

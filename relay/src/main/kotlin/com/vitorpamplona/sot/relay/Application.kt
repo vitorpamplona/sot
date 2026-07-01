@@ -24,8 +24,9 @@ import kotlinx.coroutines.launch
  * kind-0 events from the indexer's local EventStore. NIP-42 optional auth
  * ([OptionalAuthPolicy]) picks the ranking observer. Transport is Ktor WebSockets.
  *
- * Env: INDEXER_DB (SQLite path), RELAY_URL (public ws url for NIP-42), RELAY_PORT,
- *      VESPA_URL, DEFAULT_OBSERVER (fallback observer for unauthenticated clients).
+ * Env: EVENTS_DB (SQLite path, shared with the indexer), RELAY_URL (public ws url
+ *      for NIP-42), RELAY_PORT, VESPA_URL, DEFAULT_OBSERVER (fallback observer for
+ *      unauthenticated clients).
  */
 private val DEFAULT_OBSERVER = System.getenv("DEFAULT_OBSERVER").orEmpty()
 
@@ -34,7 +35,7 @@ private val NIP11 =
         """"supported_nips":[1,11,42,50],"software":"https://github.com/vitorpamplona/sot","version":"0.1"}"""
 
 fun main() {
-    val dbPath = System.getenv("INDEXER_DB") ?: "events.db"
+    val dbPath = System.getenv("EVENTS_DB") ?: "events.db"
     val relayUrl = RelayUrlNormalizer.normalize(System.getenv("RELAY_URL") ?: "ws://localhost:7777")
     val port = (System.getenv("RELAY_PORT") ?: "7777").toInt()
 

@@ -39,7 +39,7 @@ private const val RESULTS_LIMIT = 400
 data class Result(
     val pubkey: String,
     val relevance: Double? = null,
-    val qualityScore: Double? = null,
+    val trust: Double? = null,
     val name: String = "",
     val displayName: String = "",
     val about: String = "",
@@ -54,7 +54,7 @@ private fun SearchHit.toResult() =
     Result(
         pubkey = pubkey,
         relevance = relevance,
-        qualityScore = userScore,
+        trust = trust,
         name = fields["name"] ?: "",
         displayName = fields["display_name"] ?: "",
         about = fields["about"] ?: "",

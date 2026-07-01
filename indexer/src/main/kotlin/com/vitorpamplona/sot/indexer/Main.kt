@@ -12,10 +12,10 @@ import kotlinx.coroutines.runBlocking
  * (see [VespaProjection]). Scores are keyed by the OBSERVER (kind-10040 author),
  * resolved from the 30382 service key, per NIP-85 Trusted Assertions.
  *
- *   gradle run --args="all"        # kind:0 profiles + NIP-85 scores (default)
- *   gradle run --args="profiles"   # kind:0 profiles only
- *   gradle run --args="nip85"      # NIP-85 scores only (10040 + 30382)
- *   gradle run --args="sync --discover true"   # + kind-10002 outbox crawl
+ *   gradle run --args="all"                    # kind:0 profiles + NIP-85 scores (default)
+ *   gradle run --args="profiles"               # kind:0 profiles only
+ *   gradle run --args="nip85"                  # NIP-85 scores only (10040 + 30382)
+ *   gradle run --args="all --discover true"    # + kind-10002 outbox crawl
  *
  * Every stage is one call to [runSync]: the store persists each event so re-runs
  * only fetch the delta (negentropy / `since` cursors), and Vespa is a projection.
@@ -53,23 +53,23 @@ fun main(args: Array<String>) {
     // Per-stage ingest cap (0 = unlimited). Relays can hold millions of events;
     // for local equation experiments a slice is plenty.
     val maxEvents = arg(args, "--max-events", "25000").toInt()
-    val dbPath = arg(args, "--db", "events.db")
+    val dbPath = arg(args, "--db", System.getenv("EVENTS_DB") ?: "events.db")
     val statePath = arg(args, "--state", "$dbPath.state.json")
     val fetchTimeoutMs = arg(args, "--fetch-timeout", "30").toLong() * 1000
     val maxProviders = arg(args, "--max-providers", "0").toInt()
     val maxRounds = arg(args, "--max-rounds", "3").toInt()
     val maxRelays = arg(args, "--max-relays", "200").toInt()
 
-    val profileRelays = argList(args, "--relays", listOf(DEFAULT_PROFILE_RELAY))
+    val profileRelays = argList(args, "--profile-relays", listOf(DEFAULT_PROFILE_RELAY))
     val seeds = argList(args, "--seeds", DEFAULT_SEEDS)
     // Scores need the broad seed set: kind-10040 provider lists resolve the
     // observer, and they live on general relays, not the score relay alone.
     val plan = when (stage) {
         "profiles" -> Plan(profileRelays, profiles = true, scores = false)
         "nip85" -> Plan(seeds, profiles = false, scores = true)
-        else -> Plan(seeds, profiles = true, scores = true) // "all" / "sync"
+        else -> Plan(seeds, profiles = true, scores = true) // "all"
     }
-    val discover = arg(args, "--discover", if (stage == "sync") "true" else "false").toBooleanStrict()
+    val discover = arg(args, "--discover", "false").toBooleanStrict()
 
     val vespa = VespaClient(vespaUrl)
     val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))
