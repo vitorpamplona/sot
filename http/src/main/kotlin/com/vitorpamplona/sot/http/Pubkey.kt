@@ -1,17 +1,17 @@
 package com.vitorpamplona.sot.http
 
-import com.vitorpamplona.quartz.nip19Bech32.Nip19Parser
-import com.vitorpamplona.quartz.nip19Bech32.entities.NPub
-import com.vitorpamplona.quartz.utils.Hex
+import com.vitorpamplona.quartz.nip05DnsIdentifiers.Nip05Client
+import com.vitorpamplona.quartz.nip05DnsIdentifiers.OkHttpNip05Fetcher
+import com.vitorpamplona.quartz.nip05DnsIdentifiers.resolveUserHexOrNull
+import okhttp3.OkHttpClient
 
 /**
  * Resolve a pubkey identifier to a 64-char hex pubkey, or null if it isn't one.
- * Accepts a raw hex key or a NIP-19 `npub1…`. Used both for the `observer`
- * parameter and to detect when the query text is itself a pubkey (doc lookup).
+ * Accepts hex, a NIP-19 `npub`/`nprofile`, or a NIP-05 `name@domain` (looked up
+ * over HTTPS) — the same forms the CLI accepts, via Quartz's [resolveUserHexOrNull].
+ * Used for the `observer` parameter and to detect when the query text is itself a
+ * pubkey (a direct doc lookup instead of a text search).
  */
-internal fun resolvePubkey(text: String): String? =
-    when {
-        Hex.isHex64(text) -> text.lowercase()
-        text.startsWith("npub1") -> (Nip19Parser.uriToRoute(text)?.entity as? NPub)?.hex
-        else -> null
-    }
+private val nip05 = Nip05Client(OkHttpNip05Fetcher { OkHttpClient() })
+
+internal suspend fun resolvePubkey(text: String): String? = resolveUserHexOrNull(text, nip05)

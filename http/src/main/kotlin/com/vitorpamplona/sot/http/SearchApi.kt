@@ -15,8 +15,9 @@ import kotlinx.coroutines.withContext
  * pubkey parsing lives in Pubkey.kt, the response model in SearchResponse.kt, and
  * all ranking is delegated to [VespaSearch] in :query-engine.
  *
- * Params: `text` (required), `observer` (hex/npub, defaults to [defaultObserver]),
- * `maxHits` (1..[MAX_HITS]), `onlyRanked` (drop zero-trust results, default true).
+ * Params: `text` (required), `observer` (hex/npub/nprofile/nip05, defaults to
+ * [defaultObserver]), `maxHits` (1..[MAX_HITS]), `onlyRanked` (drop zero-trust
+ * results, default true).
  */
 
 // Strip ASCII control chars (C0 range 0x00-0x1f and DEL 0x7f) from the query so
@@ -34,13 +35,15 @@ fun Route.searchApi(vespa: VespaSearch, defaultObserver: String) {
             call.respond(SearchResponse(text, 0, emptyList()))
             return@get
         }
-        val observer = params["observer"]?.let(::resolvePubkey) ?: defaultObserver
         val maxHits = (params["maxHits"]?.toIntOrNull() ?: DEFAULT_HITS).coerceIn(1, MAX_HITS)
         val onlyRanked = params["onlyRanked"]?.toBoolean() ?: true
 
         val hits =
             withContext(Dispatchers.IO) {
-                // A hex/npub query is a direct doc lookup; free text is a ranked search.
+                // Resolve identifiers off the event loop (NIP-05 may hit the network).
+                val observer = params["observer"]?.let { resolvePubkey(it) } ?: defaultObserver
+                // A pubkey-shaped query (hex/npub/nprofile/nip05) is a direct doc
+                // lookup; free text is a ranked search.
                 resolvePubkey(text)?.let { listOfNotNull(vespa.getDocument(it)) }
                     ?: vespa.search(text, observer, SearchOptions(hits = maxHits, includeZeroScore = !onlyRanked))
             }
