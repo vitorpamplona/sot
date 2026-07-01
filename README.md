@@ -48,7 +48,9 @@ relay server, the EventStore); Ktor serves HTTP/WebSocket.
 
 ## Quickstart
 
-Requires Docker and JDK 21 (Gradle 8.5+ — a global install or the wrapper).
+Requires Docker, JDK 21, and a global Gradle 8.5+ install (no wrapper is
+committed). The `sot` CLI wraps the Docker steps; install it once with
+`gradle :cli:installDist` and put `cli/build/install/sot/bin` on your `PATH`.
 
 ```bash
 # 1. Bring up Vespa and deploy the app package (schema + ranking)
@@ -63,12 +65,28 @@ gradle :indexer:run --args="all --max-events 25000"
 
 # 3. Search from the terminal (use the observer whose scores you loaded)
 sot search "vitor"
-sot search "vitor" --observer <grapevine_pubkey> --hits 20
+sot search "vitor" --observer <pubkey> --hits 20
 ```
 
 `sot search` prints each hit's `relevance` and `score` (the observer's
 `user_score`) so you can see *why* it ranks where it does. `sot status` shows
 whether Vespa / http-api / relay are up.
+
+### Serving search over HTTP and Nostr
+
+The same `query-engine` core is exposed two more ways:
+
+```bash
+# HTTP JSON API on :8081  (GET /search/byText?text=vitor&observer=<pubkey>)
+gradle :http-api:run
+
+# NIP-50 search relay on :7777  (send a `search` REQ; NIP-42 auth picks the
+# observer, otherwise the default observer is used)
+gradle :relay:run
+```
+
+Ports and the default observer are configurable via env: `HTTP_API_PORT`,
+`RELAY_PORT`, `RELAY_URL`, `INDEXER_DB`, `PERIODIC_GRAPERANK_PUBKEY`.
 
 ## The experiment loop
 
