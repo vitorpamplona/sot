@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>sot — search over trust</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --border: #ddd;
+    --accent: #2563eb;
+    --hover: #f0f4ff;
+    --card: #fff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  .page { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+  .hero { min-height: 26vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 7vh; }
+  .brand { font-size: 22px; font-weight: 700; letter-spacing: -.01em; margin-bottom: 2px; }
+  .brand span { color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .search-wrap { position: relative; width: 100%; max-width: 720px; }
+  #q {
+    width: 100%;
+    padding: 14px 18px;
+    font-size: 16px;
+    border: 1px solid var(--border);
+    border-radius: 28px;
+    outline: none;
+    background: var(--card);
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  #q:focus { border-color: var(--accent); box-shadow: 0 1px 6px rgba(37,99,235,.15); }
+
+  .popup {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; right: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.08);
+    z-index: 10;
+    display: none;
+    overflow: hidden;
+  }
+  .popup.open { display: block; }
+  .popup-col { max-height: 60vh; overflow-y: auto; }
+  .popup-col-head { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 8px 14px; background: #fafafa; border-bottom: 1px solid #eee; position: sticky; top: 0; display: flex; justify-content: space-between; }
+  .popup-col-head .timing { font-variant-numeric: tabular-nums; }
+  .popup-item {
+    display: flex;
+    gap: 10px;
+    padding: 9px 12px;
+    border-bottom: 1px solid #f0f0f0;
+    align-items: center;
+    cursor: pointer;
+  }
+  .popup-item:last-child { border-bottom: 0; }
+  .popup-item:hover, .popup-item.active { background: var(--hover); }
+  .avatar {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: #eee;
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+  .row-main { flex: 1; min-width: 0; }
+  .row-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .row-about { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .row-meta .q { font-size: 13px; font-weight: 600; color: var(--accent); }
+  .row-score { font-size: 11px; color: var(--muted); }
+
+  .results { padding: 16px 0 48px; }
+  .list-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 8px 4px;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .list-title { font-weight: 600; font-size: 15px; }
+  .list-stats { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .result {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+  .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .result-header .avatar { width: 48px; height: 48px; }
+  .result-header .who { flex: 1; min-width: 0; }
+  .result-name { font-size: 16px; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-display { color: var(--muted); font-size: 12px; }
+  .quality {
+    flex-shrink: 0;
+    text-align: center;
+    line-height: 1;
+    padding-left: 10px;
+  }
+  .quality-num { font-size: 28px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .quality-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 3px; }
+  .score-num { font-size: 14px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; margin-top: 6px; }
+  .score-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+  .result-about { margin: 6px 0; font-size: 13px; }
+  .props { display: grid; grid-template-columns: 90px 1fr; gap: 3px 10px; font-size: 12px; margin-top: 6px; }
+  .props dt { color: var(--muted); }
+  .props dd { margin: 0; word-break: break-all; }
+  .props a { color: var(--accent); text-decoration: none; }
+  .props a:hover { text-decoration: underline; }
+  .empty, .error { padding: 16px; text-align: center; color: var(--muted); font-size: 13px; }
+  .error { color: #c00; }
+
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 18px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: relative;
+    width: 38px; height: 22px;
+    border-radius: 11px;
+    background: #ccc;
+    flex-shrink: 0;
+    transition: background .15s;
+  }
+  .toggle-thumb {
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,.25);
+    transition: transform .15s;
+  }
+  .toggle input:checked + .toggle-track { background: var(--accent); }
+  .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
+  .toggle input:focus-visible + .toggle-track { box-shadow: 0 0 0 3px rgba(37,99,235,.3); }
+  .toggle-text { font-size: 13px; line-height: 1.3; }
+  .toggle-sub { display: block; color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="hero">
+    <div class="brand">so<span>t</span></div>
+    <div class="tagline">Nostr profile search, ranked by your web of trust</div>
+    <label class="toggle" title="Rank from your own Web of Trust instead of the server's default observer">
+      <input id="observer" type="checkbox" />
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      <span class="toggle-text">
+        Search as me
+        <span class="toggle-sub">Rank by your Web of Trust (needs a Nostr extension). Off = server default.</span>
+      </span>
+    </label>
+    <div class="search-wrap">
+      <input id="q" type="text" autocomplete="off" spellcheck="false" placeholder="Type to search&hellip;" autofocus />
+      <div id="popup" class="popup" role="listbox"></div>
+    </div>
+  </div>
+  <div id="results" class="results" hidden></div>
+</div>
+
+<script>
+(() => {
+  // The sot http-api base. Override with ?api=http://host:port for a remote one.
+  const API_BASE = new URLSearchParams(location.search).get("api") || "http://localhost:8081";
+
+  const POPUP_LIMIT = 8;
+  const FULL_LIMIT = 40;
+  const DEBOUNCE_MS = 120;
+
+  // "Search as me": when on, pass observer=<my pubkey> so ranking uses the
+  // signed-in user's Web of Trust; off = the server's DEFAULT_OBSERVER.
+  let asObserver = false;
+
+  // Read (and cache) the signed-in user's pubkey via the NIP-07 extension.
+  let userPubkey = null, userPubkeyPromise = null;
+  function getUserPubkey() {
+    if (userPubkey) return Promise.resolve(userPubkey);
+    if (!userPubkeyPromise) {
+      userPubkeyPromise = (async () => {
+        if (!(window.nostr && window.nostr.getPublicKey)) throw new Error("No Nostr extension found (window.nostr)");
+        const pk = await window.nostr.getPublicKey();
+        if (!pk) throw new Error("Nostr extension returned no public key");
+        userPubkey = pk;
+        return pk;
+      })();
+      userPubkeyPromise.catch(() => {}).finally(() => { userPubkeyPromise = null; });
+    }
+    return userPubkeyPromise;
+  }
+
+  // One call to GET /search. Returns { hits, total }.
+  async function search(text, signal, limit) {
+    const params = new URLSearchParams({ text, maxHits: String(limit), onlyRanked: "false" });
+    if (asObserver) {
+      const pk = await getUserPubkey();
+      params.set("observer", pk);
+    }
+    const r = await fetch(`${API_BASE}/search?${params}`, { signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    const results = d.results || [];
+    return { hits: results.slice(0, limit), total: d.numResults ?? results.length };
+  }
+
+  const $q = document.getElementById("q");
+  const $popup = document.getElementById("popup");
+  const $results = document.getElementById("results");
+  const $observer = document.getElementById("observer");
+
+  const s = { popupAbort: null, fullAbort: null, requestId: 0, hits: [], total: null, lastMs: null, loading: false, error: null };
+  let debounceTimer = null;
+  let activeKey = null;
+
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+  const fmt = (n) => typeof n === "number" && !Number.isInteger(n) ? n.toFixed(2) : String(n);
+
+  function avatarHtml(pic) {
+    if (pic) return `<img class="avatar" src="${esc(pic)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'avatar'}))" />`;
+    return `<div class="avatar"></div>`;
+  }
+  const nameOf = (h) => h.name || h.displayName || (h.pubkey && h.pubkey.slice(0, 16)) || "(unnamed)";
+  const qualityOf = (h) => h.qualityScore ?? 0;
+  const scoreOf = (h) => h.relevance ?? null;
+
+  function statusBody(loadingText) {
+    if (s.error) return `<div class="error">${esc(s.error)}</div>`;
+    if (s.loading && !s.hits.length) return `<div class="empty">${loadingText}</div>`;
+    if (!s.hits.length) return `<div class="empty">No results</div>`;
+    return null;
+  }
+
+  function renderPopup() {
+    const count = s.hits.length;
+    const meta = [s.error ? "" : `${count} of ${s.total ?? "?"}`, s.lastMs != null ? `${s.lastMs} ms` : ""].filter(Boolean).join(" · ");
+    const head = `<div class="popup-col-head"><span>Results</span><span class="timing">${meta}</span></div>`;
+    let body = statusBody("Loading&hellip;");
+    if (body === null) {
+      body = s.hits.slice(0, POPUP_LIMIT).map((h, j) => {
+        const sc = scoreOf(h);
+        return `
+        <div class="popup-item" data-idx="${j}" role="option">
+          ${avatarHtml(h.picture)}
+          <div class="row-main">
+            <div class="row-name">${esc(nameOf(h))}</div>
+            <div class="row-about">${esc(h.about || "")}</div>
+          </div>
+          <div class="row-meta">
+            <span class="q">${esc(fmt(qualityOf(h)))}</span>
+            ${sc != null ? `<span class="row-score">${esc(fmt(sc))}</span>` : ""}
+          </div>
+        </div>`;
+      }).join("");
+    }
+    $popup.innerHTML = `<div class="popup-col">${head + body}</div>`;
+  }
+
+  function renderResult(h) {
+    const props = [];
+    if (h.nip05) props.push([`nip05`, esc(h.nip05)]);
+    if (h.pubkey) props.push([`pubkey`, `<a href="https://njump.me/${esc(h.pubkey)}" target="_blank" rel="noopener noreferrer">${esc(h.pubkey)}</a>`]);
+    const propEntries = props.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+    const dn = h.displayName;
+    const sc = scoreOf(h);
+    return `
+      <article class="result">
+        <div class="result-header">
+          ${avatarHtml(h.picture)}
+          <div class="who">
+            <h2 class="result-name">${esc(nameOf(h))}</h2>
+            ${dn && dn !== h.name ? `<div class="result-display">${esc(dn)}</div>` : ""}
+          </div>
+          <div class="quality">
+            <div class="quality-num">${esc(fmt(qualityOf(h)))}</div>
+            <div class="quality-label">Trust</div>
+            ${sc != null ? `<div class="score-num">${esc(fmt(sc))}</div><div class="score-label">Score</div>` : ""}
+          </div>
+        </div>
+        ${h.about ? `<div class="result-about">${esc(h.about)}</div>` : ""}
+        <dl class="props">${propEntries}</dl>
+      </article>`;
+  }
+
+  function renderResults() {
+    const stats = s.error ? "" : `${s.hits.length} of ${s.total ?? "?"} · ${s.lastMs ?? "?"} ms`;
+    const head = `<div class="list-head"><div class="list-title">Results</div><div class="list-stats">${stats}</div></div>`;
+    const body = statusBody("Searching&hellip;") ?? s.hits.map(renderResult).join("");
+    $results.innerHTML = head + body;
+  }
+
+  function openPopup() { $popup.classList.add("open"); }
+  function closePopup() { $popup.classList.remove("open"); activeKey = null; }
+  const popupItems = () => Array.from($popup.querySelectorAll(".popup-item"));
+  function setActive(idx) {
+    const items = popupItems();
+    if (!items.length) return;
+    if (idx < 0) idx = items.length - 1;
+    if (idx >= items.length) idx = 0;
+    items.forEach(el => el.classList.remove("active"));
+    items[idx].classList.add("active");
+    items[idx].scrollIntoView({ block: "nearest" });
+    activeKey = idx;
+  }
+
+  async function run(text, mode) {
+    const myId = ++s.requestId;
+    const abortKey = mode === "popup" ? "popupAbort" : "fullAbort";
+    if (s[abortKey]) s[abortKey].abort();
+    s[abortKey] = new AbortController();
+    s.loading = true; s.error = null;
+    const limit = mode === "popup" ? POPUP_LIMIT : FULL_LIMIT;
+    const t0 = performance.now();
+    try {
+      const out = await search(text, s[abortKey].signal, limit);
+      if (myId !== s.requestId) return null;
+      s.hits = out.hits; s.total = out.total;
+      s.lastMs = Math.round(performance.now() - t0); s.loading = false;
+    } catch (e) {
+      if (myId !== s.requestId) return null;
+      if (e.name === "AbortError") return null;
+      s.error = e.message || String(e); s.hits = [];
+      s.lastMs = Math.round(performance.now() - t0); s.loading = false;
+    }
+    return mode;
+  }
+
+  function runPopup(text) {
+    openPopup();
+    s.loading = true; s.error = null;
+    renderPopup();
+    run(text, "popup").then(m => { if (m) renderPopup(); });
+  }
+  function runFull(text) {
+    closePopup();
+    $results.hidden = false;
+    s.loading = true; s.error = null; s.hits = [];
+    renderResults();
+    run(text, "full").then(m => { if (m) renderResults(); });
+  }
+
+  $q.addEventListener("input", () => {
+    const text = $q.value.trim();
+    clearTimeout(debounceTimer);
+    if (!text) { if (s.popupAbort) s.popupAbort.abort(); closePopup(); return; }
+    debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
+  });
+
+  $q.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const item = activeKey != null ? popupItems()[activeKey] : null;
+      if (item) { const h = s.hits[Number(item.dataset.idx)]; if (h) $q.value = nameOf(h); }
+      const text = $q.value.trim();
+      if (text) runFull(text);
+    } else if (e.key === "ArrowDown") {
+      if ($popup.classList.contains("open")) { e.preventDefault(); setActive((activeKey ?? -1) + 1); }
+    } else if (e.key === "ArrowUp") {
+      if ($popup.classList.contains("open")) { e.preventDefault(); setActive((activeKey ?? popupItems().length) - 1); }
+    } else if (e.key === "Escape") {
+      closePopup();
+    }
+  });
+
+  $popup.addEventListener("mousedown", (e) => {
+    const item = e.target.closest(".popup-item");
+    if (!item) return;
+    e.preventDefault();
+    const h = s.hits[Number(item.dataset.idx)];
+    if (h) { $q.value = nameOf(h); runFull($q.value.trim()); }
+  });
+
+  document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
+  $q.addEventListener("focus", () => { if (s.hits.length && $q.value.trim()) openPopup(); });
+
+  $observer.addEventListener("change", () => {
+    asObserver = $observer.checked;
+    const text = $q.value.trim();
+    if (!text) return;
+    if (!$results.hidden) runFull(text);
+    else if ($popup.classList.contains("open")) runPopup(text);
+  });
+})();
+</script>
+</body>
+</html>

@@ -21,6 +21,7 @@ relay/          Quartz relay server answering NIP-50 `search` REQs: rank in Vesp
                 NIP-42 optional auth picks the ranking observer.
 cli/            sot: install / status / search / compare from the terminal
                 (reuses query-engine).
+web/            Zero-build search UI (one index.html) over the http-api.
 gradle/libs.versions.toml   shared versions (Quartz@JitPack, Ktor, coroutines, sqlite).
 ```
 
@@ -90,6 +91,11 @@ The same `query-engine` core is exposed two more ways:
 
 Ports and the default observer are configurable via env: `HTTP_API_PORT`,
 `RELAY_PORT`, `RELAY_URL`, `INDEXER_DB`, `DEFAULT_OBSERVER`.
+
+There's also a zero-build web UI in **`web/`** (one `index.html`): a type-ahead
+search box over the `http-api`, with a NIP-07 "Search as me" toggle that ranks
+by your own web of trust. Serve it with any static server (`cd web && python3 -m
+http.server 8090`) — the API sends CORS so it just works. See `web/README.md`.
 
 ## The experiment loop
 

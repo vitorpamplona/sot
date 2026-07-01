@@ -11,6 +11,8 @@ import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.http.HttpMethod
 import io.ktor.server.request.uri
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
@@ -73,6 +75,11 @@ fun main() {
 
     embeddedServer(Netty, port = port) {
         install(ContentNegotiation) { json() }
+        // Allow the static web/ UI (any origin, incl. file:// -> "null") to call us.
+        install(CORS) {
+            anyHost()
+            allowMethod(HttpMethod.Get)
+        }
         routing {
             get("/search") {
                 val text = (call.request.queryParameters["text"] ?: "").let { CONTROL.replace(it, "").trim() }
