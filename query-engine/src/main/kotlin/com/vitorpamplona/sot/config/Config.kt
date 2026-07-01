@@ -23,6 +23,11 @@ object Config {
             Triple("RELAY_URL", "ws://localhost:7777", "public ws url the relay advertises (NIP-42)"),
             Triple("EVENTS_DB", "events.db", "SQLite event store shared by indexer + server"),
             Triple("DEFAULT_OBSERVER", "", "fallback web-of-trust observer (hex pubkey) when none is given"),
+            Triple("SERVER_NAME", "sot", "relay name (NIP-11)"),
+            Triple("SERVER_DESCRIPTION", "NIP-50 profile search ranked by the Nostr web of trust", "relay description (NIP-11)"),
+            Triple("SERVER_ICON", "", "relay icon url (NIP-11)"),
+            Triple("SERVER_PUBKEY", "", "admin contact pubkey, hex (NIP-11 pubkey)"),
+            Triple("SERVER_OWNER", "", "relay operator/owner pubkey, hex (NIP-11 self)"),
         )
     private val defaults = KEYS.associate { it.first to it.second }
 
@@ -50,6 +55,11 @@ object Config {
     val relayUrl get() = env("RELAY_URL")
     val eventsDb get() = env("EVENTS_DB")
     val defaultObserver get() = env("DEFAULT_OBSERVER")
+    val serverName get() = env("SERVER_NAME")
+    val serverDescription get() = env("SERVER_DESCRIPTION")
+    val serverIcon get() = env("SERVER_ICON")
+    val serverPubkey get() = env("SERVER_PUBKEY")
+    val serverOwner get() = env("SERVER_OWNER")
 
     /** A commented `.env` seed for a fresh setup (used by `sot init`). */
     fun sampleDotenv(): String =

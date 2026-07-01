@@ -5,8 +5,8 @@ import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.http.searchApi
 import com.vitorpamplona.sot.query.VespaSearch
-import com.vitorpamplona.sot.relay.NIP11_JSON
 import com.vitorpamplona.sot.relay.buildRelayServer
+import com.vitorpamplona.sot.relay.relayInfoJson
 import com.vitorpamplona.sot.relay.nostrRelay
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
@@ -50,7 +50,7 @@ fun main() {
             get("/") {
                 val accept = call.request.headers["Accept"] ?: ""
                 if (accept.contains("application/nostr+json")) {
-                    call.respondText(NIP11_JSON, ContentType.parse("application/nostr+json"))
+                    call.respondText(relayInfoJson(), ContentType.parse("application/nostr+json"))
                 } else {
                     WEB_UI?.let { call.respondText(it, ContentType.Text.Html) }
                         ?: call.respondText("sot server - open a WebSocket for NIP-50, or GET /search")
