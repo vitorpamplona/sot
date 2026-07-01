@@ -4,9 +4,9 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +29,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  *   pages      (default) Quartz's fetchAllPages — paginated `until` cursors.
  *              Bypasses the relay's ~500/page cap, works on every relay, and
  *              `Filter.limit` is the ingest cap.
- *   negentropy NIP-77 set reconciliation via NegentropyStage. Faster for
+ *   negentropy NIP-77 set reconciliation via Quartz negentropySyncOrFetch. Faster for
  *              re-syncs (only fetches missing ids) but a relay can refuse to
  *              reconcile a set larger than its `negentropy.maxSyncEvents`
  *              (e.g. nip85-staging), in which case `pages` is the way.
@@ -93,7 +93,7 @@ fun main(args: Array<String>) {
         val store = openStore(dbPath)
         val projection = VespaProjection(store, vespa, writers, log)
         runBlocking {
-            runSync(client, socketBuilder, store, projection, state, statePath, seeds, maxEvents, log,
+            runSync(client, store, projection, state, statePath, seeds, maxEvents, log,
                 fetchTimeout, maxProviders, syncProfiles, discover, maxRounds, maxRelays)
         }
         writers.shutdown()
@@ -145,11 +145,11 @@ fun main(args: Array<String>) {
     runBlocking {
         if (stage == "profiles" || stage == "all") {
             fetch(mode, "profiles", client, profileRelays, MetadataEvent.KIND,
-                maxEvents, batch, socketBuilder, onProfile, log, timeoutSecs)
+                maxEvents, onProfile, log, timeoutSecs)
         }
         if (stage == "nip85" || stage == "all") {
             fetch(mode, "nip85", client, scoreRelays, ContactCardEvent.KIND,
-                maxEvents, batch, socketBuilder, onScore, log, timeoutSecs)
+                maxEvents, onScore, log, timeoutSecs)
         }
     }
 
@@ -169,14 +169,12 @@ private suspend fun fetch(
     relays: List<String>,
     kind: Int,
     maxEvents: Int,
-    batch: Int,
-    socketBuilder: WebsocketBuilder,
     onEvent: (Event) -> Unit,
     log: (String) -> Unit,
     timeoutSecs: Long,
 ) {
     if (mode == "negentropy") {
-        runNegentropy(label, relays, Filter(kinds = listOf(kind)), socketBuilder, batch, maxEvents, onEvent, log, timeoutSecs)
+        runNegentropy(label, client, relays, Filter(kinds = listOf(kind)), maxEvents, onEvent, log, timeoutSecs)
         return
     }
     // pages mode: Filter.limit is the ingest cap; fetchAllPages walks `until`
@@ -220,22 +218,25 @@ private suspend fun coroutineScopeFetch(
 
 private suspend fun runNegentropy(
     label: String,
+    client: NostrClient,
     relays: List<String>,
     filter: Filter,
-    socketBuilder: WebsocketBuilder,
-    batch: Int,
     maxEvents: Int,
     onEvent: (Event) -> Unit,
     log: (String) -> Unit,
     timeoutSecs: Long,
-) {
-    val stages =
-        relays.map { url ->
-            NegentropyStage(RelayUrlNormalizer.normalize(url), socketBuilder, filter, batch, maxEvents, onEvent, log)
+) = kotlinx.coroutines.coroutineScope {
+    relays.map { url ->
+        async {
+            val relay = RelayUrlNormalizer.normalize(url)
+            log("[$label] ${shortUrl(url)} negentropy sync (kind=${filter.kinds}) ...")
+            val r =
+                runCatching {
+                    client.negentropySyncOrFetch(relay, filter, maxEvents = maxEvents, idleTimeoutMs = timeoutSecs * 1000, onEvent = onEvent)
+                }.getOrElse { log("[$label] ${shortUrl(url)}: ${it.message}"); null }
+            log("[$label] ${shortUrl(url)} done: ${r?.downloaded ?: 0} events${if (r?.pagedFallback == true) " (paged)" else ""}")
         }
-    stages.forEach { it.start() }
-    val results = withTimeoutOrNull(timeoutSecs * 1000) { stages.map { it.done.await() } }
-    if (results == null) log("[$label] timed out after ${timeoutSecs}s; partial results kept")
+    }.awaitAll()
 }
 
 private fun shortUrl(url: String) = url.removePrefix("wss://").removePrefix("ws://").trimEnd('/')

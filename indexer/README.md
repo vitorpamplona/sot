@@ -1,5 +1,9 @@
 # indexer — Kotlin/Quartz loader
 
+> Depends on Quartz from JitPack (`com.github.vitorpamplona.amethyst:quartz:2cb058b323`),
+> which includes the generalized `negentropySyncOrFetch` accessory. `settings.gradle.kts`
+> adds the `jitpack.io` repository.
+
 Loads Nostr data into the local Vespa using **[Amethyst's Quartz](https://github.com/vitorpamplona/amethyst)**
 library, writing events **straight into Vespa** (no intermediate event store).
 This replaces the Python REQ loader (`../tools/load_nostr.py`).
@@ -120,7 +124,7 @@ gradle installDist
 | relay transport | `BasicOkHttpWebSocket.Builder` (OkHttp), direct egress |
 | client | `NostrClient(socketBuilder, scope)` |
 | paged fetch (default) | `INostrClient.fetchAllPages(relay, filters, onEvent)` |
-| negentropy sync (opt-in) | `NegentropyManager.startSync(...)` + `INegentropyListener` (NIP-77) |
+| negentropy sync | `INostrClient.negentropySyncOrFetch(...)` (NIP-77 + paged fallback, windows `max_sync_events`) |
 | kind:0 parsing | `MetadataEvent.contactMetaData()` → `UserMetadata` |
 | kind:30382 parsing | `ContactCardEvent.aboutUser()` (subject) + `.rank()` (0–100) |
 
@@ -136,7 +140,15 @@ filled them.
 - **Write failures are logged, not swallowed.** A down or feed-blocked Vespa
   shows up as `writeFailures=N` in the final line plus the first few errors —
   not a silent "0 upserted".
-- **negentropy mode internals.** `NegentropyStage` enumerates the relay's full
+- **negentropy syncer.** `RelaySyncer` calls Quartz's `negentropySyncOrFetch`
+  (which reconciles, windows around `max_sync_events`, and pages back on a
+  NEG-ERR) with `filter.since` cursors keyed per (relay, kind, author) for
+  incremental re-runs. A thin safety net re-pages when a relay reconciles to
+  nothing on a first sync (some aggregators, e.g. purplepag.es on kind:10040)
+  and marks it pages-only thereafter. The old hand-rolled `NegentropyStage` is
+  gone — that logic now lives in the Quartz library.
+
+  Legacy `--mode negentropy` internals (superseded): it enumerated the relay's full
   id set, then downloads it through at most 8 concurrent REQ subscriptions
   (refilled on EOSE — relays cap subscriptions per connection). `--max-events`
   also bounds id buffering so a huge set doesn't blow the heap. On a relay that

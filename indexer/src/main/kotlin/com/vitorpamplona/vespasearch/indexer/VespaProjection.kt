@@ -51,10 +51,16 @@ class VespaProjection(
     /** Collect the change feed forever (launch in its own coroutine before syncing). */
     suspend fun run() {
         store.changes.collect { change ->
-            when (change) {
-                is StoreChange.Insert -> handle(change.event)
-                is StoreChange.DeleteByFilter -> {} // we drive deletions via kind:5 events
-                is StoreChange.DeleteExpired -> {}
+            try {
+                when (change) {
+                    is StoreChange.Insert -> handle(change.event)
+                    is StoreChange.DeleteByFilter -> {} // we drive deletions via kind:5 events
+                    is StoreChange.DeleteExpired -> {}
+                }
+            } catch (e: Exception) {
+                // A single bad event must never kill the projection (and, if it were
+                // a child job, the sync with it).
+                if (failures.incrementAndGet() <= 5) log("  ! projection: ${e.message}")
             }
             processed.incrementAndGet()
         }

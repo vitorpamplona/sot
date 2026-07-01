@@ -3,13 +3,15 @@ package com.vitorpamplona.vespasearch.indexer
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -28,7 +30,6 @@ import kotlinx.coroutines.launch
  */
 suspend fun runSync(
     client: NostrClient,
-    socketBuilder: WebsocketBuilder,
     store: ObservableEventStore,
     projection: VespaProjection,
     state: SyncState,
@@ -42,11 +43,16 @@ suspend fun runSync(
     discover: Boolean = false,
     maxRounds: Int = 3,
     maxRelays: Int = 200,
-) = coroutineScope {
-    val projJob = launch { projection.run() }
-    val syncer = RelaySyncer(client, socketBuilder, store, state, log, fetchTimeoutMs = fetchTimeoutMs)
-    val limit = if (maxEvents > 0) maxEvents else null
+) {
+    // Run the projection in its OWN supervised scope, not as a child of this
+    // function's job. Otherwise a single failure while consuming the change feed
+    // would cancel the whole scope — and the sync phases with it, making their
+    // negentropy calls abort instantly and deliver nothing.
+    val projScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    projScope.launch { projection.run() }
+    val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = fetchTimeoutMs)
 
+    try {
     val relays =
         if (discover) {
             Discovery(syncer, store, state, log).crawl(seedRelays, maxRounds, maxRelays).toList()
@@ -58,7 +64,7 @@ suspend fun runSync(
     for (r in relays) {
         val nl = syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)))
         val nd = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)))
-        val np = if (syncProfiles) syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND), limit = limit)) else null
+        val np = if (syncProfiles) syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = maxEvents) else null
         log("[sync] ${short(r)}  10040=${nl.inserted}${neg(nl)}  del=${nd.inserted}  kind0=${np?.inserted ?: "-"}")
     }
 
@@ -75,15 +81,17 @@ suspend fun runSync(
 
     log("=== phase 3: kind 30382 per provider, from its relay hint ===")
     for ((service, relay) in providers) {
-        val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = limit))
+        val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), maxEvents = maxEvents)
         log("[sync] provider ${service.take(12)} @ ${short(relay.url)}: +${o.inserted}/${o.downloaded}${neg(o)}")
     }
 
     log("=== draining projection ===")
     drainUntilIdle(projection)
-    projJob.cancel()
-    SyncState.save(statePath, state)
-    log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")
+    } finally {
+        projScope.cancel()
+        SyncState.save(statePath, state)
+        log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")
+    }
 }
 
 /** Wait until the projection has been idle (no new changes processed) for a beat. */

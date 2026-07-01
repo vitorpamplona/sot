@@ -16,8 +16,11 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class RelayState(
     var negentropyCapable: Boolean? = null,
-    // kind -> last time we finished a sync of that kind (epoch seconds)
-    val lastSyncedAt: MutableMap<Int, Long> = mutableMapOf(),
+    // scope key ("kind" or "kind:author") -> last time we finished that sync (epoch seconds).
+    // The author is part of the key because each provider's 30382 set on a relay is an
+    // independent sync scope — a shared per-kind cursor would let one provider's sync
+    // since-filter every other provider on that relay.
+    val lastSyncedAt: MutableMap<String, Long> = mutableMapOf(),
 )
 
 @Serializable
@@ -27,10 +30,10 @@ data class SyncState(
 ) {
     fun state(url: String) = relays.getOrPut(url) { RelayState() }
 
-    fun cursor(url: String, kind: Int): Long? = relays[url]?.lastSyncedAt?.get(kind)
+    fun cursor(url: String, scope: String): Long? = relays[url]?.lastSyncedAt?.get(scope)
 
-    fun mark(url: String, kind: Int, atSecs: Long) {
-        state(url).lastSyncedAt[kind] = atSecs
+    fun mark(url: String, scope: String, atSecs: Long) {
+        state(url).lastSyncedAt[scope] = atSecs
     }
 
     companion object {

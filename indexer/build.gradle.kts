@@ -9,7 +9,9 @@ dependencies {
     // Amethyst's Quartz — Nostr event types, parsing, the NostrClient relay
     // pool, and NIP-77 negentropy sync. KMP artifact; Gradle resolves the -jvm
     // variant for this kotlin("jvm") project.
-    implementation("com.vitorpamplona.quartz:quartz:1.12.6")
+    // JitPack build of amethyst @2cb058b323 — adds the generalized negentropy
+    // sync accessory we consume in RelaySyncer.
+    implementation("com.github.vitorpamplona.amethyst:quartz:2cb058b323")
     // Quartz's JVM websocket transport is OkHttp-based (BasicOkHttpWebSocket).
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")

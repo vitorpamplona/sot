@@ -3,98 +3,101 @@ package com.vitorpamplona.vespasearch.indexer
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Syncs one (relay, filter) into the store, preferring NIP-77 negentropy and
- * falling back to paginated fetch:
+ * Syncs one (relay, filter) into the store using Quartz's generalized
+ * `negentropySyncOrFetch`: it prefers NIP-77 negentropy (windowing around the
+ * relay's `max_sync_events`, downloading reconciled ids through a bounded pool
+ * of REQs) and transparently falls back to paginated fetch — with id-dedup — on
+ * relays that can't reconcile. No hand-rolled state machine here anymore.
  *
- *  - **negentropy** (seeded with what we already hold for that filter, so only
- *    the delta transfers) when the relay accepts it and the local set is small
- *    enough to seed in memory;
- *  - **fetchAllPages(since = lastSync − slack)** otherwise — for relays/filters
- *    that exceed the relay's `negentropy.maxSyncEvents`, or that don't speak
- *    NIP-77, or whose local set is too large to seed.
- *
- * Either way it advances the per-(relay, kind) cursor in [SyncState] so the next
- * run only pulls newer events. The slack overlap absorbs back-dated events a
- * bare `since` would miss.
+ * Incrementality is the persisted `since` cursor: each run scopes the filter to
+ * `lastSync − slack`, so only new events transfer (the slack overlap absorbs
+ * back-dated events). The cursor advances after every successful sync.
  */
 class RelaySyncer(
     private val client: NostrClient,
-    private val socketBuilder: WebsocketBuilder,
     private val store: ObservableEventStore,
     private val state: SyncState,
     private val log: (String) -> Unit,
     private val fetchBatch: Int = 500,
-    private val fetchTimeoutMs: Long = 30_000,
+    private val idleTimeoutMs: Long = 30_000,
     private val slackSecs: Long = 3600,
-    private val maxNegLocal: Int = 100_000,
 ) {
     data class Outcome(val inserted: Int, val usedNegentropy: Boolean, val downloaded: Int)
 
     private fun nowSecs() = System.currentTimeMillis() / 1000
 
-    /** Sync [filter] (single-kind) from [relayUrl] into the store. Returns inserted count. */
-    suspend fun sync(relayUrl: String, filter: Filter): Outcome {
+    suspend fun sync(relayUrl: String, filter: Filter, maxEvents: Int = 0): Outcome {
         val relay = RelayUrlNormalizer.normalizeOrNull(relayUrl) ?: return Outcome(0, false, 0)
         val url = relay.url
         val kind = filter.kinds?.firstOrNull() ?: -1
-        val cursor = state.cursor(url, kind)
-        val since = cursor?.let { it - slackSecs }
+        // Cursor scope includes authors so per-provider 30382 syncs don't share a cursor.
+        val scope = kind.toString() + (filter.authors?.let { ":" + it.joinToString(",") } ?: "")
+        val firstSync = state.cursor(url, scope) == null
+        val since = state.cursor(url, scope)?.let { it - slackSecs }
+        val scoped = if (since != null) filter.copy(since = since) else filter
 
         val buf = Collections.synchronizedList(ArrayList<Event>())
         var usedNeg = false
-
         val capable = state.state(url).negentropyCapable
-        val localCount = store.count(filter)
-        val tryNeg = capable != false && localCount <= maxNegLocal
 
-        if (tryNeg) {
-            val local = store.query<Event>(filter)
-            val stage =
-                NegentropyStage(
-                    relay, socketBuilder, filter, fetchBatch, maxEvents = 0,
-                    onEvent = { buf.add(it) }, log = log,
-                    localEvents = local, fallbackToReq = false,
-                )
-            stage.start()
-            val downloaded = withTimeoutOrNull(fetchTimeoutMs) { stage.done.await() } ?: 0
-            // Negentropy "worked" only if it delivered everything it reconciled.
-            // Some relays reconcile fine but stall on the follow-up id fetch — treat
-            // a partial/empty delivery as a miss and let the paginated path recover.
-            val complete = !stage.fellBack && downloaded >= stage.neededCount
-            if (complete) {
-                usedNeg = true
-                if (capable == null) state.state(url).negentropyCapable = true
-            } else {
-                // Don't keep paying the negentropy round-trip on a relay that won't
-                // deliver through it; the cursor-based fetch keeps us incremental.
-                state.state(url).negentropyCapable = false
-                buf.clear()
-            }
+        suspend fun pageInto() {
+            withTimeoutOrNull(idleTimeoutMs) { client.fetchAllPages(relay, listOf(scoped)) { buf.add(it) } }
         }
 
-        if (!usedNeg) {
-            val paged = if (since != null) filter.copy(since = since) else filter
-            withTimeoutOrNull(fetchTimeoutMs) {
-                client.fetchAllPages(relay, listOf(paged)) { buf.add(it) }
+        if (capable == false) {
+            // Known not to reconcile usefully here — go straight to paginated `since`.
+            pageInto()
+        } else {
+            val need = AtomicInteger(0)
+            val res =
+                runCatching {
+                    client.negentropySyncOrFetch(
+                        relay, scoped,
+                        maxEvents = maxEvents,
+                        fetchBatch = fetchBatch,
+                        idleTimeoutMs = idleTimeoutMs,
+                        onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
+                    ) { buf.add(it) }
+                }.getOrElse { log("  ! $url sync failed: ${it.message}"); null }
+            usedNeg = res?.pagedFallback == false
+
+            // The library pages only on a NEG-ERR. A relay can also reconcile to
+            // nothing / deliver < reconciled without erroring (purplepag.es on
+            // 10040). On the FIRST sync of a (relay, kind), verify a suspicious
+            // empty/partial result with pages; if pages find data, mark the relay
+            // pages-only for this kind so future runs skip the wasted round-trip.
+            val suspicious = res != null && !res.pagedFallback &&
+                (need.get() > res.downloaded || (res.downloaded == 0 && firstSync))
+            if (suspicious) {
+                val before = buf.size
+                pageInto()
+                if (buf.size > before) {
+                    state.state(url).negentropyCapable = false
+                    usedNeg = false
+                    log("  [$url] negentropy unreliable for kind $kind - using pages")
+                }
+            } else if (usedNeg && (res?.downloaded ?: 0) > 0 && capable == null) {
+                state.state(url).negentropyCapable = true
             }
         }
 
         val inserted =
             store.batchInsert(ArrayList(buf)).count { it is IEventStore.InsertOutcome.Accepted }
-        state.mark(url, kind, nowSecs())
-        return Outcome(inserted, usedNeg, buf.size)
+        state.mark(url, scope, nowSecs())
+        return Outcome(inserted, usedNegentropy = usedNeg, buf.size)
     }
 
-    /** Convenience for a relay already normalized (e.g. a 10040 provider relay hint). */
-    suspend fun sync(relay: NormalizedRelayUrl, filter: Filter): Outcome = sync(relay.url, filter)
+    suspend fun sync(relay: NormalizedRelayUrl, filter: Filter, maxEvents: Int = 0): Outcome =
+        sync(relay.url, filter, maxEvents)
 }
