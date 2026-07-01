@@ -18,4 +18,5 @@ rootProject.name = "vespa-search"
 
 include(":common-query")
 include(":indexer")
-// added as they are built: ":http-api", ":search-relay", ":cli"
+include(":http-api")
+// added as they are built: ":search-relay", ":cli"

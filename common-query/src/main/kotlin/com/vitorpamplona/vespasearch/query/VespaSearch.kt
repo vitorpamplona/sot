@@ -16,7 +16,7 @@ import kotlinx.serialization.json.jsonPrimitive
 /** One ranked search result. [userScore] is the observer's trust score for this doc. */
 data class SearchHit(
     val pubkey: String,
-    val relevance: Double,
+    val relevance: Double?,
     val userScore: Double?,
     val fields: Map<String, String>,
 ) {
@@ -90,6 +90,22 @@ class VespaSearch(
             if (out.size >= opts.hits) break
         }
         return out
+    }
+
+    /** Direct doc lookup by pubkey (hex), bypassing text search. Null if absent. */
+    fun getDocument(pubkey: String): SearchHit? {
+        val req =
+            HttpRequest.newBuilder(URI.create("$baseUrl/document/v1/doc/doc/docid/$pubkey"))
+                .timeout(Duration.ofSeconds(30)).GET().build()
+        val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
+        if (resp.statusCode() == 404) return null
+        if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
+        val fieldsObj = Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject ?: return null
+        // quality_scores is a tensor object (not a primitive) — drop it from the string map.
+        val fields =
+            fieldsObj.filterKeys { it != "quality_scores" }
+                .mapValues { (_, v) -> v.jsonPrimitive.contentOrNull ?: "" }
+        return SearchHit(pubkey = fields["pubkey"] ?: pubkey, relevance = null, userScore = null, fields = fields)
     }
 
     private fun get(params: Map<String, String>) =
