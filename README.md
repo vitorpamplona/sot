@@ -14,7 +14,7 @@ indexer/        Nostr -> Quartz EventStore -> Vespa. NIP-77 negentropy sync;
                 projects profiles + observer-keyed trust scores.
 http/           Ktor service: GET /search -> query-engine.
 relay/          NIP-50 search relay; NIP-42 auth picks the ranking observer.
-cli/            sot: status / search / compare / up / deploy.
+cli/            sot: status / search / up / deploy.
 web/            Zero-build search UI (one index.html) over the http service.
 ```
 
@@ -57,15 +57,13 @@ Env config: `HTTP_API_PORT`, `RELAY_PORT`, `RELAY_URL`, `INDEXER_DB`, `DEFAULT_O
 
 Two knobs:
 
-1. **Ranking math** — `vespa/schemas/doc.sd` (rank profiles). Redeploy, then A/B:
+1. **Ranking math** — edit `vespa/schemas/doc.sd` (rank profiles), then redeploy
+   and eyeball the results:
    ```bash
    sot deploy
-   sot compare "vitor" "alex gleason" jack   # top-N per variant, side by side
+   sot search "vitor" --rank search_rank    # try a different rank profile
    ```
 2. **Query building** — `query-engine`'s `Yql.kt` and `VespaSearch.kt`.
-
-`sot compare` ships a starter panel of variants; override with
-`--variants variants.json` (`{"name": {"ranking": "...", "features": {"w_gram": 15.0}}}`).
 
 ## How ranking works
 

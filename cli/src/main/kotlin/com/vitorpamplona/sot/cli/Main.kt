@@ -2,8 +2,6 @@ package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.sot.query.SearchOptions
 import com.vitorpamplona.sot.query.VespaSearch
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -16,7 +14,6 @@ import java.time.Duration
  * match the http service and the relay exactly.
  *
  *   sot search "vitor" [--observer <hex>] [--hits N] [--rank P] [--only-ranked]
- *   sot compare "vitor" "alex" [--topn 5] [--variants variants.json]
  *   sot status
  *   sot up | down            # docker compose for local Vespa
  *   sot deploy               # (re)deploy vespa to the config server
@@ -67,7 +64,6 @@ fun main(argv: Array<String>) {
     val args = argv.toList()
     when (args.firstOrNull()) {
         "search" -> search(args.drop(1))
-        "compare" -> compare(args.drop(1))
         "status" -> status(args.drop(1))
         "up" -> up(args.drop(1))
         "down" -> down()
@@ -79,10 +75,9 @@ fun main(argv: Array<String>) {
 private fun usage() {
     println(
         """
-        sot — local Nostr profile search
+        sot - local Nostr profile search
 
           search "<query>" [--observer <hex>] [--hits N] [--rank <profile>] [--only-ranked] [--vespa <url>]
-          compare "<query>" [<query> ...] [--queries <file>] [--variants <json>] [--observer <hex>] [--topn N] [--vespa <url>]
           status  [--vespa <url>] [--api <url>] [--relay <url>]
           up                 start local Vespa (docker compose) and deploy vespa
           down               stop local Vespa
@@ -120,83 +115,6 @@ private fun search(args: List<String>) {
         val rel = h.relevance?.let { "%.2f".format(it) } ?: "-"
         val sc = h.userScore?.let { "%.0f".format(it) } ?: "-"
         println("%2d  %11s  %6s  %-30s %s".format(i + 1, rel, sc, label, h.fields["nip05"] ?: ""))
-    }
-}
-
-/** A named ranking variant: a rank-profile plus `query(...)` feature overrides. */
-@Serializable
-private data class Variant(
-    val ranking: String = "name_and_quality_score_only",
-    val features: Map<String, Double> = emptyMap(),
-)
-
-// Starter panel: production default vs. a few weight tweaks. Override with a
-// --variants JSON file of the same shape: {"name": {"ranking":..., "features":{...}}}.
-private val DEFAULT_VARIANTS: Map<String, Variant> =
-    linkedMapOf(
-        "prod" to Variant("name_and_quality_score_only", mapOf("w_gram" to 5.0, "w_about" to 0.5)),
-        "more_gram" to Variant("name_and_quality_score_only", mapOf("w_gram" to 15.0, "w_about" to 0.5)),
-        "less_about" to Variant("name_and_quality_score_only", mapOf("w_gram" to 5.0, "w_about" to 0.1)),
-        "search_rank" to Variant("search_rank", emptyMap()),
-    )
-
-/**
- * A/B compare ranking variants over one or more queries: run each query through
- * every variant and print the top-N side by side, so an equation or weight
- * change's reordering is visible at a glance. This is the experiment loop —
- * edit doc.sd (and redeploy) or a variant's features, then eyeball the deltas.
- */
-private fun compare(args: List<String>) {
-    val observer = observerOrWarn(args)
-    val topn = flag(args, "--topn", "5").toInt()
-    val vespaUrl = flag(args, "--vespa", System.getenv("VESPA_URL") ?: "http://localhost:8080")
-
-    val queries = positionalArgs(args, setOf("--observer", "--topn", "--vespa", "--queries", "--variants")).toMutableList()
-    flag(args, "--queries", "").takeIf { it.isNotEmpty() }?.let { path ->
-        java.io.File(path).readLines()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() && !it.startsWith("#") }
-            .forEach { queries.add(it) }
-    }
-    if (queries.isEmpty()) {
-        println("usage: compare \"<query>\" [<query> ...] [--queries <file>] [--variants <json>] [--topn N]")
-        return
-    }
-
-    val variants: Map<String, Variant> =
-        flag(args, "--variants", "").takeIf { it.isNotEmpty() }?.let { path ->
-            Json { ignoreUnknownKeys = true }.decodeFromString<LinkedHashMap<String, Variant>>(
-                java.io.File(path).readText(),
-            )
-        } ?: DEFAULT_VARIANTS
-
-    val vespa = VespaSearch(vespaUrl)
-    val names = variants.keys.toList()
-    val width = 34
-    for (q in queries) {
-        println("=".repeat(100))
-        println("QUERY: \"$q\"   (observer ${observer.take(12)}..)")
-        println("=".repeat(100))
-        val columns =
-            names.associateWith { name ->
-                val v = variants.getValue(name)
-                vespa.search(q, observer, SearchOptions(hits = topn, rankProfile = v.ranking, features = v.features))
-                    .take(topn)
-                    .map { h ->
-                        val label = (h.displayName.ifBlank { h.name }.ifBlank { "?" }).take(22)
-                        val sc = h.userScore?.let { "%.0f".format(it) } ?: "-"
-                        "$label (q=$sc)"
-                    }
-            }
-        print("%-6s".format("rank"))
-        names.forEach { print("%-${width}s".format(it.take(width - 2))) }
-        println()
-        for (r in 0 until topn) {
-            print("%-6d".format(r + 1))
-            names.forEach { n -> print("%-${width}s".format((columns[n]?.getOrNull(r) ?: "").take(width - 2))) }
-            println()
-        }
-        println()
     }
 }
 
