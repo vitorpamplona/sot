@@ -7,7 +7,8 @@ dependencies {
     implementation(project(":query-engine"))
     implementation(libs.quartz) // --observer: NIP-19 (npub/nprofile) + NIP-05 resolver
     implementation(libs.okhttp) // OkHttp fetcher for Quartz's Nip05Client
-    implementation(libs.kotlinx.coroutines) // runBlocking around the suspend NIP-05 lookup
+    implementation(libs.kotlinx.coroutines) // runBlocking around suspend calls (NIP-05, store count)
+    implementation(libs.androidx.sqlite.bundled) // open the event store for `status`
 }
 
 kotlin {
