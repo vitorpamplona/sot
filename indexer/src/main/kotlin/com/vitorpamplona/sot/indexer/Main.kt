@@ -49,6 +49,12 @@ private fun argList(args: Array<String>, name: String, default: List<String>): L
 private class Plan(val relays: List<String>, val profiles: Boolean, val scores: Boolean)
 
 fun main(args: Array<String>) {
+    runIndexer(args)
+    kotlin.system.exitProcess(0)
+}
+
+/** Run one indexer pass to completion (sync + project + drain). Callable from the CLI's `sot index`. */
+fun runIndexer(args: Array<String>) {
     val stage = args.firstOrNull()?.takeUnless { it.startsWith("--") } ?: "all"
     val vespaUrl = arg(args, "--vespa", System.getenv("VESPA_URL") ?: "http://localhost:8080")
     // Per-stage ingest cap (0 = unlimited). Relays can hold millions of events;
@@ -101,7 +107,6 @@ fun main(args: Array<String>) {
     store.close()
     client.close()
     System.out.flush()
-    kotlin.system.exitProcess(0)
 }
 
 private fun ts(): String {

@@ -5,6 +5,7 @@ plugins {
 
 dependencies {
     implementation(project(":query-engine"))
+    implementation(project(":indexer")) // `sot index` runs the sync in-process
     implementation(libs.quartz) // --observer: NIP-19 (npub/nprofile) + NIP-05 resolver
     implementation(libs.okhttp) // OkHttp fetcher for Quartz's Nip05Client
     implementation(libs.kotlinx.coroutines) // runBlocking around suspend calls (NIP-05, store count)

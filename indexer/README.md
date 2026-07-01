@@ -81,24 +81,18 @@ Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 
 ## Run
 
+The CLI runs the indexer in-process — this is the normal way:
+
 ```bash
-# from the repo root, via the committed wrapper
-
-# kind:0 profiles (negentropy full-set sync, capped at --max-events)
-./gradlew :indexer:run --args="profiles --max-events 25000"
-
-# kind:30382 NIP-85 Trusted Assertion scores
-./gradlew :indexer:run --args="nip85 --max-events 25000"
-
-# both
-./gradlew :indexer:run --args="all"
+sot index profiles --max-events 25000   # kind:0 profiles (negentropy full-set sync)
+sot index nip85 --max-events 25000       # kind:30382 NIP-85 Trusted Assertion scores
+sot index all                            # both (default stage)
 ```
 
-For repeated runs it's faster to build once and use the launcher script:
+Or run the module directly via Gradle (same args after `--args=`):
 
 ```bash
-./gradlew :indexer:installDist
-./indexer/build/install/indexer/bin/indexer profiles --max-events 25000
+./gradlew :indexer:run --args="all"
 ```
 
 ### Flags

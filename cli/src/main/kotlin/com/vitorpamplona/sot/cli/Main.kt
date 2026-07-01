@@ -10,6 +10,7 @@ fun main(argv: Array<String>) {
     val args = argv.toList()
     when (args.firstOrNull()) {
         "init" -> init(args.drop(1))
+        "index" -> index(args.drop(1))
         "search" -> search(args.drop(1))
         "status" -> status(args.drop(1))
         "up" -> up(args.drop(1))
@@ -25,6 +26,7 @@ private fun usage() {
         sot - local Nostr profile search
 
           init                          write a .env config template
+          index [<stage>] [flags]       sync Nostr data into Vespa (stage: all | profiles | nip85)
           search "<query>" [--observer <hex|npub|nprofile|nip05>] [--hits N] [--algo <profile>] [--only-ranked] [--vespa <url>]
           status  [--vespa <url>] [--server <url>]
           up                            start local Vespa (docker compose) and deploy vespa
