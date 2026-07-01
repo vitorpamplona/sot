@@ -51,7 +51,7 @@ The same core is exposed three more ways:
 cd web && python3 -m http.server 8090       # web UI -> the http service (CORS is on)
 ```
 
-Env config: `HTTP_API_PORT`, `RELAY_PORT`, `RELAY_URL`, `INDEXER_DB`, `DEFAULT_OBSERVER`.
+Env config: `HTTP_PORT`, `RELAY_PORT`, `RELAY_URL`, `INDEXER_DB`, `DEFAULT_OBSERVER`.
 
 ## Tuning the ranking
 

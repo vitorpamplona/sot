@@ -53,7 +53,7 @@ fun main() {
                 if ((call.request.headers["Accept"] ?: "").contains("application/nostr+json")) {
                     call.respondText(NIP11, ContentType.parse("application/nostr+json"))
                 } else {
-                    call.respondText("sot relay — open a WebSocket and send a NIP-50 search REQ")
+                    call.respondText("sot relay - open a WebSocket and send a NIP-50 search REQ")
                 }
             }
             webSocket("/") {

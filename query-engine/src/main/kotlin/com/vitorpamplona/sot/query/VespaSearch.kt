@@ -29,8 +29,6 @@ data class SearchOptions(
     val hits: Int = 50,
     val rankProfile: String = "name_and_quality_score_only",
     val includeZeroScore: Boolean = true,
-    /** Extra `ranking.features.query(...)` overrides, e.g. {"w_gram" to 15.0}. */
-    val features: Map<String, Double> = emptyMap(),
 )
 
 /**
@@ -63,7 +61,6 @@ class VespaSearch(
         params["ranking.features.query(w_gram)"] = wGram.toString()
         params["ranking.features.query(w_about)"] = "0.5"
         params["hits"] = vespaHits.toString()
-        opts.features.forEach { (k, v) -> params["ranking.features.query($k)"] = v.toString() }
         words.forEachIndexed { i, w -> params["w$i"] = w }
         if (joined != null) params["wj"] = joined
 

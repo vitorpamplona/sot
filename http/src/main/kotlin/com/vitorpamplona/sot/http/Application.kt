@@ -71,7 +71,7 @@ private fun resolvePubkey(text: String): String? {
 
 fun main() {
     val vespa = VespaSearch()
-    val port = (System.getenv("HTTP_API_PORT") ?: "8081").toInt()
+    val port = (System.getenv("HTTP_PORT") ?: "8081").toInt()
 
     embeddedServer(Netty, port = port) {
         install(ContentNegotiation) { json() }
