@@ -62,7 +62,8 @@ the seeds, add the relays they advertise to the pool, repeat for `--max-rounds`
 or until `--max-relays`, persisting the pool so re-runs don't rediscover.
 
 Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
-`--seeds <urls…>`, `--discover true|false`, `--max-rounds N`, `--max-relays N`,
+`--seeds <urls…>` (defaults to `SEED_RELAYS` from `.env`/env),
+`--discover true|false`, `--max-rounds N`, `--max-relays N`,
 `--max-providers N`, `--fetch-timeout secs`, `--profiles true|false`,
 `--max-events N`.
 

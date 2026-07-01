@@ -64,6 +64,7 @@ One process on one port (`SERVER_PORT`, default `:7777`) serves everything but V
 `sot init` writes a commented `.env`; the CLI **and** the server read it (a real
 environment variable still overrides any value). Keys: `VESPA_URL`,
 `VESPA_CONFIG_URL`, `SERVER_PORT`, `SERVER_URL`, `RELAY_URL`, `EVENTS_DB`,
-`DEFAULT_OBSERVER`, and the NIP-11 relay identity `SERVER_NAME` /
+`SEED_RELAYS` (comma-separated relays `sot index` crawls), `DEFAULT_OBSERVER`,
+and the NIP-11 relay identity `SERVER_NAME` /
 `SERVER_DESCRIPTION` / `SERVER_ICON` / `SERVER_PUBKEY` / `SERVER_OWNER`. Docker
 only runs Vespa — point `VESPA_URL` at a remote Vespa to skip it.

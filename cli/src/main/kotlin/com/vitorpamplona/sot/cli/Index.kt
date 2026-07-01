@@ -26,15 +26,6 @@ import kotlin.system.exitProcess
  * Runs the sync to completion then exits (it spawns non-daemon relay/write threads).
  */
 private const val DEFAULT_PROFILE_RELAY = "wss://wot.grapevine.network"
-private const val DEFAULT_SCORE_RELAY = "wss://nip85-staging.nosfabrica.com"
-private val DEFAULT_SEEDS =
-    listOf(
-        "wss://purplepag.es",
-        "wss://relay.damus.io",
-        "wss://profiles.nostr1.com",
-        DEFAULT_SCORE_RELAY,
-        DEFAULT_PROFILE_RELAY,
-    )
 
 /** What a stage syncs: which relays, and whether to pull profiles / scores. */
 private class Plan(val relays: List<String>, val profiles: Boolean, val scores: Boolean)
@@ -67,7 +58,7 @@ internal fun index(args: List<String>) {
     val maxRounds = flag(args, "--max-rounds", "3").toInt()
     val maxRelays = flag(args, "--max-relays", "200").toInt()
     val profileRelays = argList(args, "--profile-relays", listOf(DEFAULT_PROFILE_RELAY))
-    val seeds = argList(args, "--seeds", DEFAULT_SEEDS)
+    val seeds = argList(args, "--seeds", Config.seedRelays)
     val discover = flag(args, "--discover", "false").toBooleanStrict()
 
     // Scores need the broad seed set: kind-10040 provider lists resolve the

@@ -22,6 +22,12 @@ object Config {
             Triple("SERVER_URL", "http://localhost:7777", "public http url of the server (web UI base + status)"),
             Triple("RELAY_URL", "ws://localhost:7777", "public ws url the relay advertises (NIP-42)"),
             Triple("EVENTS_DB", "events.db", "SQLite event store shared by indexer + server"),
+            Triple(
+                "SEED_RELAYS",
+                "wss://purplepag.es,wss://relay.damus.io,wss://profiles.nostr1.com," +
+                    "wss://nos.lol,wss://nostr.mom,wss://relay.primal.net,wss://relay.ditto.pub",
+                "comma-separated seed relays the indexer crawls for kind:0/10040 (sot index)",
+            ),
             Triple("DEFAULT_OBSERVER", "", "fallback web-of-trust observer (hex pubkey) when none is given"),
             Triple("SERVER_NAME", "sot", "relay name (NIP-11)"),
             Triple("SERVER_DESCRIPTION", "NIP-50 profile search ranked by the Nostr web of trust", "relay description (NIP-11)"),
@@ -54,6 +60,9 @@ object Config {
     val serverUrl get() = env("SERVER_URL")
     val relayUrl get() = env("RELAY_URL")
     val eventsDb get() = env("EVENTS_DB")
+
+    /** Seed relays for indexing, parsed from the comma-separated `SEED_RELAYS`. */
+    val seedRelays get() = env("SEED_RELAYS").split(",").map { it.trim() }.filter { it.isNotEmpty() }
     val defaultObserver get() = env("DEFAULT_OBSERVER")
     val serverName get() = env("SERVER_NAME")
     val serverDescription get() = env("SERVER_DESCRIPTION")
