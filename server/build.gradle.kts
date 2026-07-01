@@ -6,7 +6,7 @@ plugins {
 dependencies {
     implementation(project(":config")) // env/.env resolution (the composition root reads it)
     implementation(project(":event-store")) // open the shared event store for the relay
-    implementation(project(":vespa-engine"))
+    implementation(project(":vespa"))
     implementation(project(":http")) // GET /search route
     implementation(project(":relay")) // NIP-50 relay route
     implementation(libs.quartz) // IEventStore type for buildRelayServer

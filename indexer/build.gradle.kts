@@ -4,7 +4,7 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":vespa-engine")) // VespaProjection maps events -> Profile/score, calls VespaClient
+    implementation(project(":vespa")) // VespaProjection maps events -> Profile/score, calls VespaClient
     implementation(libs.quartz)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines)

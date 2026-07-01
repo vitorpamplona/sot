@@ -6,7 +6,7 @@ plugins {
 dependencies {
     implementation(project(":config")) // env/.env resolution (the composition root reads it)
     implementation(project(":event-store")) // open the shared event store (index + status)
-    implementation(project(":vespa-engine"))
+    implementation(project(":vespa"))
     implementation(project(":indexer")) // `sot index` runs the sync in-process
     implementation(libs.quartz) // --observer: NIP-19 (npub/nprofile) + NIP-05 resolver; store Filters
     implementation(libs.okhttp) // OkHttp fetcher for Quartz's Nip05Client

@@ -24,7 +24,7 @@ import com.vitorpamplona.sot.config.Config
 
 /*
  * Local Vespa lifecycle: `up` / `down` via docker compose, and `deploy` of the
- * application package (vespa-engine/app — schema + rank profiles, next to the
+ * application package (vespa/app — schema + rank profiles, next to the
  * Kotlin that depends on it) to the config server. Endpoints come from Config
  * (VESPA_URL / VESPA_CONFIG_URL), so moving Vespa's ports doesn't break these.
  */
@@ -43,7 +43,7 @@ internal fun up(args: List<String>) {
         println(" - timed out")
         return
     }
-    println(" ready; deploying vespa-engine/app ...")
+    println(" ready; deploying vespa/app ...")
     if (deploy(args) != 0) return
     print("waiting for Vespa to serve the app")
     println(if (waitUntil("${Config.vespaUrl}/ApplicationStatus")) " ready." else " - timed out")
@@ -56,7 +56,7 @@ internal fun down() {
 
 /** `sot deploy` — package the Vespa app and POST it to the config server. Returns the curl exit code. */
 internal fun deploy(args: List<String>): Int {
-    val app = flag(args, "--app", "vespa-engine/app")
+    val app = flag(args, "--app", "vespa/app")
     val configUrl = flag(args, "--config", Config.vespaConfigUrl)
     val tgz = "/tmp/vespa.tgz"
     if (run("bash", "-c", "tar -czf $tgz -C '$app' .") != 0) return 1

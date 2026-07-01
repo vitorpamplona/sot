@@ -4,7 +4,7 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":vespa-engine"))
+    implementation(project(":vespa"))
     implementation(libs.quartz) // --observer: NIP-19 (npub/nprofile) + NIP-05 resolver
     implementation(libs.okhttp) // OkHttp fetcher for Quartz's Nip05Client
     implementation(libs.kotlinx.coroutines)

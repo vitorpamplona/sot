@@ -8,8 +8,8 @@ Loads Nostr data using **[Amethyst's Quartz](https://github.com/vitorpamplona/am
 into a Quartz **EventStore** (the source of truth), then projects it into Vespa.
 `VespaProjection` subscribes to the store's `changes` feed, maps each Nostr event
 (kind:0 → profile, kind:30382 → trust score, …) into a plain object, and writes it
-via **`:vespa-engine`**'s `VespaClient` — the schema-aware writer that knows nothing
-about Nostr. So this module owns the Nostr↔Vespa mapping; `:vespa-engine` owns the
+via **`:vespa`**'s `VespaClient` — the schema-aware writer that knows nothing
+about Nostr. So this module owns the Nostr↔Vespa mapping; `:vespa` owns the
 Vespa wire format.
 
 A plain Nostr `REQ` is capped by the relay (≈500 events on the relays we use).
@@ -122,7 +122,7 @@ sot index all                            # both (default stage)
 | kind:30382 parsing | `ContactCardEvent.aboutUser()` (subject) + `.rank()` (0–100) |
 
 `VespaProjection` does the parsing above and hands ready-made objects (`Profile`,
-score triples) to `:vespa-engine`'s `VespaClient`, which owns the Vespa document-API
+score triples) to `:vespa`'s `VespaClient`, which owns the Vespa document-API
 wire format and knows nothing about Nostr.
 
 ## Design notes

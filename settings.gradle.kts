@@ -18,7 +18,7 @@ rootProject.name = "sot"
 
 include(":config")
 include(":event-store")
-include(":vespa-engine")
+include(":vespa")
 include(":indexer")
 include(":http")
 include(":relay")

@@ -21,7 +21,8 @@ event-store   The ONE place that opens the shared Quartz EventStore (com.vitorpa
                 openEventStore() / openObservableStore() / relayIdentity(). Applies the
                 no-SQLite-FTS strategy + relay identity so no caller can get either wrong.
               Depends on: :config, quartz, androidx-sqlite.
-vespa-engine  ALL Vespa access, Nostr-agnostic (com.vitorpamplona.sot.vespa):
+vespa         ALL Vespa access, Nostr-agnostic (com.vitorpamplona.sot.vespa):
+                app/ — the Vespa application package (schema + rank profiles).
                 read  — VespaSearch + ProfileQuery (YQL recall; ranking is in the schema)
                 write — VespaClient + Profile (+ Profile.indexFields())
               Depends on: kotlinx-serialization only.
@@ -30,18 +31,18 @@ indexer       Nostr -> Quartz EventStore (com.vitorpamplona.sot.indexer):
                 outbox crawl), SyncPipeline.runSync(), SyncState (cursors), Sockets.
                 PLUS VespaProjection — maps store events -> Profile/score and calls VespaClient.
                 Consumes an event store; never creates one (the composition root does).
-              Depends on: :vespa-engine, quartz, coroutines, okhttp.
-http          Library: the GET /search JSON route (Route.searchApi). -> :vespa-engine
-relay         Library: NIP-50 relay route + NIP-11 info + NIP-42 auth. -> :config, :vespa-engine
+              Depends on: :vespa, quartz, coroutines, okhttp.
+http          Library: the GET /search JSON route (Route.searchApi). -> :vespa
+relay         Library: NIP-50 relay route + NIP-11 info + NIP-42 auth. -> :config, :vespa
 server        Composition root: ONE Ktor app on ONE port (SERVER_PORT) = web UI +
-              /search + NIP-50 relay. -> :config, :event-store, :vespa-engine, :http, :relay
+              /search + NIP-50 relay. -> :config, :event-store, :vespa, :http, :relay
 cli           `sot` command. Composition root for `sot index`.
-              -> :config, :event-store, :vespa-engine, :indexer
+              -> :config, :event-store, :vespa, :indexer
 ```
 
-Key rule: **`:vespa-engine` never imports a Nostr/Quartz type.** The indexer maps
-Nostr events into `vespa-engine`'s plain objects (`Profile`, score triples) and calls
-`VespaClient`. Dependency flows `:indexer -> :vespa-engine`, never the reverse.
+Key rule: **`:vespa` never imports a Nostr/Quartz type.** The indexer maps
+Nostr events into `vespa`'s plain objects (`Profile`, score triples) and calls
+`VespaClient`. Dependency flows `:indexer -> :vespa`, never the reverse.
 
 ## Data flow
 
@@ -63,13 +64,13 @@ Use the committed wrapper `./gradlew` (Gradle 8.14.3).
 
 ```bash
 ./gradlew build                 # compile + test + spotlessCheck (the gate)
-./gradlew test                  # unit tests (ProfileQueryTest lives in :vespa-engine)
+./gradlew test                  # unit tests (ProfileQueryTest lives in :vespa)
 ./gradlew spotlessApply         # auto-format + add license headers (run before committing)
 ./gradlew spotlessCheck         # verify formatting (part of `check`/`build`)
 
 ./gradlew :cli:installDist      # build the CLI
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
-sot up                          # docker compose up Vespa + deploy vespa-engine/app
+sot up                          # docker compose up Vespa + deploy vespa/app
 sot index all                   # load profiles + NIP-85 scores (stages: all|profiles|nip85)
 sot search "vitor" --observer <hex|npub|nprofile|nip05>
 sot status                      # Vespa/server up? doc + event counts
@@ -108,7 +109,7 @@ identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always over
 - NIPs used: 05 (name@domain), 11 (relay info), 19 (npub/nprofile), 42 (auth picks the
   observer), 50 (search REQ), 62 (Request to Vanish -> delete from store + Vespa), 77
   (negentropy sync), 85 (Trusted Assertions: 10040 provider lists + 30382 scores).
-- Vespa schema is in `vespa-engine/app/` (schema + rank profiles = the ranking math),
+- Vespa schema is in `vespa/app/` (schema + rank profiles = the ranking math),
   next to the Kotlin that depends on it — change them together. The
   `quality_scores` field is a sparse tensor keyed by observer pubkey.
 

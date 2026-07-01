@@ -18,13 +18,13 @@ simple web UI for development.
 config/         Tiny lib: env/.env resolution + defaults (one place for host/port config).
 event-store/    Tiny lib: the one place that opens the shared Quartz event store
                 (no SQLite FTS + relay identity), so no caller can get it wrong.
-vespa-engine/   Everything Vespa: the application package (app/ — schema + rank
+vespa/          Everything Vespa: the application package (app/ — schema + rank
                 profiles, the ranking math) plus the Kotlin lib that talks to it —
                 YQL search + document writes over plain objects (Profile / scores).
                 Nostr-agnostic. Unit-tested.
 indexer/        Nostr -> Quartz EventStore (NIP-77 negentropy sync + NIP-65 outbox
                 discovery), plus the projection that maps store events into
-                vespa-engine's objects and writes them.
+                vespa's objects and writes them.
 http/           Library: the GET /search JSON API route.
 relay/          Library: the NIP-50 relay route; NIP-42 auth picks the observer.
 server/         One Ktor app on one port composing http + relay + the web UI.
@@ -42,7 +42,7 @@ can point `VESPA_URL` at a remote Vespa and skip Docker.
 ./gradlew :cli:installDist                 # build the CLI
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 
-sot up                                     # start Vespa + deploy vespa-engine/app
+sot up                                     # start Vespa + deploy vespa/app
 sot index all                              # load profiles + NIP-85 scores
 sot search "vitor"                         # search
 sot search "vitor" --observer <pubkey>     # rank by one observer's trust

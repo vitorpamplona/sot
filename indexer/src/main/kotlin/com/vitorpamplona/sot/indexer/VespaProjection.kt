@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Projects the event store into Vespa. It registers with [ObservableEventStore.changes]
  * and maps each accepted Nostr event into a ready-made object, then calls the
- * schema-aware [VespaClient] (in :vespa-engine, which knows nothing about Nostr):
+ * schema-aware [VespaClient] (in :vespa, which knows nothing about Nostr):
  *
  *  - kind 0  (MetadataEvent)        -> upsert profile fields
  *  - kind 30382 (ContactCardEvent)  -> upsert quality_scores{OBSERVER}=rank,

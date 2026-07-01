@@ -8,4 +8,4 @@ Quick reminders:
 - Format before committing: `./gradlew spotlessApply` (the build fails on unformatted
   code). Every `.kt` file needs the MIT license header, which spotless adds.
 - Gate: `./gradlew build` runs compile + tests + `spotlessCheck`.
-- `:vespa-engine` is Nostr-agnostic — never import a Quartz/Nostr type into it.
+- `:vespa` is Nostr-agnostic — never import a Quartz/Nostr type into it.
