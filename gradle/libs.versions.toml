@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.4.0"
-# Quartz from JitPack (amethyst @ commit) — + NIP-11 relayInformation {} DSL.
-quartz = "9c191137d5"
+# Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
+quartz = "4a66435263"
 coroutines = "1.11.0"
 serialization = "1.7.3"
 sqlite = "2.6.2"

@@ -1,6 +1,7 @@
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
+import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 
 /**
@@ -8,6 +9,12 @@ import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
  * it (see [VespaProjection]). SQLite persists every synced event so re-runs only
  * need the delta (negentropy `snapshotIdsForNegentropy` / `since` cursors), and
  * `ObservableEventStore` exposes a `changes` feed that drives the projection.
+ *
+ * Search lives in Vespa, so the SQLite full-text index is dead weight — turn it
+ * off ([NO_FTS]) to skip building and maintaining the FTS table on every insert.
+ * Every opener of the shared DB must use the same strategy.
  */
+val NO_FTS = DefaultIndexingStrategy(indexFullTextSearch = false)
+
 fun openStore(dbPath: String): ObservableEventStore =
-    ObservableEventStore(EventStore(dbName = dbPath, relay = null))
+    ObservableEventStore(EventStore(dbPath, null, NO_FTS))

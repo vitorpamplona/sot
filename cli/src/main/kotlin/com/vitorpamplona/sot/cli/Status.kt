@@ -2,6 +2,7 @@ package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -49,7 +50,7 @@ private fun storeReport(dbPath: String, vespaDocs: Int?) {
     }
     val counts = runCatching {
         runBlocking {
-            EventStore(dbName = dbPath, relay = null).use { s ->
+            EventStore(dbPath, null, DefaultIndexingStrategy(indexFullTextSearch = false)).use { s ->
                 intArrayOf(
                     s.count(Filter(kinds = listOf(MetadataEvent.KIND))),
                     s.count(Filter(kinds = listOf(TrustProviderListEvent.KIND))),

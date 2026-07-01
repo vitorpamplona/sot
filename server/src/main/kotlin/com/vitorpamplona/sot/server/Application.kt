@@ -1,6 +1,7 @@
 package com.vitorpamplona.sot.server
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.http.searchApi
@@ -36,7 +37,8 @@ private val WEB_UI: String? by lazy {
 
 fun main() {
     val vespa = VespaSearch()
-    val store = EventStore(dbName = Config.eventsDb, relay = null)
+    // Match the indexer: no SQLite FTS (search is Vespa). Same strategy on every opener.
+    val store = EventStore(Config.eventsDb, null, DefaultIndexingStrategy(indexFullTextSearch = false))
     val relayUrl = RelayUrlNormalizer.normalize(Config.relayUrl)
     val relaySrv = buildRelayServer(vespa, store, Config.defaultObserver, relayUrl)
 
