@@ -76,32 +76,30 @@ Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 
 ## Requirements
 
-- JDK 21+
-- Gradle 8.5+ on the PATH (no wrapper is committed — `services.gradle.org` isn't
-  reachable from the build sandbox; run with your local `gradle`)
+- JDK 21+ (use the committed Gradle wrapper: `./gradlew` from the repo root)
 - A running local Vespa with the app deployed (`sot up`, or `docker compose up
   -d vespa && sot deploy` from the repo root)
 
 ## Run
 
 ```bash
-cd indexer
+# from the repo root, via the committed wrapper
 
 # kind:0 profiles (negentropy full-set sync, capped at --max-events)
-gradle run --args="profiles --max-events 25000"
+./gradlew :indexer:run --args="profiles --max-events 25000"
 
 # kind:30382 NIP-85 GrapeRank scores
-gradle run --args="nip85 --max-events 25000"
+./gradlew :indexer:run --args="nip85 --max-events 25000"
 
 # both
-gradle run --args="all"
+./gradlew :indexer:run --args="all"
 ```
 
 For repeated runs it's faster to build once and use the launcher script:
 
 ```bash
-gradle installDist
-./build/install/indexer/bin/indexer profiles --max-events 25000
+./gradlew :indexer:installDist
+./indexer/build/install/indexer/bin/indexer profiles --max-events 25000
 ```
 
 ### Flags

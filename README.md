@@ -24,7 +24,7 @@ cli/            sot: install / status / search / compare from the terminal
 gradle/libs.versions.toml   shared versions (Quartz@JitPack, Ktor, coroutines, sqlite).
 ```
 
-Build everything: `gradle build`. Install the CLI: `gradle :cli:installDist`,
+Build everything: `./gradlew build`. Install the CLI: `./gradlew :cli:installDist`,
 then `./cli/build/install/sot/bin/sot search "vitor"`.
 
 Quartz does the heavy Nostr lifting across modules (events, NIP-19/42/50/77, the
@@ -48,9 +48,12 @@ relay server, the EventStore); Ktor serves HTTP/WebSocket.
 
 ## Quickstart
 
-Requires Docker, JDK 21, and a global Gradle 8.5+ install (no wrapper is
-committed). The `sot` CLI wraps the Docker steps; install it once with
-`gradle :cli:installDist` and put `cli/build/install/sot/bin` on your `PATH`.
+Fork-and-run needs just **Docker + JDK 21**. The committed Gradle wrapper
+(`./gradlew`) fetches the right Gradle version on first use — no global install.
+The `sot` CLI wraps the Docker steps; install it once with
+`./gradlew :cli:installDist` and put `cli/build/install/sot/bin` on your `PATH`.
+(Docker only runs the Vespa engine — every module is plain JVM. Point
+`VESPA_URL` at a remote/Vespa Cloud endpoint to skip local Docker entirely.)
 
 ```bash
 # 1. Bring up Vespa and deploy the app package (schema + ranking)
@@ -61,7 +64,7 @@ sot up                                # docker compose up vespa + deploy vespa/
 #    capped at one relay page):
 #    - kind:0 profiles    from the discovered outbox relays
 #    - NIP-85 kind:30382 GrapeRank scores from wss://nip85-staging.nosfabrica.com
-gradle :indexer:run --args="all --max-events 25000"
+./gradlew :indexer:run --args="all --max-events 25000"
 
 # 3. Search from the terminal (use the observer whose scores you loaded)
 sot search "vitor"
@@ -78,11 +81,11 @@ The same `query-engine` core is exposed two more ways:
 
 ```bash
 # HTTP JSON API on :8081  (GET /search?text=vitor&observer=<pubkey>)
-gradle :http-api:run
+./gradlew :http-api:run
 
 # NIP-50 search relay on :7777  (send a `search` REQ; NIP-42 auth picks the
 # observer, otherwise the default observer is used)
-gradle :relay:run
+./gradlew :relay:run
 ```
 
 Ports and the default observer are configurable via env: `HTTP_API_PORT`,
