@@ -91,7 +91,7 @@ internal fun index(args: List<String>) {
 
     val opts =
         SyncOptions(
-            maxEvents = flag(args, "--max-events", "25000").toInt(),
+            maxEvents = flag(args, "--max-events", "0").toInt(),
             fetchTimeoutMs = flag(args, "--fetch-timeout", "30").toLong() * 1000,
             maxProviders = flag(args, "--max-providers", "0").toInt(),
             discover = flag(args, "--discover", "false").toBooleanStrict(),

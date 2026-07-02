@@ -29,7 +29,7 @@ http/           Library: the GET /search JSON API route.
 relay/          Library: the NIP-50 relay route; NIP-42 auth picks the observer.
 server/         One Ktor app on one port composing http + relay + the web UI.
 web/            Search UI (one index.html), served by the server (same origin).
-cli/            sot: init / status / search / up / deploy.
+cli/            sot: init / index / search / status / up / down / destroy / deploy.
 ```
 
 ## Quickstart
@@ -44,7 +44,7 @@ export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 
 sot init                                   # write a commented .env (seed relays, observer, ports)
 sot up                                     # start Vespa + deploy vespa/app
-sot index                                  # load profiles + NIP-85 scores (--max-events 0 = full sync)
+sot index                                  # full sync of profiles + NIP-85 scores (--max-events N for a quick slice)
 sot search "vitor"                         # search
 sot search "vitor" --observer <pubkey>     # rank by one observer's trust
 ```

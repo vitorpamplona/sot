@@ -55,9 +55,9 @@ Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
 stored 10040s → (3) sync each provider's 30382 from its relay hint.
 
 ```bash
-sot index --max-events 25000                       # full sync, from the SEED_RELAYS set
+sot index                                          # full sync, from the SEED_RELAYS set
 sot index --discover true --max-relays 200         # discover relays via kind-10002 first
-sot index --max-providers 15 --fetch-timeout 25    # bound a quick experimental run
+sot index --max-events 25000 --max-providers 15    # bound a quick experimental run
 ```
 
 **Incremental by default.** Each (relay, kind) sync prefers **NIP-77 negentropy**
@@ -97,8 +97,8 @@ root: `sot index` (see `cli/Index.kt`) wires up the store, Vespa client, and
 projection from `.env`/flags and calls into `runSync`.
 
 ```bash
-sot index                     # profiles + NIP-85 scores — one indivisible sync
-sot index --max-events 0      # no ingest cap (relays hold millions of kind:0s)
+sot index                     # profiles + NIP-85 scores — one indivisible FULL sync
+sot index --max-events 25000  # bounded slice for a quick local experiment
 ```
 
 There is deliberately no profiles-only or scores-only mode: profiles without
@@ -123,7 +123,7 @@ wire format and knows nothing about Nostr.
 
 ## Design notes
 
-- **Cap.** `--max-events` bounds ingest per stage. In `pages` mode it's the
+- **Cap.** `--max-events` bounds ingest per kind (0 = full sync, the default). In `pages` mode it's the
   `Filter.limit`; relays hold far more than you want locally (the grapevine
   relay reports ~3.5M kind:0).
 - **Write failures are logged, not swallowed.** A down or feed-blocked Vespa

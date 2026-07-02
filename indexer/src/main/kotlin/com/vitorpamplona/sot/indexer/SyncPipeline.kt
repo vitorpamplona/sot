@@ -36,8 +36,8 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  * caller only names what it changes.
  */
 data class SyncOptions(
-    /** Per-kind ingest cap, 0 = unlimited. Relays hold millions of events. */
-    val maxEvents: Int = 25_000,
+    /** Per-kind ingest cap for bounded experiments; 0 (the default) = full sync. */
+    val maxEvents: Int = 0,
     val fetchTimeoutMs: Long = 30_000,
     /** Cap on how many rank providers phase 3 visits, 0 = all. */
     val maxProviders: Int = 0,

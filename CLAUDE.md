@@ -80,8 +80,9 @@ sot status                      # Vespa/server up? doc + event counts
 ./gradlew :server:run           # the one-port server on :7777 (web UI + /search + relay)
 ```
 
-`sot` subcommands: `init | index | search | status | up | down | deploy` — each in its
-own file under `cli/src/main/kotlin/.../cli/`.
+`sot` subcommands: `init | index | search | status | up | down | destroy | deploy` —
+each in its own file under `cli/src/main/kotlin/.../cli/`. `sot destroy` wipes the
+events db, sync cursors, and Vespa's data volume for a from-scratch run.
 
 ## Configuration
 
@@ -121,5 +122,6 @@ identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always over
 - Event **signature verification is on by default** before storing (relays are untrusted;
   a forged kind:0/30382/10040 would poison the trust graph). The non-verifying path is a
   test-only seam.
-- `sot index` runs a bounded slice by default (`--max-events 25000`); relays hold millions.
+- `sot index` does a FULL sync by default (`--max-events 0` = unlimited; relays hold
+  millions of events — expect hours + GBs). Pass `--max-events N` for a bounded slice.
 - More detail per area: `README.md` (top-level), `indexer/README.md`, `web/README.md`.
