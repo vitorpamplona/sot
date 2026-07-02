@@ -41,8 +41,8 @@ data class SyncOptions(
     val fetchTimeoutMs: Long = 30_000,
     /** Cap on how many rank providers phase 3 visits, 0 = all. */
     val maxProviders: Int = 0,
-    /** Expand the relay set with a bounded NIP-65 outbox crawl first. */
-    val discover: Boolean = false,
+    /** Expand the relay set with a bounded NIP-65 outbox crawl first (on by default). */
+    val discover: Boolean = true,
     val maxRounds: Int = 3,
     val maxRelays: Int = 200,
     /** Verify id + signature before storing. Test-only seam — leave on. */

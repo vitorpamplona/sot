@@ -55,8 +55,8 @@ Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
 stored 10040s → (3) sync each provider's 30382 from its relay hint.
 
 ```bash
-sot index                                          # full sync, from the SEED_RELAYS set
-sot index --discover true --max-relays 200         # discover relays via kind-10002 first
+sot index                                          # full sync: kind-10002 relay discovery + SEED_RELAYS
+sot index --discover false                         # seeds only, skip the outbox crawl
 sot index --max-events 25000 --max-providers 15    # bound a quick experimental run
 ```
 
@@ -67,9 +67,10 @@ relay refuses it (`maxSyncEvents`) or stalls on the id-fetch, it falls back to
 cursors are persisted to `<db>.state.json`, so re-runs only pull new events (a
 second run over the same data does ~0 work).
 
-**Discovery (`--discover`).** A bounded NIP-65 outbox crawl: sync kind-10002 from
-the seeds, add the relays they advertise to the pool, repeat for `--max-rounds`
-or until `--max-relays`, persisting the pool so re-runs don't rediscover.
+**Discovery (`--discover`, on by default).** A bounded NIP-65 outbox crawl: sync
+kind-10002 from the seeds, add the relays they advertise to the pool, repeat for
+`--max-rounds` or until `--max-relays`, persisting the pool so re-runs don't
+rediscover. `--discover false` syncs only the seeds.
 
 Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 `--seeds <urls…>` (defaults to `SEED_RELAYS` from `.env`/env),

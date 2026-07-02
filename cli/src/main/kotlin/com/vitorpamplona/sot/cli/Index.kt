@@ -94,7 +94,7 @@ internal fun index(args: List<String>) {
             maxEvents = flag(args, "--max-events", "0").toInt(),
             fetchTimeoutMs = flag(args, "--fetch-timeout", "30").toLong() * 1000,
             maxProviders = flag(args, "--max-providers", "0").toInt(),
-            discover = flag(args, "--discover", "false").toBooleanStrict(),
+            discover = flag(args, "--discover", "true").toBooleanStrict(),
             maxRounds = flag(args, "--max-rounds", "3").toInt(),
             maxRelays = flag(args, "--max-relays", "200").toInt(),
         )
