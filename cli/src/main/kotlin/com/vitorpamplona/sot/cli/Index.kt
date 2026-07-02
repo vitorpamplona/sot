@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.indexer.SyncOptions
 import com.vitorpamplona.sot.indexer.SyncState
@@ -75,7 +76,18 @@ internal fun index(args: List<String>) {
     val vespaUrl = flag(args, "--vespa", Config.vespaUrl)
     val dbPath = flag(args, "--db", Config.eventsDb)
     val statePath = flag(args, "--state", "$dbPath.state.json")
-    val relays = argList(args, "--seeds", Config.seedRelays)
+    // Normalize relay urls once, here at the edge; everything past this point is typed.
+    val relays =
+        argList(args, "--seeds", Config.seedRelays).mapNotNull { s ->
+            RelayUrlNormalizer.normalizeOrNull(s) ?: run {
+                println("skipping invalid relay url: $s")
+                null
+            }
+        }
+    if (relays.isEmpty()) {
+        println("no valid seed relays (--seeds / SEED_RELAYS)")
+        exitProcess(1)
+    }
 
     val opts =
         SyncOptions(

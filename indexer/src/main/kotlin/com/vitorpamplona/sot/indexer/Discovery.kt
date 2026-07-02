@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
@@ -39,12 +40,14 @@ class Discovery(
     private val log: (String) -> Unit,
 ) {
     suspend fun crawl(
-        seeds: List<String>,
+        seeds: List<NormalizedRelayUrl>,
         maxRounds: Int,
         maxRelays: Int,
-    ): Set<String> {
-        val pool = LinkedHashSet<String>(state.relayPool)
-        seeds.forEach { s -> RelayUrlNormalizer.normalizeOrNull(s)?.let { pool.add(it.url) } }
+    ): Set<NormalizedRelayUrl> {
+        // The pool persists as url strings (JSON); normalize back on load.
+        val pool = LinkedHashSet<NormalizedRelayUrl>()
+        state.relayPool.mapNotNullTo(pool) { RelayUrlNormalizer.normalizeOrNull(it) }
+        pool.addAll(seeds)
 
         var frontier = pool.toList()
         for (round in 1..maxRounds) {
@@ -64,15 +67,14 @@ class Discovery(
         }
 
         state.relayPool.clear()
-        state.relayPool.addAll(pool)
+        pool.mapTo(state.relayPool) { it.url }
         return pool
     }
 
-    /** Every relay URL advertised by the kind-10002 lists currently in the store. */
-    private suspend fun advertisedRelays(): Set<String> =
+    /** Every relay advertised by the kind-10002 lists currently in the store. */
+    private suspend fun advertisedRelays(): Set<NormalizedRelayUrl> =
         store
             .query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
             .flatMap { it.relaysNorm() }
-            .map { it.url }
             .toSet()
 }

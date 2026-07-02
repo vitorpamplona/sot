@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.indexer
 
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -45,22 +46,24 @@ data class RelayState(
 
 @Serializable
 data class SyncState(
+    // Keyed/persisted by the normalized url STRING (this is a JSON file);
+    // the API accepts only NormalizedRelayUrl so callers can't key by raw text.
     val relays: MutableMap<String, RelayState> = mutableMapOf(),
     val relayPool: MutableSet<String> = mutableSetOf(),
 ) {
-    fun relay(url: String) = relays.getOrPut(url) { RelayState() }
+    fun relay(relay: NormalizedRelayUrl) = relays.getOrPut(relay.url) { RelayState() }
 
     fun cursor(
-        url: String,
+        relay: NormalizedRelayUrl,
         scope: String,
-    ): Long? = relays[url]?.lastSyncedAt?.get(scope)
+    ): Long? = relays[relay.url]?.lastSyncedAt?.get(scope)
 
     fun markSynced(
-        url: String,
+        relay: NormalizedRelayUrl,
         scope: String,
         atSecs: Long,
     ) {
-        relay(url).lastSyncedAt[scope] = atSecs
+        relay(relay).lastSyncedAt[scope] = atSecs
     }
 
     companion object {

@@ -27,7 +27,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import kotlinx.coroutines.withTimeoutOrNull
@@ -72,26 +71,19 @@ class RelaySyncer(
     )
 
     suspend fun sync(
-        relayUrl: String,
-        filter: Filter,
-        maxEvents: Int = 0,
-    ): Outcome {
-        val relay = RelayUrlNormalizer.normalizeOrNull(relayUrl) ?: return Outcome(0, false, 0)
-        val scope = cursorScope(filter)
-        val firstSync = state.cursor(relay.url, scope) == null
-
-        val download = download(relay, sinceCursor(filter, relay.url, scope), maxEvents, firstSync)
-        val valid = dropForged(download.events, relay.url, filter)
-        val inserted = store.batchInsert(valid).count { it is IEventStore.InsertOutcome.Accepted }
-        state.markSynced(relay.url, scope, nowSecs())
-        return Outcome(inserted, download.usedNegentropy, download.events.size)
-    }
-
-    suspend fun sync(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int = 0,
-    ): Outcome = sync(relay.url, filter, maxEvents)
+    ): Outcome {
+        val scope = cursorScope(filter)
+        val firstSync = state.cursor(relay, scope) == null
+
+        val download = download(relay, sinceCursor(filter, relay, scope), maxEvents, firstSync)
+        val valid = dropForged(download.events, relay, filter)
+        val inserted = store.batchInsert(valid).count { it is IEventStore.InsertOutcome.Accepted }
+        state.markSynced(relay, scope, nowSecs())
+        return Outcome(inserted, download.usedNegentropy, download.events.size)
+    }
 
     /** Cursor scope key: the kind, plus authors so per-provider 30382 syncs don't share a cursor. */
     private fun cursorScope(filter: Filter): String {
@@ -103,10 +95,10 @@ class RelaySyncer(
     /** Scope [filter] to the persisted cursor — minus slack to absorb back-dated events — if one exists. */
     private fun sinceCursor(
         filter: Filter,
-        url: String,
+        relay: NormalizedRelayUrl,
         scope: String,
     ): Filter {
-        val since = state.cursor(url, scope)?.minus(slackSecs) ?: return filter
+        val since = state.cursor(relay, scope)?.minus(slackSecs) ?: return filter
         return filter.copy(since = since)
     }
 
@@ -126,8 +118,7 @@ class RelaySyncer(
         maxEvents: Int,
         firstSync: Boolean,
     ): Download {
-        val url = relay.url
-        if (state.relay(url).negentropyCapable == false) {
+        if (state.relay(relay).negentropyCapable == false) {
             return Download(fetchPages(relay, filter, maxEvents), usedNegentropy = false)
         }
 
@@ -144,7 +135,7 @@ class RelaySyncer(
                     onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
                 ) { buf.add(it) }
             }.getOrElse {
-                log("  ! $url sync failed: ${it.message}")
+                log("  ! ${relay.url} sync failed: ${it.message}")
                 null
             }
         var usedNeg = res?.pagedFallback == false
@@ -155,13 +146,13 @@ class RelaySyncer(
         if (suspicious) {
             val paged = fetchPages(relay, filter, maxEvents)
             if (paged.isNotEmpty()) {
-                state.relay(url).negentropyCapable = false
+                state.relay(relay).negentropyCapable = false
                 usedNeg = false
-                log("  [$url] negentropy unreliable for kind ${filter.kinds?.firstOrNull()} - using pages")
+                log("  [${relay.url}] negentropy unreliable for kind ${filter.kinds?.firstOrNull()} - using pages")
                 buf.addAll(paged)
             }
-        } else if (usedNeg && (res?.downloaded ?: 0) > 0 && state.relay(url).negentropyCapable == null) {
-            state.relay(url).negentropyCapable = true
+        } else if (usedNeg && (res?.downloaded ?: 0) > 0 && state.relay(relay).negentropyCapable == null) {
+            state.relay(relay).negentropyCapable = true
         }
         return Download(ArrayList(buf), usedNeg)
     }
@@ -181,12 +172,12 @@ class RelaySyncer(
     /** Drop events whose id or Schnorr signature doesn't verify — relays are untrusted input. */
     private fun dropForged(
         events: List<Event>,
-        url: String,
+        relay: NormalizedRelayUrl,
         filter: Filter,
     ): List<Event> {
         if (!verifyEvents) return events
         val (ok, forged) = events.partition { runCatching { it.verify() }.getOrDefault(false) }
-        if (forged.isNotEmpty()) log("  ! [$url] dropped ${forged.size} event(s) with invalid id/signature (kind ${filter.kinds?.firstOrNull()})")
+        if (forged.isNotEmpty()) log("  ! [${relay.url}] dropped ${forged.size} event(s) with invalid id/signature (kind ${filter.kinds?.firstOrNull()})")
         return ok
     }
 

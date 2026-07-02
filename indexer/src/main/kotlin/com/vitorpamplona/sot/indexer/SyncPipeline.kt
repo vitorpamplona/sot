@@ -23,6 +23,7 @@ package com.vitorpamplona.sot.indexer
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -61,7 +62,7 @@ suspend fun runSync(
     store: ObservableEventStore,
     state: SyncState,
     statePath: String,
-    seedRelays: List<String>,
+    seedRelays: List<NormalizedRelayUrl>,
     opts: SyncOptions,
     log: (String) -> Unit,
 ) {
@@ -87,7 +88,7 @@ suspend fun runSync(
  */
 private suspend fun syncEvents(
     syncer: RelaySyncer,
-    relays: List<String>,
+    relays: List<NormalizedRelayUrl>,
     opts: SyncOptions,
     log: (String) -> Unit,
 ) {
@@ -125,10 +126,14 @@ private suspend fun syncProviderScores(
     log("=== phase 3: kind 30382 per provider, from its relay hint ===")
     for ((service, relay) in providers) {
         val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), maxEvents = opts.maxEvents)
-        log("[sync] provider ${service.take(12)} @ ${short(relay.url)}: +${o.inserted}/${o.downloaded}${neg(o)}")
+        log("[sync] provider ${service.take(12)} @ ${short(relay)}: +${o.inserted}/${o.downloaded}${neg(o)}")
     }
 }
 
 private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""
 
-private fun short(url: String) = url.removePrefix("wss://").removePrefix("ws://").trimEnd('/')
+private fun short(relay: NormalizedRelayUrl) =
+    relay.url
+        .removePrefix("wss://")
+        .removePrefix("ws://")
+        .trimEnd('/')
