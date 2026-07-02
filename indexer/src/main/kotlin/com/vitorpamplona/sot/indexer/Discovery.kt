@@ -22,7 +22,6 @@ package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
@@ -47,9 +46,8 @@ class Discovery(
         maxRelays: Int,
         concurrency: Int,
     ): Set<NormalizedRelayUrl> {
-        // The pool persists as url strings (JSON); normalize back on load.
         val pool = LinkedHashSet<NormalizedRelayUrl>()
-        state.relayPool.mapNotNullTo(pool) { RelayUrlNormalizer.normalizeOrNull(it) }
+        pool.addAll(state.relayPool)
         pool.addAll(seeds)
 
         var frontier = pool.toList()
@@ -73,7 +71,7 @@ class Discovery(
         }
 
         state.relayPool.clear()
-        pool.mapTo(state.relayPool) { it.url }
+        state.relayPool.addAll(pool)
         return pool
     }
 

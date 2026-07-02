@@ -49,13 +49,16 @@ class SyncStateTest {
         val state = SyncState()
         state.markSynced(relay, "0", 123)
         state.relay(relay).negentropyCapable = false
-        state.relayPool.add(other.url)
+        state.relayPool.add(other)
         SyncState.save(path, state)
 
         val loaded = SyncState.load(path)
         assertEquals(123, loaded.cursor(relay, "0"))
         assertEquals(false, loaded.relay(relay).negentropyCapable)
-        assertTrue(other.url in loaded.relayPool)
+        assertTrue(other in loaded.relayPool)
+        // The wire format stays plain url strings (typed urls serialize through
+        // RelayUrlSerializer), so state files from before the typed keys still load.
+        assertTrue(relay.url in File(path).readText())
     }
 
     @Test

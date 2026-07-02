@@ -18,12 +18,38 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+@file:UseSerializers(RelayUrlSerializer::class)
+
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.UseSerializers
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import java.io.File
+
+/**
+ * Persist a [NormalizedRelayUrl] as its plain url string, so the state file
+ * stays a readable JSON of urls while the in-memory maps stay typed. Loading
+ * re-normalizes; a corrupt url makes [SyncState.load] start fresh (same as any
+ * other corrupt state file).
+ */
+internal object RelayUrlSerializer : KSerializer<NormalizedRelayUrl> {
+    override val descriptor = PrimitiveSerialDescriptor("NormalizedRelayUrl", PrimitiveKind.STRING)
+
+    override fun serialize(
+        encoder: Encoder,
+        value: NormalizedRelayUrl,
+    ) = encoder.encodeString(value.url)
+
+    override fun deserialize(decoder: Decoder): NormalizedRelayUrl = RelayUrlNormalizer.normalize(decoder.decodeString())
+}
 
 /**
  * Small persisted state so periodic re-runs are cheap and don't rediscover
@@ -46,25 +72,23 @@ data class RelayState(
 
 @Serializable
 data class SyncState(
-    // Keyed/persisted by the normalized url STRING (this is a JSON file);
-    // the API accepts only NormalizedRelayUrl so callers can't key by raw text.
-    val relays: MutableMap<String, RelayState> = mutableMapOf(),
-    val relayPool: MutableSet<String> = mutableSetOf(),
+    val relays: MutableMap<NormalizedRelayUrl, RelayState> = mutableMapOf(),
+    val relayPool: MutableSet<NormalizedRelayUrl> = mutableSetOf(),
 ) {
     // Relay syncs run in parallel; every access to the shared maps synchronizes here.
-    fun relay(relay: NormalizedRelayUrl): RelayState = synchronized(relays) { relays.getOrPut(relay.url) { RelayState() } }
+    fun relay(relay: NormalizedRelayUrl): RelayState = synchronized(relays) { relays.getOrPut(relay) { RelayState() } }
 
     fun cursor(
         relay: NormalizedRelayUrl,
         scope: String,
-    ): Long? = synchronized(relays) { relays[relay.url]?.lastSyncedAt?.get(scope) }
+    ): Long? = synchronized(relays) { relays[relay]?.lastSyncedAt?.get(scope) }
 
     fun markSynced(
         relay: NormalizedRelayUrl,
         scope: String,
         atSecs: Long,
     ) {
-        synchronized(relays) { relays.getOrPut(relay.url) { RelayState() }.lastSyncedAt[scope] = atSecs }
+        synchronized(relays) { relays.getOrPut(relay) { RelayState() }.lastSyncedAt[scope] = atSecs }
     }
 
     companion object {
