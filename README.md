@@ -42,8 +42,9 @@ can point `VESPA_URL` at a remote Vespa and skip Docker.
 ./gradlew :cli:installDist                 # build the CLI
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 
+sot init                                   # write a commented .env (seed relays, observer, ports)
 sot up                                     # start Vespa + deploy vespa/app
-sot index                                  # load profiles + NIP-85 scores
+sot index                                  # load profiles + NIP-85 scores (--max-events 0 = full sync)
 sot search "vitor"                         # search
 sot search "vitor" --observer <pubkey>     # rank by one observer's trust
 ```
