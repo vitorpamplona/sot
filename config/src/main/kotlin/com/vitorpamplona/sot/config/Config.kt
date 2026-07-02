@@ -57,7 +57,7 @@ object Config {
             Triple("SERVER_DESCRIPTION", "NIP-50 profile search ranked by the Nostr web of trust", "relay description (NIP-11)"),
             Triple("SERVER_ICON", "", "relay icon url (NIP-11)"),
             Triple("SERVER_PUBKEY", "", "admin contact pubkey, hex (NIP-11 pubkey)"),
-            Triple("SERVER_OWNER", "", "relay operator/owner pubkey, hex (NIP-11 self)"),
+            Triple("SERVER_NSEC", "", "this relay's own identity (nsec or hex secret key): NIP-11 self + NIP-42 auth to upstream relays; `sot init` generates one"),
         )
     private val defaults = KEYS.associate { it.first to it.second }
 
@@ -97,7 +97,7 @@ object Config {
     val serverDescription get() = env("SERVER_DESCRIPTION")
     val serverIcon get() = env("SERVER_ICON")
     val serverPubkey get() = env("SERVER_PUBKEY")
-    val serverOwner get() = env("SERVER_OWNER")
+    val serverNsec get() = env("SERVER_NSEC")
 
     /** A commented `.env` seed for a fresh setup (used by `sot init`). */
     fun sampleDotenv(): String =

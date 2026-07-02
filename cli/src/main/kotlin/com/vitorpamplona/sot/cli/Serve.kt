@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.nip19Bech32.toNpub
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.http.searchApi
 import com.vitorpamplona.sot.indexer.SyncOptions
@@ -74,6 +75,8 @@ private val WEB_UI: String? by lazy {
 
 internal fun serve(args: List<String>) {
     ensureVespaIsUp(args)
+    val identity = serverSigner()
+    logLine("relay identity (NIP-11 self): ${identity.keyPair.pubKey.toNpub()}")
     val vespa = VespaSearch(Config.vespaUrl)
     // One shared event store (see :event-store): relay identity from env for NIP-62, no SQLite FTS.
     val relayUrl = relayIdentity()
@@ -85,7 +88,7 @@ internal fun serve(args: List<String>) {
     val sync =
         if (syncMinutes > 0) {
             logLine("background sync: every ${syncMinutes}m (SYNC_INTERVAL=0 to disable)")
-            SyncService(store, Config.vespaUrl, Config.seedRelays, "${Config.eventsDb}.state.json", SyncOptions(), ::logLine)
+            SyncService(store, Config.vespaUrl, Config.seedRelays, "${Config.eventsDb}.state.json", SyncOptions(), ::logLine, signer = identity)
                 .also { s -> syncScope.launch { s.runForever(syncMinutes.minutes) } }
         } else {
             logLine("background sync: disabled (SYNC_INTERVAL=0)")
@@ -116,7 +119,7 @@ internal fun serve(args: List<String>) {
             get("/") {
                 val accept = call.request.headers["Accept"] ?: ""
                 if (accept.contains("application/nostr+json")) {
-                    call.respondText(relayInfoJson(), ContentType.parse("application/nostr+json"))
+                    call.respondText(relayInfoJson(selfPubkey = identity.pubKey), ContentType.parse("application/nostr+json"))
                 } else {
                     WEB_UI?.let { call.respondText(it, ContentType.Text.Html) }
                         ?: call.respondText("sot server - open a WebSocket for NIP-50, or GET /search")

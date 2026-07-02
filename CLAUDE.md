@@ -99,7 +99,8 @@ All config resolves **env var -> `.env` -> built-in default** via `Config` (in `
 `SYNC_INTERVAL` (minutes between `sot serve` background passes; 0 = serve-only),
 `SERVER_URL`, `RELAY_URL`, `EVENTS_DB`, `SEED_RELAYS`, `DEFAULT_OBSERVER`,
 `QUARTZ_LOG_LEVEL` (Quartz's stderr diagnostics; ERROR by default — set WARN/DEBUG to
-debug relay behavior), and the NIP-11 identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always overrides `.env`.
+debug relay behavior), the NIP-11 identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY`, and `SERVER_NSEC` — the
+relay's OWN key (NIP-11 `self` + NIP-42 auth to upstream relays; `sot init` generates it). A real env var always overrides `.env`.
 
 ## Conventions
 

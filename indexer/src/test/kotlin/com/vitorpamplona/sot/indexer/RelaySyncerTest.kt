@@ -75,7 +75,8 @@ class RelaySyncerTest {
         state: SyncState,
         verifyEvents: Boolean = false,
         fetchBatch: Int = 500,
-    ) = RelaySyncer(relay.client, store, state, log = { }, fetchBatch = fetchBatch, idleTimeoutMs = 15_000, verifyEvents = verifyEvents)
+        auth: com.vitorpamplona.quartz.nip01Core.relay.client.auth.IAuthStatus = com.vitorpamplona.quartz.nip01Core.relay.client.auth.EmptyIAuthStatus,
+    ) = RelaySyncer(relay.client, store, state, log = { }, fetchBatch = fetchBatch, idleTimeoutMs = 15_000, verifyEvents = verifyEvents, auth = auth)
 
     @Test
     fun `negentropy streams a multi-chunk event set completely into the store`() =
@@ -208,6 +209,34 @@ class RelaySyncerTest {
                     assertTrue(!o.usedNegentropy)
                     assertEquals(300, store.count(kind0))
                 } finally {
+                    store.close()
+                }
+            }
+        }
+
+    @Test
+    fun `an auth-required relay syncs fully once the client answers its NIP-42 challenge`() =
+        runBlocking {
+            InProcessRelay(policyBuilder = {
+                com.vitorpamplona.quartz.nip01Core.relay.server.policies
+                    .FullAuthPolicy(RelayUrlNormalizer.normalize("wss://in-process.test"))
+            }).use { relay ->
+                relay.store.batchInsert((1..50).map { kind0(it) })
+
+                // The relay's own identity answers AUTH challenges - same wiring as SyncService.
+                val identity = NostrSignerSync()
+                val authenticator =
+                    com.vitorpamplona.quartz.nip01Core.relay.client.auth
+                        .RelayAuthenticator(relay.client) { _, template -> listOf(identity.sign(template)) }
+
+                val store = localStore()
+                try {
+                    val o = syncer(relay, store, SyncState(), auth = authenticator).sync(relay.url, kind0)
+
+                    assertEquals(50, o.inserted, "nothing downloads from FullAuthPolicy without a signed kind-22242")
+                    assertEquals(50, store.count(kind0))
+                } finally {
+                    authenticator.destroy()
                     store.close()
                 }
             }

@@ -33,10 +33,12 @@ import kotlin.test.assertTrue
 /** The NIP-11 wire contract: what a client learns before connecting. */
 class RelayInfoTest {
     @Test
-    fun `the NIP-11 document advertises search, optional auth, and no writes`() {
-        val info = Json.parseToJsonElement(relayInfoJson()).jsonObject
+    fun `the NIP-11 document advertises search, optional auth, no writes, and the relay's own key`() {
+        val self = "a".repeat(64)
+        val info = Json.parseToJsonElement(relayInfoJson(selfPubkey = self)).jsonObject
 
         assertEquals("sot", info["name"]?.jsonPrimitive?.content)
+        assertEquals(self, info["self"]?.jsonPrimitive?.content, "the relay's OWN pubkey (SERVER_NSEC)")
         val nips = info["supported_nips"]!!.jsonArray.map { it.jsonPrimitive.int }
         assertTrue(nips.containsAll(listOf(1, 11, 42, 50)), "NIP-01/11/42/50 are the contract: $nips")
 

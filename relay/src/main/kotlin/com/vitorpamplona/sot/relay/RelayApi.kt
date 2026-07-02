@@ -50,13 +50,13 @@ private const val VERSION = "0.1"
  * Identity fields come from config (`.env`); the technical fields describe what
  * this server actually is — a read-only, optional-auth NIP-50 profile search.
  */
-fun relayInfoJson(): String =
+fun relayInfoJson(selfPubkey: String? = null): String =
     relayInformation {
         name = Config.serverName.ifBlank { "sot" }
         Config.serverDescription.takeIf { it.isNotBlank() }?.let { description = it }
         Config.serverIcon.takeIf { it.isNotBlank() }?.let { icon = it }
         Config.serverPubkey.takeIf { it.isNotBlank() }?.let { pubkey = it } // admin contact
-        Config.serverOwner.takeIf { it.isNotBlank() }?.let { self = it } // relay operator/owner
+        selfPubkey?.takeIf { it.isNotBlank() }?.let { self = it } // the relay's OWN key (SERVER_NSEC)
         software = SOFTWARE
         version = VERSION
         supports(1, 11, 42, 50) // NIP-01/11/42/50

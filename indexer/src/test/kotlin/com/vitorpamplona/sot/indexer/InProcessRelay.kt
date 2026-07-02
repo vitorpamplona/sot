@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.NostrServer
 import com.vitorpamplona.quartz.nip01Core.relay.server.inprocess.InProcessWebSocket
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.IRelayPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PassThroughPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocket
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocketListener
@@ -53,6 +54,9 @@ internal class InProcessRelay(
     // Default: full NIP-77. Pass maxSessionsPerConnection=0 to model a relay
     // that refuses negentropy (forces the client's pages fallback).
     private val negentropy: NegentropySettings = NegentropySettings.Default,
+    // Default: accept everything unsigned (tests control the relay's contents).
+    // Pass { FullAuthPolicy(url) } to model an auth-required relay.
+    private val policyBuilder: () -> IRelayPolicy = { PassThroughPolicy() },
 ) : AutoCloseable {
     val store =
         EventStore(
@@ -66,7 +70,7 @@ internal class InProcessRelay(
             DefaultIndexingStrategy(indexFullTextSearch = false),
         )
 
-    private val server = NostrServer(store, policyBuilder = { PassThroughPolicy() }, negentropySettings = negentropy)
+    private val server = NostrServer(store, policyBuilder = policyBuilder, negentropySettings = negentropy)
     private val clientScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     val client =

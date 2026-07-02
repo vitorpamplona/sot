@@ -22,6 +22,8 @@ package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.EmptyIAuthStatus
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.IAuthStatus
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
@@ -80,11 +82,12 @@ suspend fun runSync(
     seedRelays: List<NormalizedRelayUrl>,
     opts: SyncOptions,
     sharedProgress: SyncProgress? = null,
+    auth: IAuthStatus = EmptyIAuthStatus,
     log: (String) -> Unit,
 ): Unit =
     coroutineScope {
         val progress = sharedProgress ?: SyncProgress(log = log)
-        val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = opts.fetchTimeoutMs, verifyEvents = opts.verifyEvents, progress = progress)
+        val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = opts.fetchTimeoutMs, verifyEvents = opts.verifyEvents, progress = progress, auth = auth)
         // ONE live status line every few seconds for the whole pass; every
         // download and phase reports into it (see SyncProgress).
         val ticker = launch { progress.run() }

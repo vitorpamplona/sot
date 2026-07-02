@@ -20,27 +20,37 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.nip01Core.core.toHexKey
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
-import com.vitorpamplona.quartz.nip19Bech32.toNpub
 import com.vitorpamplona.quartz.nip19Bech32.toNsec
-import com.vitorpamplona.sot.config.Config
-import java.io.File
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
-/**
- * `sot init` — write a commented `.env` so a first-time user can configure ports,
- * VESPA_URL, DEFAULT_OBSERVER, etc. in one place. The CLI and the sot server both
- * read this file (a real environment variable still overrides any value in it).
- */
-internal fun init(args: List<String>) {
-    val path = flag(args, "--path", System.getenv("SOT_ENV") ?: ".env")
-    val f = File(path)
-    if (f.exists() && !has(args, "--force")) {
-        println("$path already exists - edit it, or re-run with --force to overwrite.")
-        return
+/** SERVER_NSEC parsing: the key `sot init` writes must come back as the same identity. */
+class IdentityTest {
+    @Test
+    fun `an nsec round-trips to the same pubkey sot init generated`() {
+        val generated = KeyPair()
+
+        val signer = signerFromSecret(generated.privKey!!.toNsec())
+
+        assertEquals(generated.pubKey.toHexKey(), signer?.pubKey)
     }
-    // A fresh identity for this relay: NIP-11 `self` + NIP-42 auth to upstream relays.
-    val identity = KeyPair()
-    f.writeText(Config.sampleDotenv().replace("\nSERVER_NSEC=\n", "\nSERVER_NSEC=${identity.privKey!!.toNsec()}\n"))
-    println("wrote $path - edit it to configure sot (VESPA_URL, SERVER_PORT, DEFAULT_OBSERVER, ...).")
-    println("generated this relay's identity: ${identity.pubKey.toNpub()}")
+
+    @Test
+    fun `a 64-hex secret key is accepted too`() {
+        val generated = KeyPair()
+
+        val signer = signerFromSecret(generated.privKey!!.toHexKey())
+
+        assertEquals(generated.pubKey.toHexKey(), signer?.pubKey)
+    }
+
+    @Test
+    fun `garbage is rejected, not silently turned into a random identity`() {
+        assertNull(signerFromSecret("npub1notasecret"))
+        assertNull(signerFromSecret("nsec1invalidinvalidinvalid"))
+        assertNull(signerFromSecret("deadbeef"))
+    }
 }

@@ -21,7 +21,10 @@
 package com.vitorpamplona.sot.indexer
 
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.EmptyIAuthStatus
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.sot.vespa.VespaClient
 import kotlinx.coroutines.CancellationException
@@ -56,6 +59,9 @@ class SyncService(
     private val statePath: String,
     private val opts: SyncOptions,
     private val log: (String) -> Unit,
+    // This relay's own identity: answers upstream relays' NIP-42 AUTH challenges
+    // during sync. Null = don't authenticate (auth-required relays serve nothing).
+    signer: NostrSignerSync? = null,
 ) : AutoCloseable {
     // Normalize relay urls once, here at the composition edge; typed beyond this point.
     private val relays =
@@ -67,6 +73,10 @@ class SyncService(
         }
 
     private val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))
+
+    // Quartz's client-side NIP-42: replies to AUTH challenges with a signed
+    // kind-22242 and renews the connection's subscriptions once accepted.
+    private val authenticator = signer?.let { s -> RelayAuthenticator(client) { _, template -> listOf(s.sign(template)) } }
     private val state = SyncState.load(statePath)
 
     // Async writes: the feed client multiplexes them over HTTP/2 and owns
@@ -93,7 +103,7 @@ class SyncService(
         progress.gauge {
             "vespa ok ${SyncProgress.compact(projection.completedWrites())} inflight ${SyncProgress.compact(projection.pendingWrites().toLong())}"
         }
-        runSync(client, store, state, statePath, relays, opts, progress, log)
+        runSync(client, store, state, statePath, relays, opts, progress, authenticator ?: EmptyIAuthStatus, log)
     }
 
     /** [runOnce] forever, waiting [interval] between the END of one pass and the next. */
@@ -123,6 +133,7 @@ class SyncService(
 
     override fun close() {
         projScope.cancel()
+        authenticator?.destroy()
         vespa.close()
         client.close()
     }

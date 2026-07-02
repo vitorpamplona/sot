@@ -80,6 +80,7 @@ internal fun index(args: List<String>) {
             statePath = flag(args, "--state", "$dbPath.state.json"),
             opts = opts,
             log = ::logLine,
+            signer = serverSigner(),
         )
 
     runBlocking {

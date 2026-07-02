@@ -26,6 +26,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyOrFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.EmptyIAuthStatus
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.IAuthStatus
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
@@ -35,11 +37,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -75,6 +79,10 @@ class RelaySyncer(
     private val verifyEvents: Boolean = true,
     // Live counters for the pass's status line; silent by default (tests, tools).
     private val progress: SyncProgress = SyncProgress(log = { }),
+    // NIP-42 auth status (a RelayAuthenticator on the same client). When set,
+    // the first contact with each relay waits for its challenge handshake, so
+    // an auth-required relay doesn't reject the sync's opening downloads.
+    private val auth: IAuthStatus = EmptyIAuthStatus,
 ) {
     data class Outcome(
         val inserted: Int,
@@ -113,11 +121,41 @@ class RelaySyncer(
     // Relay syncs run in parallel, but the SQLite store stays a single writer.
     private val storeWrites = Mutex()
 
+    // Relays whose NIP-42 first contact already ran (connections persist across kinds).
+    private val authenticated = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
+    /**
+     * First contact with [relay] when a NIP-42 signer is configured: open the
+     * connection with a throwaway probe and give the challenge handshake
+     * (AUTH -> signed reply -> OK) a bounded window. Without this, an
+     * auth-required relay rejects the sync's opening downloads — they race
+     * the handshake and come back empty. Relays that never challenge just
+     * cost the probe.
+     */
+    private suspend fun awaitAuthOnFirstContact(relay: NormalizedRelayUrl) {
+        if (auth === EmptyIAuthStatus || !authenticated.add(relay)) return
+        runCatching {
+            withTimeoutOrNull(AUTH_PROBE_MS + 500) {
+                client.fetchAllPages(relay, listOf(Filter(kinds = listOf(0), limit = 1)), timeoutMs = AUTH_PROBE_MS) { }
+            }
+        }
+        // "No auth pending" also describes the instant BEFORE the async challenge
+        // reply is recorded - so hold a short grace period unconditionally, then
+        // wait (bounded) for the recorded reply's OK.
+        val settleUntil = System.currentTimeMillis() + AUTH_GRACE_MS
+        val deadline = System.currentTimeMillis() + AUTH_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (System.currentTimeMillis() >= settleUntil && auth.hasFinishedAuthentication(relay)) return
+            delay(50)
+        }
+    }
+
     suspend fun sync(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int = 0,
     ): Outcome {
+        awaitAuthOnFirstContact(relay)
         val scope = cursorScope(filter)
         val firstSync = state.cursor(relay, scope) == null
         val scoped = sinceCursor(filter, relay, scope)
@@ -199,6 +237,7 @@ class RelaySyncer(
         filter: Filter,
         forceEnumerate: Boolean = false,
     ): ReconcileOutcome {
+        awaitAuthOnFirstContact(relay)
         val scope = cursorScope(filter)
         val ids = Collections.synchronizedSet(HashSet<String>())
         var inserted = 0
@@ -405,5 +444,11 @@ class RelaySyncer(
         // Hard ceiling on one whole pages download, in idle windows: a big full
         // sync is many pages that each move well within the idle timeout.
         const val PAGES_TOTAL_TIMEOUT_FACTOR = 20
+
+        // First-contact NIP-42 handshake: probe REQ bound, settle grace for the
+        // async challenge reply to be recorded, total wait for its OK.
+        const val AUTH_PROBE_MS = 1_500L
+        const val AUTH_GRACE_MS = 500L
+        const val AUTH_WAIT_MS = 5_000L
     }
 }

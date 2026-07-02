@@ -85,5 +85,7 @@ any value). Keys: `VESPA_URL`,
 `SEED_RELAYS` (comma-separated relays the sync crawls), `DEFAULT_OBSERVER`,
 `QUARTZ_LOG_LEVEL` (the Nostr library's stderr diagnostics; ERROR by default),
 and the NIP-11 relay identity `SERVER_NAME` /
-`SERVER_DESCRIPTION` / `SERVER_ICON` / `SERVER_PUBKEY` / `SERVER_OWNER`. Docker
+`SERVER_DESCRIPTION` / `SERVER_ICON` / `SERVER_PUBKEY`, plus `SERVER_NSEC` —
+the relay's own key (`sot init` generates it): its pubkey is the NIP-11 `self`,
+and it answers NIP-42 challenges from auth-required upstream relays during sync. Docker
 only runs Vespa — point `VESPA_URL` at a remote Vespa to skip it.
