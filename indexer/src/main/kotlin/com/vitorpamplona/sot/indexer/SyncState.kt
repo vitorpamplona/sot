@@ -44,25 +44,40 @@ data class RelayState(
 )
 
 @Serializable
-data class SyncState(val relays: MutableMap<String, RelayState> = mutableMapOf(), val relayPool: MutableSet<String> = mutableSetOf()) {
-    fun state(url: String) = relays.getOrPut(url) { RelayState() }
+data class SyncState(
+    val relays: MutableMap<String, RelayState> = mutableMapOf(),
+    val relayPool: MutableSet<String> = mutableSetOf(),
+) {
+    fun relay(url: String) = relays.getOrPut(url) { RelayState() }
 
-    fun cursor(url: String, scope: String): Long? = relays[url]?.lastSyncedAt?.get(scope)
+    fun cursor(
+        url: String,
+        scope: String,
+    ): Long? = relays[url]?.lastSyncedAt?.get(scope)
 
-    fun mark(url: String, scope: String, atSecs: Long) {
-        state(url).lastSyncedAt[scope] = atSecs
+    fun markSynced(
+        url: String,
+        scope: String,
+        atSecs: Long,
+    ) {
+        relay(url).lastSyncedAt[scope] = atSecs
     }
 
     companion object {
-        private val json = Json {
-            prettyPrint = true
-            ignoreUnknownKeys = true
-        }
+        private val json =
+            Json {
+                prettyPrint = true
+                ignoreUnknownKeys = true
+            }
 
-        fun load(path: String): SyncState = runCatching { json.decodeFromString(serializer(), File(path).readText()) }
-            .getOrElse { SyncState() }
+        fun load(path: String): SyncState =
+            runCatching { json.decodeFromString(serializer(), File(path).readText()) }
+                .getOrElse { SyncState() }
 
-        fun save(path: String, state: SyncState) {
+        fun save(
+            path: String,
+            state: SyncState,
+        ) {
             runCatching { File(path).writeText(json.encodeToString(serializer(), state)) }
         }
     }

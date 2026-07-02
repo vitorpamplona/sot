@@ -32,8 +32,17 @@ import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
  * [SyncState.relayPool] so periodic re-runs start from the known set instead of
  * rediscovering from scratch.
  */
-class Discovery(private val syncer: RelaySyncer, private val store: ObservableEventStore, private val state: SyncState, private val log: (String) -> Unit) {
-    suspend fun crawl(seeds: List<String>, maxRounds: Int, maxRelays: Int): Set<String> {
+class Discovery(
+    private val syncer: RelaySyncer,
+    private val store: ObservableEventStore,
+    private val state: SyncState,
+    private val log: (String) -> Unit,
+) {
+    suspend fun crawl(
+        seeds: List<String>,
+        maxRounds: Int,
+        maxRelays: Int,
+    ): Set<String> {
         val pool = LinkedHashSet<String>(state.relayPool)
         seeds.forEach { s -> RelayUrlNormalizer.normalizeOrNull(s)?.let { pool.add(it.url) } }
 
@@ -44,12 +53,7 @@ class Discovery(private val syncer: RelaySyncer, private val store: ObservableEv
                 if (pool.size > maxRelays) break
                 syncer.sync(r, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
             }
-            val advertised =
-                store.query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
-                    .flatMap { it.relaysNorm() }
-                    .map { it.url }
-                    .toSet()
-            val fresh = advertised.filter { it !in pool }.take((maxRelays - pool.size).coerceAtLeast(0))
+            val fresh = advertisedRelays().filter { it !in pool }.take((maxRelays - pool.size).coerceAtLeast(0))
             if (fresh.isEmpty()) {
                 log("=== discovery converged: ${pool.size} relays ===")
                 break
@@ -63,4 +67,12 @@ class Discovery(private val syncer: RelaySyncer, private val store: ObservableEv
         state.relayPool.addAll(pool)
         return pool
     }
+
+    /** Every relay URL advertised by the kind-10002 lists currently in the store. */
+    private suspend fun advertisedRelays(): Set<String> =
+        store
+            .query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
+            .flatMap { it.relaysNorm() }
+            .map { it.url }
+            .toSet()
 }

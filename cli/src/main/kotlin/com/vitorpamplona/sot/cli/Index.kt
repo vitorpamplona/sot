@@ -22,6 +22,7 @@ package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.sot.config.Config
+import com.vitorpamplona.sot.indexer.SyncOptions
 import com.vitorpamplona.sot.indexer.SyncState
 import com.vitorpamplona.sot.indexer.VespaProjection
 import com.vitorpamplona.sot.indexer.okHttpWebsocketBuilder
@@ -48,11 +49,12 @@ import kotlin.system.exitProcess
  */
 private const val DEFAULT_PROFILE_RELAY = "wss://wot.grapevine.network"
 
-/** What a stage syncs: which relays, and whether to pull profiles / scores. */
-private class Plan(val relays: List<String>, val profiles: Boolean, val scores: Boolean)
-
 /** A multi-value flag: values after `--name` up to the next `--flag` (e.g. `--seeds a b c`). */
-private fun argList(args: List<String>, name: String, default: List<String>): List<String> {
+private fun argList(
+    args: List<String>,
+    name: String,
+    default: List<String>,
+): List<String> {
     val i = args.indexOf(name)
     if (i < 0) return default
     val out = mutableListOf<String>()
@@ -72,27 +74,25 @@ private fun ts(): String {
 internal fun index(args: List<String>) {
     val stage = args.firstOrNull()?.takeUnless { it.startsWith("--") } ?: "all"
     val vespaUrl = flag(args, "--vespa", Config.vespaUrl)
-    // Per-stage ingest cap (0 = unlimited). Relays hold millions of events; for
-    // local experiments a slice is plenty.
-    val maxEvents = flag(args, "--max-events", "25000").toInt()
     val dbPath = flag(args, "--db", Config.eventsDb)
     val statePath = flag(args, "--state", "$dbPath.state.json")
-    val fetchTimeoutMs = flag(args, "--fetch-timeout", "30").toLong() * 1000
-    val maxProviders = flag(args, "--max-providers", "0").toInt()
-    val maxRounds = flag(args, "--max-rounds", "3").toInt()
-    val maxRelays = flag(args, "--max-relays", "200").toInt()
     val profileRelays = argList(args, "--profile-relays", listOf(DEFAULT_PROFILE_RELAY))
     val seeds = argList(args, "--seeds", Config.seedRelays)
-    val discover = flag(args, "--discover", "false").toBooleanStrict()
 
+    val opts =
+        SyncOptions(
+            maxEvents = flag(args, "--max-events", "25000").toInt(),
+            fetchTimeoutMs = flag(args, "--fetch-timeout", "30").toLong() * 1000,
+            maxProviders = flag(args, "--max-providers", "0").toInt(),
+            profiles = stage != "nip85",
+            scores = stage != "profiles",
+            discover = flag(args, "--discover", "false").toBooleanStrict(),
+            maxRounds = flag(args, "--max-rounds", "3").toInt(),
+            maxRelays = flag(args, "--max-relays", "200").toInt(),
+        )
     // Scores need the broad seed set: kind-10040 provider lists resolve the
     // observer, and they live on general relays, not the score relay alone.
-    val plan =
-        when (stage) {
-            "profiles" -> Plan(profileRelays, profiles = true, scores = false)
-            "nip85" -> Plan(seeds, profiles = false, scores = true)
-            else -> Plan(seeds, profiles = true, scores = true) // "all"
-        }
+    val relays = if (stage == "profiles") profileRelays else seeds
 
     val vespa = VespaClient(vespaUrl)
     val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))
@@ -114,22 +114,7 @@ internal fun index(args: List<String>) {
     projScope.launch { projection.run() }
 
     runBlocking {
-        runSync(
-            client,
-            store,
-            state,
-            statePath,
-            plan.relays,
-            maxEvents,
-            log,
-            fetchTimeoutMs,
-            maxProviders,
-            plan.profiles,
-            discover,
-            maxRounds,
-            maxRelays,
-            plan.scores,
-        )
+        runSync(client, store, state, statePath, relays, opts, log)
         log("draining projection ...")
         projection.awaitIdle()
     }

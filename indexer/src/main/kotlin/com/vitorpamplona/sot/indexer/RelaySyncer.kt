@@ -59,87 +59,136 @@ class RelaySyncer(
     // production; the seam exists only so tests can feed unsigned fixtures.
     private val verifyEvents: Boolean = true,
 ) {
-    data class Outcome(val inserted: Int, val usedNegentropy: Boolean, val downloaded: Int)
+    data class Outcome(
+        val inserted: Int,
+        val usedNegentropy: Boolean,
+        val downloaded: Int,
+    )
 
-    private fun nowSecs() = System.currentTimeMillis() / 1000
+    /** What one download produced: the raw events, and whether negentropy did the work. */
+    private class Download(
+        val events: List<Event>,
+        val usedNegentropy: Boolean,
+    )
 
-    suspend fun sync(relayUrl: String, filter: Filter, maxEvents: Int = 0): Outcome {
+    suspend fun sync(
+        relayUrl: String,
+        filter: Filter,
+        maxEvents: Int = 0,
+    ): Outcome {
         val relay = RelayUrlNormalizer.normalizeOrNull(relayUrl) ?: return Outcome(0, false, 0)
-        val url = relay.url
-        val kind = filter.kinds?.firstOrNull() ?: -1
-        // Cursor scope includes authors so per-provider 30382 syncs don't share a cursor.
-        val scope = kind.toString() + (filter.authors?.let { ":" + it.joinToString(",") } ?: "")
-        val firstSync = state.cursor(url, scope) == null
-        val since = state.cursor(url, scope)?.let { it - slackSecs }
-        val scoped = if (since != null) filter.copy(since = since) else filter
+        val scope = cursorScope(filter)
+        val firstSync = state.cursor(relay.url, scope) == null
 
-        val buf = Collections.synchronizedList(ArrayList<Event>())
-        var usedNeg = false
-        val capable = state.state(url).negentropyCapable
-
-        suspend fun pageInto() {
-            // Honor the ingest cap on the fallback path too (Filter.limit stops fetchAllPages).
-            val paged = if (maxEvents > 0) scoped.copy(limit = maxEvents) else scoped
-            withTimeoutOrNull(idleTimeoutMs) { client.fetchAllPages(relay, listOf(paged)) { buf.add(it) } }
-        }
-
-        if (capable == false) {
-            // Known not to reconcile usefully here — go straight to paginated `since`.
-            pageInto()
-        } else {
-            val need = AtomicInteger(0)
-            val res =
-                runCatching {
-                    client.negentropySyncOrFetch(
-                        relay,
-                        scoped,
-                        maxEvents = maxEvents,
-                        fetchBatch = fetchBatch,
-                        idleTimeoutMs = idleTimeoutMs,
-                        onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
-                    ) { buf.add(it) }
-                }.getOrElse {
-                    log("  ! $url sync failed: ${it.message}")
-                    null
-                }
-            usedNeg = res?.pagedFallback == false
-
-            // The library pages only on a NEG-ERR. A relay can also reconcile to
-            // nothing / deliver < reconciled without erroring (purplepag.es on
-            // 10040). On the FIRST sync of a (relay, kind), verify a suspicious
-            // empty/partial result with pages; if pages find data, mark the relay
-            // pages-only for this kind so future runs skip the wasted round-trip.
-            val suspicious = res != null && !res.pagedFallback &&
-                (need.get() > res.downloaded || (res.downloaded == 0 && firstSync))
-            if (suspicious) {
-                val before = buf.size
-                pageInto()
-                if (buf.size > before) {
-                    state.state(url).negentropyCapable = false
-                    usedNeg = false
-                    log("  [$url] negentropy unreliable for kind $kind - using pages")
-                }
-            } else if (usedNeg && (res?.downloaded ?: 0) > 0 && capable == null) {
-                state.state(url).negentropyCapable = true
-            }
-        }
-
-        // Verify id + signature before storing — relays are untrusted input.
-        val toInsert = if (verifyEvents) {
-            val ok = ArrayList<Event>(buf.size)
-            var bad = 0
-            for (e in buf) if (runCatching { e.verify() }.getOrDefault(false)) ok.add(e) else bad++
-            if (bad > 0) log("  ! [$url] dropped $bad event(s) with invalid id/signature (kind $kind)")
-            ok
-        } else {
-            ArrayList(buf)
-        }
-
-        val inserted =
-            store.batchInsert(toInsert).count { it is IEventStore.InsertOutcome.Accepted }
-        state.mark(url, scope, nowSecs())
-        return Outcome(inserted, usedNegentropy = usedNeg, buf.size)
+        val download = download(relay, sinceCursor(filter, relay.url, scope), maxEvents, firstSync)
+        val valid = dropForged(download.events, relay.url, filter)
+        val inserted = store.batchInsert(valid).count { it is IEventStore.InsertOutcome.Accepted }
+        state.markSynced(relay.url, scope, nowSecs())
+        return Outcome(inserted, download.usedNegentropy, download.events.size)
     }
 
-    suspend fun sync(relay: NormalizedRelayUrl, filter: Filter, maxEvents: Int = 0): Outcome = sync(relay.url, filter, maxEvents)
+    suspend fun sync(
+        relay: NormalizedRelayUrl,
+        filter: Filter,
+        maxEvents: Int = 0,
+    ): Outcome = sync(relay.url, filter, maxEvents)
+
+    /** Cursor scope key: the kind, plus authors so per-provider 30382 syncs don't share a cursor. */
+    private fun cursorScope(filter: Filter): String {
+        val kind = filter.kinds?.firstOrNull() ?: -1
+        val authors = filter.authors?.let { ":" + it.joinToString(",") } ?: ""
+        return "$kind$authors"
+    }
+
+    /** Scope [filter] to the persisted cursor — minus slack to absorb back-dated events — if one exists. */
+    private fun sinceCursor(
+        filter: Filter,
+        url: String,
+        scope: String,
+    ): Filter {
+        val since = state.cursor(url, scope)?.minus(slackSecs) ?: return filter
+        return filter.copy(since = since)
+    }
+
+    /**
+     * Fetch everything matching [filter], choosing the strategy per relay:
+     * negentropy first (the library already pages back on a NEG-ERR), plain
+     * pages when the relay is remembered as unable to reconcile.
+     *
+     * A relay can also reconcile to nothing / deliver less than reconciled
+     * WITHOUT erroring (purplepag.es on 10040). On the first sync of a scope,
+     * double-check such a suspicious result with pages; if pages find data,
+     * remember the relay as pages-only so future runs skip the wasted round-trip.
+     */
+    private suspend fun download(
+        relay: NormalizedRelayUrl,
+        filter: Filter,
+        maxEvents: Int,
+        firstSync: Boolean,
+    ): Download {
+        val url = relay.url
+        if (state.relay(url).negentropyCapable == false) {
+            return Download(fetchPages(relay, filter, maxEvents), usedNegentropy = false)
+        }
+
+        val buf = Collections.synchronizedList(ArrayList<Event>())
+        val need = AtomicInteger(0)
+        val res =
+            runCatching {
+                client.negentropySyncOrFetch(
+                    relay,
+                    filter,
+                    maxEvents = maxEvents,
+                    fetchBatch = fetchBatch,
+                    idleTimeoutMs = idleTimeoutMs,
+                    onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
+                ) { buf.add(it) }
+            }.getOrElse {
+                log("  ! $url sync failed: ${it.message}")
+                null
+            }
+        var usedNeg = res?.pagedFallback == false
+
+        val suspicious =
+            res != null && !res.pagedFallback &&
+                (need.get() > res.downloaded || (res.downloaded == 0 && firstSync))
+        if (suspicious) {
+            val paged = fetchPages(relay, filter, maxEvents)
+            if (paged.isNotEmpty()) {
+                state.relay(url).negentropyCapable = false
+                usedNeg = false
+                log("  [$url] negentropy unreliable for kind ${filter.kinds?.firstOrNull()} - using pages")
+                buf.addAll(paged)
+            }
+        } else if (usedNeg && (res?.downloaded ?: 0) > 0 && state.relay(url).negentropyCapable == null) {
+            state.relay(url).negentropyCapable = true
+        }
+        return Download(ArrayList(buf), usedNeg)
+    }
+
+    /** Paginated `since` fetch — works on every relay. [maxEvents] caps ingest via Filter.limit. */
+    private suspend fun fetchPages(
+        relay: NormalizedRelayUrl,
+        filter: Filter,
+        maxEvents: Int,
+    ): List<Event> {
+        val paged = if (maxEvents > 0) filter.copy(limit = maxEvents) else filter
+        val buf = Collections.synchronizedList(ArrayList<Event>())
+        withTimeoutOrNull(idleTimeoutMs) { client.fetchAllPages(relay, listOf(paged)) { buf.add(it) } }
+        return ArrayList(buf)
+    }
+
+    /** Drop events whose id or Schnorr signature doesn't verify — relays are untrusted input. */
+    private fun dropForged(
+        events: List<Event>,
+        url: String,
+        filter: Filter,
+    ): List<Event> {
+        if (!verifyEvents) return events
+        val (ok, forged) = events.partition { runCatching { it.verify() }.getOrDefault(false) }
+        if (forged.isNotEmpty()) log("  ! [$url] dropped ${forged.size} event(s) with invalid id/signature (kind ${filter.kinds?.firstOrNull()})")
+        return ok
+    }
+
+    private fun nowSecs() = System.currentTimeMillis() / 1000
 }

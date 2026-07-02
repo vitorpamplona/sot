@@ -54,7 +54,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * HTTP writes are submitted to [writers] so they don't stall the feed. Sync
  * 10040s before 30382s so the mapping is populated first.
  */
-class VespaProjection(private val store: ObservableEventStore, private val vespa: VespaClient, private val writers: ExecutorService, private val log: (String) -> Unit) {
+class VespaProjection(
+    private val store: ObservableEventStore,
+    private val vespa: VespaClient,
+    private val writers: ExecutorService,
+    private val log: (String) -> Unit,
+) {
     // service key (30382 signer) -> observer pubkey (10040 author)
     private val serviceToObserver = ConcurrentHashMap<String, String>()
 
@@ -70,7 +75,10 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
      * [idleMs] — or [maxMs] elapses. Call after the sync finishes to let the
      * projection catch up before the writers are drained.
      */
-    suspend fun awaitIdle(idleMs: Long = 3000, maxMs: Long = 120_000) {
+    suspend fun awaitIdle(
+        idleMs: Long = 3000,
+        maxMs: Long = 120_000,
+    ) {
         var last = -1
         var stable = 0L
         var total = 0L
@@ -92,8 +100,14 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
         store.changes.collect { change ->
             try {
                 when (change) {
-                    is StoreChange.Insert -> handle(change.event)
-                    is StoreChange.DeleteByFilter -> handleVanish(change.filters)
+                    is StoreChange.Insert -> {
+                        handle(change.event)
+                    }
+
+                    is StoreChange.DeleteByFilter -> {
+                        handleVanish(change.filters)
+                    }
+
                     is StoreChange.DeleteExpired -> {}
                 }
             } catch (e: Exception) {
@@ -108,27 +122,16 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
     private suspend fun handle(ev: Event) {
         when (ev) {
             is MetadataEvent -> {
-                val md = ev.contactMetaData() ?: return
-                val profile =
-                    Profile(
-                        pubkey = ev.pubKey,
-                        name = md.name,
-                        displayName = md.displayName,
-                        about = md.about,
-                        picture = md.picture,
-                        banner = md.banner,
-                        nip05 = md.nip05,
-                        lud06 = md.lud06,
-                        lud16 = md.lud16,
-                        website = md.website,
-                    )
+                val profile = ev.toProfile() ?: return
                 submit("profile") {
                     vespa.upsertProfile(profile)
                     profiles.incrementAndGet()
                 }
             }
 
-            is TrustProviderListEvent -> learn(ev)
+            is TrustProviderListEvent -> {
+                learn(ev)
+            }
 
             is ContactCardEvent -> {
                 val observer = serviceToObserver[ev.pubKey] ?: resolveObserver(ev.pubKey)
@@ -146,7 +149,9 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
                 }
             }
 
-            is DeletionEvent -> handleDeletion(ev)
+            is DeletionEvent -> {
+                handleDeletion(ev)
+            }
 
             else -> {}
         }
@@ -154,22 +159,24 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
 
     /** kind:5 -> erase the targeted profile/score from Vespa. */
     private suspend fun handleDeletion(ev: DeletionEvent) {
-        // Addressable targets carry kind+pubkey(+dtag): "0:pubkey" or "30382:service:subject".
         for (addr in ev.deleteAddressIds()) {
+            // Addressable target = "kind:author(:dtag)". kind:0 -> "0:<profile pubkey>";
+            // kind:30382 -> "30382:<service key>:<subject pubkey>".
             val parts = addr.split(":", limit = 3)
             val kind = parts.getOrNull(0)?.toIntOrNull() ?: continue
+            val author = parts.getOrNull(1) ?: continue
             when (kind) {
-                MetadataEvent.KIND -> parts.getOrNull(1)?.let { pk ->
+                MetadataEvent.KIND -> {
                     submit("del-profile") {
-                        vespa.blankProfile(pk)
+                        vespa.blankProfile(author)
                         deletions.incrementAndGet()
                     }
                 }
 
                 ContactCardEvent.KIND -> {
-                    val service = parts.getOrNull(1) ?: continue
                     val subject = parts.getOrNull(2) ?: continue
-                    val observer = serviceToObserver[service] ?: resolveObserver(service) ?: continue
+                    // The 30382 author is a *service key*; the score cell is keyed by its observer.
+                    val observer = serviceToObserver[author] ?: resolveObserver(author) ?: continue
                     submit("del-score") {
                         vespa.removeScore(subject, observer)
                         deletions.incrementAndGet()
@@ -197,7 +204,8 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
 
     /** Record a 10040's `30382:rank` providers as service-key -> observer mappings. */
     private fun learn(list: TrustProviderListEvent) {
-        list.serviceProviders()
+        list
+            .serviceProviders()
             .filter { it.service == ProviderTypes.rank }
             .forEach { serviceToObserver[it.pubkey] = list.pubKey }
     }
@@ -208,7 +216,10 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
         return serviceToObserver[serviceKey]
     }
 
-    private fun submit(what: String, block: () -> Unit) {
+    private fun submit(
+        what: String,
+        block: () -> Unit,
+    ) {
         writers.submit {
             try {
                 block()
@@ -217,4 +228,21 @@ class VespaProjection(private val store: ObservableEventStore, private val vespa
             }
         }
     }
+}
+
+/** kind:0 -> the plain [Profile] document the engine indexes; null if the metadata doesn't parse. */
+private fun MetadataEvent.toProfile(): Profile? {
+    val md = contactMetaData() ?: return null
+    return Profile(
+        pubkey = pubKey,
+        name = md.name,
+        displayName = md.displayName,
+        about = md.about,
+        picture = md.picture,
+        banner = md.banner,
+        nip05 = md.nip05,
+        lud06 = md.lud06,
+        lud16 = md.lud16,
+        website = md.website,
+    )
 }
