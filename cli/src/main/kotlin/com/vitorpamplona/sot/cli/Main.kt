@@ -53,21 +53,27 @@ fun main(argv: Array<String>) {
 }
 
 private fun usage() {
+    // One command per line: its name lit up, the blurb dimmed beside it.
+    fun cmd(
+        name: String,
+        blurb: String,
+    ) = "  ${Ansi.cyan(name.padEnd(14))} ${Ansi.dim(blurb)}"
+
     println(
-        """
-        sot - local Nostr profile search
-
-          init                          write a .env config template
-          serve [--up]                  web UI + /search + NIP-50 relay + background sync (SYNC_INTERVAL); --up starts Vespa first
-          index [flags]                 one sync pass of profiles + NIP-85 trust scores into Vespa
-          search "<query>" [--observer <hex|npub|nprofile|nip05>] [--hits N] [--algo <profile>] [--only-ranked] [--vespa <url>]
-          status  [--vespa <url>] [--server <url>]
-          verify [--repair] [--db <path>]   diff the events db against the Vespa index; --repair fixes
-
-          up                            start local Vespa (docker compose) and deploy vespa
-          down                          stop local Vespa
-          destroy [--yes] [--db <path>] wipe events db + sync state + Vespa's data volume
-          deploy [--app <dir>] [--config <url>]   redeploy the Vespa app package
-        """.trimIndent(),
+        listOf(
+            Ansi.bold("sot") + Ansi.dim(" - local Nostr profile search"),
+            "",
+            cmd("init", "write a .env config template"),
+            cmd("serve [--up]", "web UI + /search + NIP-50 relay + background sync (SYNC_INTERVAL); --up starts Vespa first"),
+            cmd("index [flags]", "one sync pass of profiles + NIP-85 trust scores into Vespa"),
+            cmd("search", "\"<query>\" [--observer <hex|npub|nprofile|nip05>] [--hits N] [--algo <profile>] [--only-ranked] [--vespa <url>]"),
+            cmd("status", "[--vespa <url>] [--server <url>]"),
+            cmd("verify", "[--repair] [--db <path>]  diff the events db against the Vespa index; --repair fixes"),
+            "",
+            cmd("up", "start local Vespa (docker compose) and deploy vespa"),
+            cmd("down", "stop local Vespa"),
+            cmd("destroy", "[--yes] [--db <path>] wipe events db + sync state + Vespa's data volume"),
+            cmd("deploy", "[--app <dir>] [--config <url>] redeploy the Vespa app package"),
+        ).joinToString("\n"),
     )
 }

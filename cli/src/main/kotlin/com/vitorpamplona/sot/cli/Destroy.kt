@@ -40,26 +40,26 @@ internal fun destroy(args: List<String>) {
             File("$dbPath.state.json"),
         ).filter { it.exists() }
 
-    println("This wipes all local sot state:")
-    if (files.isEmpty()) println("  (no local db/state files found for $dbPath)")
-    files.forEach { println("  rm ${it.path}") }
-    println("  docker compose down -v      (stops Vespa and deletes its data volume)")
+    println(Ansi.bold("This wipes all local sot state:"))
+    if (files.isEmpty()) hint("  (no local db/state files found for $dbPath)")
+    files.forEach { hint("  rm ${it.path}") }
+    hint("  docker compose down -v      (stops Vespa and deletes its data volume)")
 
     if (!has(args, "--yes")) {
         print("Continue? [y/N] ")
         val answer = readlnOrNull()?.trim()?.lowercase()
         if (answer != "y" && answer != "yes") {
-            println("aborted")
+            warn("aborted")
             return
         }
     }
 
     // Docker may not be running/installed; the local files should go regardless.
     runCatching { run("docker", "compose", "down", "-v") }
-        .onFailure { println("! docker compose failed (${it.message}) - remove the vespa_var volume manually") }
+        .onFailure { warn("docker compose failed (${it.message}) - remove the vespa_var volume manually") }
 
     for (f in files) {
-        println(if (f.delete()) "deleted ${f.path}" else "! could not delete ${f.path}")
+        if (f.delete()) ok("deleted ${f.path}") else err("could not delete ${f.path}")
     }
-    println("Clean slate. Next: `sot up` then `sot index`.")
+    ok("Clean slate. Next: `sot up` then `sot index`.")
 }

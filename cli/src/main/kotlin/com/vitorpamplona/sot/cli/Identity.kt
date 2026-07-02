@@ -53,11 +53,11 @@ internal fun serverSigner(): NostrSignerSync {
     val raw = Config.serverNsec.trim()
     if (raw.isEmpty()) {
         val signer = NostrSignerSync()
-        println("SERVER_NSEC is not set - using a one-run identity ${signer.keyPair.pubKey.toNpub()} (run `sot init`, or set SERVER_NSEC, to keep one)")
+        warn("SERVER_NSEC is not set - using a one-run identity ${signer.keyPair.pubKey.toNpub()} (run `sot init`, or set SERVER_NSEC, to keep one)")
         return signer
     }
     return signerFromSecret(raw) ?: run {
-        println("SERVER_NSEC is set but is neither an nsec nor a 64-hex secret key.")
+        err("SERVER_NSEC is set but is neither an nsec nor a 64-hex secret key.")
         exitProcess(1)
     }
 }

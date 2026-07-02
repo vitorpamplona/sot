@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.sot.config.Config
+import com.vitorpamplona.sot.vespa.SearchHit
 import com.vitorpamplona.sot.vespa.SearchOptions
 import com.vitorpamplona.sot.vespa.VespaSearch
 import kotlinx.coroutines.runBlocking
@@ -45,7 +46,6 @@ internal fun search(args: List<String>) {
     val onlyRanked = has(args, "--only-ranked")
 
     val obsLabel = if (observer.isEmpty()) "(none)" else observer.take(12) + ".."
-    println("query=$query algo=$algo observer=$obsLabel")
 
     val results =
         runBlocking {
@@ -56,14 +56,68 @@ internal fun search(args: List<String>) {
             )
         }
 
-    println("results=${results.size}")
-    println("-".repeat(92))
-    println("%2s  %11s  %6s  %-30s %s".format("#", "relevance", "trust", "name / display_name", "nip05"))
-    println("-".repeat(92))
-    results.forEachIndexed { i, h ->
-        val label = (h.displayName.ifBlank { h.name }).take(30)
-        val rel = h.relevance?.let { "%.2f".format(it) } ?: "-"
-        val tr = h.trust?.let { "%.0f".format(it) } ?: "-"
-        println("%2d  %11s  %6s  %-30s %s".format(i + 1, rel, tr, label, h.fields["nip05"] ?: ""))
+    print(renderResults(query, algo, obsLabel, results))
+}
+
+/**
+ * The whole `sot search` render as one string (banner + table + footer), pure so
+ * it can be eyeballed and tested without a live Vespa. A little banner up top —
+ * the query in lights, the knobs dimmed under it — then the ranked table.
+ */
+internal fun renderResults(
+    query: String,
+    algo: String,
+    obsLabel: String,
+    results: List<SearchHit>,
+): String =
+    buildString {
+        appendLine()
+        appendLine("  ${Ansi.cyan("⌕")}  ${Ansi.bold(query)}")
+        appendLine("     ${Ansi.dim("algo $algo · observer $obsLabel")}")
+
+        if (results.isEmpty()) {
+            appendLine("     ${Ansi.dim("no matches")}")
+            appendLine()
+            return@buildString
+        }
+
+        // Trust bars scale to the strongest hit in THIS result set, so the column
+        // reads as a comparison even when the absolute scores are tiny.
+        val maxTrust = results.mapNotNull { it.trust }.maxOrNull()?.takeIf { it > 0 } ?: 1.0
+
+        appendLine()
+        appendLine(Ansi.dim("     %-3s  %-30s  %-8s  %-9s  %s".format("#", "name / display", "trust", "relevance", "nip05")))
+        appendLine(Ansi.gray("     " + "─".repeat(72)))
+        results.forEachIndexed { i, h ->
+            val rank = Ansi.gray("%-3d".format(i + 1))
+            val label = Ansi.bold((h.displayName.ifBlank { h.name }).take(30).padEnd(30))
+            val trust = trustCell(h.trust, maxTrust)
+            val rel = Ansi.dim((h.relevance?.let { "%.2f".format(it) } ?: "-").padEnd(9))
+            val nip05 = Ansi.blue(h.fields["nip05"] ?: "")
+            appendLine("     $rank  $label  $trust  $rel  $nip05")
+        }
+        appendLine()
+        appendLine(Ansi.dim("     ${results.size} result${if (results.size == 1) "" else "s"}"))
+        appendLine()
     }
+
+/** A `▁▂▃▄▅` bar + the number, coloured by strength, padded to the column's plain width. */
+private fun trustCell(
+    trust: Double?,
+    max: Double,
+): String {
+    if (trust == null) return Ansi.dim("-".padEnd(8))
+    val bars = "▁▁▂▃▄▅▆▇█"
+    val ratio = (trust / max).coerceIn(0.0, 1.0)
+    val bar = bars[(ratio * (bars.length - 1)).toInt()].toString().repeat(3)
+    val num = "%.0f".format(trust)
+    val plain = "$bar $num" // colour is invisible width; pad the plain form first
+    val painted =
+        when {
+            ratio >= 0.66 -> Ansi.green(plain)
+            ratio >= 0.20 -> Ansi.cyan(plain)
+            else -> Ansi.dim(plain)
+        }
+    // pad to 8 visible columns by appending spaces AFTER the reset
+    return painted + " ".repeat((8 - plain.length).coerceAtLeast(0))
 }

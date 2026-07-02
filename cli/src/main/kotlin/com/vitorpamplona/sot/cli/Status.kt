@@ -41,9 +41,9 @@ internal fun status(args: List<String>) {
     fun line(
         name: String,
         ok: Boolean,
-    ) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
+    ) = println("  ${if (ok) Ansi.green("● UP  ") else Ansi.red("● DOWN")}  $name")
 
-    println("component status:")
+    println(Ansi.bold("component status:"))
     val docs = vespaDocCount(vespa)
     val docsLabel = docs?.let { "  ${"%,d".format(it)} docs" } ?: ""
     line("Vespa   ($vespa)$docsLabel", ping("$vespa/ApplicationStatus"))
@@ -95,18 +95,20 @@ private fun storeReport(
         return
     }
     val (profiles, providers, assertions) = Triple(counts[0], counts[1], counts[2])
-    println("  store: $dbPath")
+    println(Ansi.bold("store: ") + Ansi.dim(dbPath))
     // The sync-state file is rewritten at the end of every pass — its age IS the index's staleness.
     File("$dbPath.state.json").takeIf { it.exists() }?.let {
         val mins = (System.currentTimeMillis() - it.lastModified()) / 60_000
-        println("    last sync:  ${if (mins == 0L) "just now" else "${mins}m ago"}")
+        val age = if (mins == 0L) "just now" else "${mins}m ago"
+        println("    ${Ansi.dim("last sync ")}${if (mins < 60) Ansi.green(age) else Ansi.amber(age)}")
     }
-    println("    kind:0      profiles      ${"%,d".format(profiles)}")
-    println("    kind:10040  providers     ${"%,d".format(providers)}")
-    println("    kind:30382  assertions    ${"%,d".format(assertions)}")
+    println("    ${Ansi.dim("kind:0     profiles   ")}${Ansi.bold("%,d".format(profiles))}")
+    println("    ${Ansi.dim("kind:10040 providers  ")}${Ansi.bold("%,d".format(providers))}")
+    println("    ${Ansi.dim("kind:30382 assertions ")}${Ansi.bold("%,d".format(assertions))}")
     if (vespaDocs != null) {
         val delta = vespaDocs - profiles
-        val note = if (delta >= 0) "score-only subjects add profiles" else "MISSING profiles in Vespa"
-        println("    reconcile:  vespa profiles ${"%,d".format(vespaDocs)} vs profile events ${"%,d".format(profiles)} (${"%+,d".format(delta)}; $note)")
+        val ok = delta >= 0
+        val note = if (ok) Ansi.dim("score-only subjects add profiles") else Ansi.red("MISSING profiles in Vespa")
+        println("    ${Ansi.dim("reconcile ")}vespa ${"%,d".format(vespaDocs)} vs events ${"%,d".format(profiles)} (${"%+,d".format(delta)}; $note)")
     }
 }
