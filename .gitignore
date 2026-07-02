@@ -16,3 +16,9 @@ build/
 # IDE
 .idea/
 *.iml
+
+# Local event store (SQLite + WAL/SHM) and sync cursors
+*.db
+*.db-shm
+*.db-wal
+*.db.state.json

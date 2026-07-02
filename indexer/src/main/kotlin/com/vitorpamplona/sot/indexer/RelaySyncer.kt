@@ -45,6 +45,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Syncs one (relay, filter) into the store using Quartz's generalized
@@ -70,7 +71,12 @@ class RelaySyncer(
     private val state: SyncState,
     private val log: (String) -> Unit,
     private val fetchBatch: Int = 500,
-    private val idleTimeoutMs: Long = 30_000,
+    // Idle timeout: how long a download may hear NOTHING from the relay before we
+    // give up on it. Measured from the last message received (Quartz's negentropy
+    // uses a per-event IdleClock; the pages fallback a per-page wait), so it never
+    // fires while events are still streaming — or while we're busy verifying and
+    // inserting a chunk (that backpressures the socket, pausing the idle clock).
+    private val idleTimeoutMs: Long = 10_000,
     private val slackSecs: Long = 3600,
     // Verify each event's id + Schnorr signature before storing. A relay is
     // untrusted input: without this, a forged kind:0/30382/10040 could
@@ -154,6 +160,10 @@ class RelaySyncer(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int = 0,
+        // Fires with each chunk of VERIFIED events as they stream in, before they
+        // hit the store. Discovery uses it to feed newly-advertised relays into
+        // its worker pool the moment they arrive — no store re-scan per relay.
+        onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Outcome {
         awaitAuthOnFirstContact(relay)
         val scope = cursorScope(filter)
@@ -161,7 +171,7 @@ class RelaySyncer(
         val scoped = sinceCursor(filter, relay, scope)
 
         if (state.relay(relay).negentropyCapable == false) {
-            val pages = pagesStream(relay, scoped, maxEvents)
+            val pages = pagesStream(relay, scoped, maxEvents, onVerified = onVerified)
             // A truncated pages download must not advance the cursor, or the
             // missing tail would be since-filtered away forever.
             if (pages.completed) {
@@ -172,13 +182,13 @@ class RelaySyncer(
             return Outcome(pages.inserted, usedNegentropy = false, downloaded = pages.received)
         }
 
-        val neg = negentropyStream(relay, scoped, maxEvents)
+        val neg = negentropyStream(relay, scoped, maxEvents, onVerified = onVerified)
         var inserted = neg.streamed.inserted
         var received = neg.streamed.received
         var usedNeg = neg.usedNegentropy
 
         if (looksIncomplete(neg, maxEvents, firstSync)) {
-            val pages = pagesStream(relay, scoped, maxEvents)
+            val pages = pagesStream(relay, scoped, maxEvents, onVerified = onVerified)
             if (pages.received > 0) {
                 state.relay(relay).negentropyCapable = false
                 usedNeg = false
@@ -287,11 +297,12 @@ class RelaySyncer(
         filter: Filter,
         maxEvents: Int,
         collectIds: MutableSet<String>? = null,
+        onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): NegentropyStream {
         val need = AtomicInteger(0)
         var result: NegentropyOrFetchResult? = null
         val streamed =
-            streamEvents(relay, filter, collectIds = collectIds, needHint = need::get) { onEvent ->
+            streamEvents(relay, filter, collectIds = collectIds, needHint = need::get, onVerified = onVerified) { onEvent ->
                 result =
                     runCatching {
                         client.negentropySyncOrFetch(
@@ -324,6 +335,7 @@ class RelaySyncer(
         filter: Filter,
         collectIds: MutableSet<String>? = null,
         needHint: () -> Int = { 0 },
+        onVerified: (suspend (List<Event>) -> Unit)? = null,
         producer: suspend (onEvent: (Event) -> Unit) -> Boolean,
     ): Streamed =
         coroutineScope {
@@ -337,7 +349,7 @@ class RelaySyncer(
 
                     suspend fun flush() {
                         if (chunk.isNotEmpty()) {
-                            inserted.addAndGet(insertBatch(chunk, relay, filter))
+                            inserted.addAndGet(insertBatch(chunk, relay, filter, onVerified))
                             chunk.clear()
                         }
                     }
@@ -383,15 +395,24 @@ class RelaySyncer(
         filter: Filter,
         maxEvents: Int,
         collectIds: MutableSet<String>? = null,
+        onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Streamed {
         val paged = if (maxEvents > 0) filter.copy(limit = maxEvents) else filter
-        return streamEvents(relay, paged, collectIds) { onEvent ->
-            // fetchAllPages' own watchdog handles stalled pages ([idleTimeoutMs]);
-            // the outer cap only guards a wedged download, so it must be roomy
-            // enough for a big full sync — many pages, each fast.
-            withTimeoutOrNull(idleTimeoutMs * PAGES_TOTAL_TIMEOUT_FACTOR) {
-                client.fetchAllPages(relay, listOf(paged), timeoutMs = idleTimeoutMs, onEvent = onEvent)
-            } != null
+        return streamEvents(relay, paged, collectIds, onVerified = onVerified) { onEvent ->
+            // NO outer wall-clock cap: a long-but-healthy download (many pages, each
+            // fast) must never be cut mid-stream. fetchAllPages' own per-page
+            // [idleTimeoutMs] watchdog is what stops a page that goes silent.
+            //
+            // Tell a clean finish from an idle stall by the gap since the last event:
+            // a real end-of-stream returns right after its final page's events, while
+            // a stall returns ~idleTimeoutMs later having heard nothing. Only a clean
+            // finish may advance the cursor — a stall's missing tail must be retried.
+            val lastEventMs = AtomicLong(System.currentTimeMillis())
+            client.fetchAllPages(relay, listOf(paged), timeoutMs = idleTimeoutMs) { e ->
+                lastEventMs.set(System.currentTimeMillis())
+                onEvent(e)
+            }
+            System.currentTimeMillis() - lastEventMs.get() < idleTimeoutMs
         }
     }
 
@@ -399,18 +420,26 @@ class RelaySyncer(
         events: List<Event>,
         relay: NormalizedRelayUrl,
         filter: Filter,
+        onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Int {
         val valid = dropForged(events, relay, filter)
+        onVerified?.invoke(valid)
         val accepted = storeWrites.withLock { store.batchInsert(valid) }.count { it is IEventStore.InsertOutcome.Accepted }
         progress.onInserted(accepted)
         return accepted
     }
 
-    /** Cursor scope key: the kind, plus authors so per-provider 30382 syncs don't share a cursor. */
+    /**
+     * Cursor scope key: ALL the filter's kinds, plus authors so per-provider 30382
+     * syncs don't share a cursor. Joining every kind (not just the first) keeps a
+     * multi-kind filter's cursor distinct from any single-kind one — a single-kind
+     * filter still scopes to exactly its kind, so existing per-kind cursors are
+     * byte-identical.
+     */
     private fun cursorScope(filter: Filter): String {
-        val kind = filter.kinds?.firstOrNull() ?: -1
+        val kinds = filter.kinds?.joinToString(",") ?: "-1"
         val authors = filter.authors?.let { ":" + it.joinToString(",") } ?: ""
-        return "$kind$authors"
+        return "$kinds$authors"
     }
 
     /** Scope [filter] to the persisted cursor — minus slack to absorb back-dated events — if one exists. */
@@ -440,10 +469,6 @@ class RelaySyncer(
     private companion object {
         // Verify + insert in chunks of this many events as they stream in.
         const val CHUNK_SIZE = 5_000
-
-        // Hard ceiling on one whole pages download, in idle windows: a big full
-        // sync is many pages that each move well within the idle timeout.
-        const val PAGES_TOTAL_TIMEOUT_FACTOR = 20
 
         // First-contact NIP-42 handshake: probe REQ bound, settle grace for the
         // async challenge reply to be recorded, total wait for its OK.
