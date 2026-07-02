@@ -107,6 +107,15 @@ internal class MockVespa {
             applyUpdate(path.substringAfterLast("/"), body)
             return """{"id":"$path"}"""
         }
+        // Visit: every doc's provenance fields in one page (no continuation).
+        if (method == "GET" && path == "/document/v1/doc/doc/docid") {
+            val documents =
+                (docs.keys + cells.keys + scoreIds.keys).joinToString(",") { pk ->
+                    val ids = scoreIds[pk].orEmpty().entries.joinToString(",") { """"${it.key}":"${it.value}"""" }
+                    """{"id":"id:doc:doc::$pk","fields":{"pubkey":"$pk","event_id":"${docs[pk]?.get("event_id").orEmpty()}","score_event_ids":{$ids}}}"""
+                }
+            return """{"pathId":"/document/v1/doc/doc/docid","documents":[$documents]}"""
+        }
         if (method == "GET" && path == "/search/") {
             val yql = URLDecoder.decode(rawQuery.orEmpty().substringAfter("yql=").substringBefore("&"), "UTF-8")
             return search(yql)

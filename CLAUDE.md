@@ -82,9 +82,10 @@ sot serve                       # the one-port server on :7777 (web UI + /search
 sot index                       # ONE sync pass (initial backfill / bounded experiments)
 sot search "vitor" --observer <hex|npub|nprofile|nip05>
 sot status                      # Vespa/server up? doc + event counts + last-sync age
+sot verify [--repair]           # anti-entropy: diff the events db against the Vespa index; --repair fixes
 ```
 
-`sot` subcommands: `init | serve | index | search | status | up | down | destroy | deploy`
+`sot` subcommands: `init | serve | index | search | status | verify | up | down | destroy | deploy`
 — each in its own file under `cli/src/main/kotlin/.../cli/`. `sot destroy` wipes the
 events db, sync cursors, and Vespa's data volume for a from-scratch run. Don't run
 `sot index` while `sot serve` is syncing the same db (two processes, one SQLite file).

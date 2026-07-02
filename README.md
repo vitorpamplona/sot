@@ -60,6 +60,10 @@ Search as the observer whose scores you loaded: set `DEFAULT_OBSERVER` (or pass
 ingested trust scores for, otherwise every trust score is 0. `sot status` shows
 whether Vespa and the server are up (plus doc/event counts).
 
+The events db is the source of truth and Vespa follows it asynchronously, so a
+Vespa outage or a crash can drop index writes. `sot verify` walks both sides
+and reports every difference; `sot verify --repair` fixes them.
+
 ## The server
 
 `sot serve` is one process on one port (`SERVER_PORT`, default `:7777`) serving

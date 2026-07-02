@@ -318,7 +318,7 @@ class VespaProjection(
 }
 
 /** kind:0 -> the plain [Profile] document the engine indexes; null if the metadata doesn't parse. */
-private fun MetadataEvent.toProfile(): Profile? {
+internal fun MetadataEvent.toProfile(): Profile? {
     val md = contactMetaData() ?: return null
     return Profile(
         pubkey = pubKey,

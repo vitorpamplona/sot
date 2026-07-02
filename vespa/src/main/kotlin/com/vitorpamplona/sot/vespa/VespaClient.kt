@@ -130,6 +130,45 @@ class VespaClient(
             putJsonObject("score_event_ids{$observer}") { put("remove", 0) }
         }
 
+    /** The provenance slice of one indexed doc — enough to compare against the source of truth. */
+    class IndexedDoc(
+        val pubkey: String,
+        val eventId: String?,
+        val scoreEventIds: Map<String, String>,
+    )
+
+    /** One page of a full index walk: docs plus the token for the next page (null = done). */
+    class VisitPage(
+        val docs: List<IndexedDoc>,
+        val continuation: String?,
+    )
+
+    /**
+     * Walk the whole index via the document API's visit endpoint, one page per
+     * call — the anti-entropy verify streams pages instead of loading the corpus.
+     * Only the provenance fields are fetched: matching source ids imply the doc
+     * content matches, since both were written by the same update.
+     */
+    fun visitDocs(
+        continuation: String? = null,
+        pageSize: Int = 1024,
+    ): VisitPage {
+        val cont = continuation?.let { "&continuation=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
+        val fields = URLEncoder.encode("doc:pubkey,event_id,score_event_ids", "UTF-8")
+        val root = getJson("$baseUrl/document/v1/doc/doc/docid?cluster=$CONTENT_CLUSTER&wantedDocumentCount=$pageSize&fieldSet=$fields$cont")
+        val docs =
+            root["documents"]?.jsonArray?.mapNotNull { d ->
+                val f = d.jsonObject["fields"]?.jsonObject ?: return@mapNotNull null
+                val pubkey = f["pubkey"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                IndexedDoc(
+                    pubkey = pubkey,
+                    eventId = f["event_id"]?.jsonPrimitive?.contentOrNull,
+                    scoreEventIds = mapEntries(f["score_event_ids"]).toMap(),
+                )
+            } ?: emptyList()
+        return VisitPage(docs, root["continuation"]?.jsonPrimitive?.contentOrNull)
+    }
+
     /**
      * The pubkey whose profile fields were written from [eventId], or null if none.
      * [eventId] is embedded in the YQL lookup — callers pass only validated ids.
@@ -182,8 +221,15 @@ class VespaClient(
     private fun searchHits(
         yql: String,
         hits: Int = 2,
-    ): List<JsonObject> {
-        val url = "$baseUrl/search/?yql=${URLEncoder.encode(yql, "UTF-8")}&hits=$hits&ranking=unranked"
+    ): List<JsonObject> =
+        getJson("$baseUrl/search/?yql=${URLEncoder.encode(yql, "UTF-8")}&hits=$hits&ranking=unranked")["root"]
+            ?.jsonObject
+            ?.get("children")
+            ?.jsonArray
+            ?.filterIsInstance<JsonObject>()
+            ?: emptyList()
+
+    private fun getJson(url: String): JsonObject {
         val req =
             HttpRequest
                 .newBuilder(URI.create(url))
@@ -192,14 +238,7 @@ class VespaClient(
                 .build()
         val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
         if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
-        return Json
-            .parseToJsonElement(resp.body())
-            .jsonObject["root"]
-            ?.jsonObject
-            ?.get("children")
-            ?.jsonArray
-            ?.filterIsInstance<JsonObject>()
-            ?: emptyList()
+        return Json.parseToJsonElement(resp.body()).jsonObject
     }
 
     private fun JsonObject.stringField(name: String): String? =
@@ -232,4 +271,9 @@ class VespaClient(
 
     /** Graceful: waits for in-flight feed operations before closing the connections. */
     override fun close() = feed.close(true)
+
+    private companion object {
+        // The <content id> in vespa/app/services.xml — the visit API needs it spelled out.
+        const val CONTENT_CLUSTER = "content"
+    }
 }

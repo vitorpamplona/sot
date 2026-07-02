@@ -24,7 +24,7 @@ package com.vitorpamplona.sot.cli
  * sot CLI entry point. Each command lives in its own file — [init] (Init.kt),
  * [search] (Search.kt), [status] (Status.kt), and the local-Vespa lifecycle
  * [up]/[down]/[deploy] (Vespa.kt) — with shared helpers in Args.kt, Http.kt,
- * and Observer.kt. Config/`.env` handling lives in :query-engine's Config.
+ * and Observer.kt. Config/`.env` handling lives in :config's Config.
  */
 fun main(argv: Array<String>) {
     val args = argv.toList()
@@ -34,6 +34,7 @@ fun main(argv: Array<String>) {
         "index" -> index(args.drop(1))
         "search" -> search(args.drop(1))
         "status" -> status(args.drop(1))
+        "verify" -> verify(args.drop(1))
         "up" -> up(args.drop(1))
         "down" -> down()
         "destroy" -> destroy(args.drop(1))
@@ -52,6 +53,8 @@ private fun usage() {
           index [flags]                 one sync pass of profiles + NIP-85 trust scores into Vespa
           search "<query>" [--observer <hex|npub|nprofile|nip05>] [--hits N] [--algo <profile>] [--only-ranked] [--vespa <url>]
           status  [--vespa <url>] [--server <url>]
+          verify [--repair] [--db <path>]   diff the events db against the Vespa index; --repair fixes
+
           up                            start local Vespa (docker compose) and deploy vespa
           down                          stop local Vespa
           destroy [--yes] [--db <path>] wipe events db + sync state + Vespa's data volume
