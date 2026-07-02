@@ -98,6 +98,7 @@ internal fun index(args: List<String>) {
             maxRounds = flag(args, "--max-rounds", "3").toInt(),
             maxRelays = flag(args, "--max-relays", "200").toInt(),
             concurrency = flag(args, "--concurrency", "8").toInt(),
+            reconcileScores = flag(args, "--reconcile", "false").toBooleanStrict(),
         )
 
     val vespa = VespaClient(vespaUrl)

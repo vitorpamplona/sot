@@ -74,6 +74,17 @@ class RelaySyncer(
         val usedNegentropy: Boolean,
     )
 
+    /**
+     * The outcome of [reconcile]: [relayIds] is the relay's complete current id
+     * set for the filter — non-null ONLY when the enumeration finished cleanly,
+     * so a diff against the store can safely treat missing ids as deleted.
+     */
+    class ReconcileOutcome(
+        val inserted: Int,
+        val relayIds: Set<String>?,
+        val usedNegentropy: Boolean,
+    )
+
     // Relay syncs run in parallel, but the SQLite store stays a single writer.
     private val storeWrites = Mutex()
 
@@ -86,10 +97,96 @@ class RelaySyncer(
         val firstSync = state.cursor(relay, scope) == null
 
         val download = download(relay, sinceCursor(filter, relay, scope), maxEvents, firstSync)
-        val valid = dropForged(download.events, relay, filter)
-        val inserted = storeWrites.withLock { store.batchInsert(valid) }.count { it is IEventStore.InsertOutcome.Accepted }
+        val inserted = insertBatch(download.events, relay, filter)
         state.markSynced(relay, scope, nowSecs())
         return Outcome(inserted, download.usedNegentropy, download.events.size)
+    }
+
+    /**
+     * Full-set sync that can also DETECT silent deletions: events we hold that
+     * the relay no longer serves (a provider wiping rows without publishing a
+     * kind:5 leaves no other trace).
+     *
+     * Always reconciles the whole set (no cursor). On a negentropy-capable relay
+     * the deleted-on-relay side comes free as the protocol's `haveCount`; when it
+     * is zero the sets match and we're done. When it isn't — or when
+     * [forceEnumerate] asks for the authoritative answer on a pages-only relay —
+     * the full set is enumerated with pages so the caller can diff and delete.
+     * The id set is only returned when the enumeration completed (a timeout must
+     * never be read as "everything else was deleted").
+     */
+    suspend fun reconcile(
+        relay: NormalizedRelayUrl,
+        filter: Filter,
+        forceEnumerate: Boolean = false,
+    ): ReconcileOutcome {
+        val scope = cursorScope(filter)
+        val heartbeat = Heartbeat(relay, filter)
+        var inserted = 0
+        var usedNeg = false
+
+        if (state.relay(relay).negentropyCapable != false) {
+            val buf = Collections.synchronizedList(ArrayList<Event>())
+            val need = AtomicInteger(0)
+            val res =
+                runCatching {
+                    client.negentropySyncOrFetch(
+                        relay,
+                        filter,
+                        maxEvents = 0,
+                        fetchBatch = fetchBatch,
+                        idleTimeoutMs = idleTimeoutMs,
+                        onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
+                    ) {
+                        buf.add(it)
+                        heartbeat.tick(buf.size, need.get())
+                    }
+                }.getOrElse {
+                    log("  ! ${relay.url} reconcile failed: ${it.message}")
+                    null
+                }
+            if (res != null && !res.pagedFallback) {
+                usedNeg = true
+                inserted = insertBatch(buf, relay, filter)
+                state.markSynced(relay, scope, nowSecs())
+                val gone = res.negentropy?.haveCount ?: 0
+                if (gone == 0 && !forceEnumerate) return ReconcileOutcome(inserted, relayIds = null, usedNegentropy = true)
+                if (gone > 0) log("  [${relay.displayUrl()}] $gone event(s) we hold are gone from the relay - enumerating for deletion")
+            }
+        } else if (!forceEnumerate) {
+            // Pages-only relay and no authoritative pass requested: plain incremental sync.
+            val o = sync(relay, filter)
+            return ReconcileOutcome(o.inserted, relayIds = null, usedNegentropy = o.usedNegentropy)
+        }
+
+        // Authoritative enumeration: the relay's complete current set, via pages.
+        val buf = Collections.synchronizedList(ArrayList<Event>())
+        val completed =
+            withTimeoutOrNull(idleTimeoutMs * ENUMERATION_TIMEOUT_FACTOR) {
+                client.fetchAllPages(relay, listOf(filter)) {
+                    buf.add(it)
+                    heartbeat.tick(buf.size, need = 0)
+                }
+            } != null
+        inserted += insertBatch(ArrayList(buf), relay, filter)
+        if (!completed) {
+            log("  ! ${relay.displayUrl()} enumeration timed out - skipping the deletion diff")
+            return ReconcileOutcome(inserted, relayIds = null, usedNegentropy = usedNeg)
+        }
+        state.markSynced(relay, scope, nowSecs())
+        return ReconcileOutcome(inserted, buf.mapTo(HashSet()) { it.id }, usedNeg)
+    }
+
+    /** Store deletions share the single-writer lock with inserts. */
+    suspend fun deleteFromStore(filter: Filter) = storeWrites.withLock { store.delete(filter) }
+
+    private suspend fun insertBatch(
+        events: List<Event>,
+        relay: NormalizedRelayUrl,
+        filter: Filter,
+    ): Int {
+        val valid = dropForged(events, relay, filter)
+        return storeWrites.withLock { store.batchInsert(valid) }.count { it is IEventStore.InsertOutcome.Accepted }
     }
 
     /** Throttled progress line for one (relay, kind) download — silence means it finished fast. */
@@ -224,4 +321,9 @@ class RelaySyncer(
     }
 
     private fun nowSecs() = System.currentTimeMillis() / 1000
+
+    private companion object {
+        // Enumerating a big provider's full set takes longer than one idle window.
+        const val ENUMERATION_TIMEOUT_FACTOR = 20
+    }
 }

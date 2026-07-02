@@ -43,13 +43,26 @@ sync events into the store ──► store.changes (Insert/Delete) ──► Ves
   where OBSERVER is the 10040 author — **not** the 30382 signer (a per-observer
   *service key*), per NIP-85 Trusted Assertions. Keying by the signer is wrong
   and makes `--observer <user>` queries miss.
+Providers can retract scores any way they like; all four deletion styles are handled:
+
 - **kind 5** (`DeletionEvent`) → erase the targeted profile/score from Vespa —
   by address (a-tag) or by raw event id (e-tag). Id targets resolve through the
   provenance ids Vespa stores (`event_id` on the doc, `score_event_ids{observer}`
-  per score cell).
+  per score cell). Phase 3 also pulls each provider's own kind:5s from its relay
+  hint, so deletions published only there still land.
+- **supersession** → 30382 is addressable: a newer version for the same subject
+  *without* a `rank` tag retracts the score (the newest version is the whole truth).
 - **kind 62** (`RequestToVanishEvent`) → when it covers this store's relay
-  identity, blank the author's profile (the store's vanish module erases their
-  events; this mirrors it into Vespa).
+  identity, blank the author's profile and sweep every score cell keyed by them
+  (or by the observer whose 10040 delegated to them), via the `score_event_ids`
+  observer keys.
+- **silent removal** (provider wipes relay rows, no event at all) → on every full
+  sync the negentropy reconciliation reports how many events we hold that the
+  relay no longer serves (`haveCount`); when nonzero, the provider's set is
+  enumerated and the vanished events are deleted from the store — the change
+  feed then erases them from Vespa. Pages-only relays can't auto-detect; pass
+  `--reconcile` on a slow cadence to force the enumeration diff there too. A
+  timed-out enumeration is never treated as deletion.
 
 Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
 stored 10040s → (3) sync each provider's 30382 from its relay hint.
@@ -76,7 +89,8 @@ Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 `--seeds <urls…>` (defaults to `SEED_RELAYS` from `.env`/env),
 `--discover true|false`, `--max-rounds N`, `--max-relays N`,
 `--max-providers N`, `--fetch-timeout secs`, `--max-events N`,
-`--concurrency N` (parallel relays, default 8), `--vespa <url>`.
+`--concurrency N` (parallel relays, default 8), `--reconcile` (force the
+silent-deletion diff on pages-only provider relays), `--vespa <url>`.
 
 > Relays sync in parallel (`--concurrency`, default 8) in every phase —
 > discovery, phase 1, and per-provider scores. Kinds stay sequential within a

@@ -117,6 +117,15 @@ class VespaClient(
             .firstNotNullOfOrNull { it.stringField("pubkey") }
 
     /**
+     * Subjects (doc pubkeys) currently holding a score cell from [observer] — one
+     * page of up to 400; callers remove and re-query until empty to sweep them all.
+     * [observer] is embedded in the YQL lookup — callers pass only validated keys.
+     */
+    fun findSubjectsByObserver(observer: String): List<String> =
+        searchHits("""select pubkey from doc where score_event_ids contains sameElement(key contains "$observer")""", hits = 400)
+            .mapNotNull { it.stringField("pubkey") }
+
+    /**
      * The (subject, observer) whose score cell was written from [eventId], or null if none.
      * [eventId] is embedded in the YQL lookup — callers pass only validated ids.
      */
@@ -145,8 +154,11 @@ class VespaClient(
     private fun assign(value: String?): JsonObject = buildJsonObject { put("assign", value ?: "") }
 
     /** Unranked lookup query; returns the result children (empty on no match). */
-    private fun searchHits(yql: String): List<JsonObject> {
-        val url = "$baseUrl/search/?yql=${URLEncoder.encode(yql, "UTF-8")}&hits=2&ranking=unranked"
+    private fun searchHits(
+        yql: String,
+        hits: Int = 2,
+    ): List<JsonObject> {
+        val url = "$baseUrl/search/?yql=${URLEncoder.encode(yql, "UTF-8")}&hits=$hits&ranking=unranked"
         val req =
             HttpRequest
                 .newBuilder(URI.create(url))

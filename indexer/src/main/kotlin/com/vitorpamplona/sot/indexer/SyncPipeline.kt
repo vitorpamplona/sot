@@ -53,6 +53,13 @@ data class SyncOptions(
     val maxRelays: Int = 200,
     /** How many relays sync at the same time (store writes stay serialized). */
     val concurrency: Int = 8,
+    /**
+     * Force the authoritative silent-deletion pass on pages-only provider relays
+     * too (full enumeration + diff). Negentropy-capable relays detect silent
+     * deletions automatically on every full sync, so this is only for providers
+     * whose relay can't reconcile. Costly — run it on a slow cadence.
+     */
+    val reconcileScores: Boolean = false,
     /** Verify id + signature before storing. Test-only seam — leave on. */
     val verifyEvents: Boolean = true,
 )
@@ -136,11 +143,33 @@ private suspend fun syncProviderScores(
         log("[sync] capped to ${opts.maxProviders} providers for this run")
     }
 
-    log("=== phase 3: kind 30382 per provider, from its relay hint (${opts.concurrency} in parallel) ===")
+    log("=== phase 3: kinds 30382 + 5 per provider, from its relay hint (${opts.concurrency} in parallel) ===")
     val done = AtomicInteger(0)
     forEachParallel(providers, opts.concurrency) { (service, relay) ->
-        val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), maxEvents = opts.maxEvents)
-        log("[${done.incrementAndGet()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
+        // The provider's own deletion requests live on its relay too — a kind:5
+        // published only there must still erase the score from Vespa.
+        syncer.sync(relay, Filter(kinds = listOf(DeletionEvent.KIND), authors = listOf(service)), maxEvents = opts.maxEvents)
+
+        val scores = Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))
+        if (opts.maxEvents == 0) {
+            // Full sync: reconcile the provider's complete set, so scores the
+            // provider silently removed (no kind:5, no supersession) get deleted
+            // from the store — the change feed then erases them from Vespa.
+            val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores)
+            if (r.relayIds != null) {
+                val stale = store.query<ContactCardEvent>(scores).map { it.id }.filterNot { it in r.relayIds }
+                if (stale.isNotEmpty()) {
+                    log("[reconcile] provider ${service.take(12)}: ${stale.size} score event(s) vanished from ${relay.displayUrl()} - deleting")
+                    stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }
+                }
+            }
+            log("[${done.incrementAndGet()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
+        } else {
+            // Bounded experiment: incremental slice only, no deletion diff (a
+            // capped download must never be read as "the rest was deleted").
+            val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents)
+            log("[${done.incrementAndGet()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
+        }
     }
 }
 

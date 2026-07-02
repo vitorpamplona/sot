@@ -27,6 +27,7 @@ import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.vespa.VespaClient
@@ -81,8 +82,15 @@ class DeletionFlowTest {
 
     private fun card30382(
         id: String,
-        rank: Int,
-    ) = ContactCardEvent(id, service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString())), "", "")
+        rank: Int?,
+    ) = ContactCardEvent(
+        id,
+        service,
+        next(),
+        listOfNotNull(arrayOf("d", subject), rank?.let { arrayOf("rank", it.toString()) }).toTypedArray(),
+        "",
+        "",
+    )
 
     private fun kind5(
         id: String,
@@ -137,6 +145,22 @@ class DeletionFlowTest {
                 awaitTrue("profile blanked via a-tag address") { mock.docs[alice]?.get("name") == "" }
                 store.insert(kind5("e".repeat(64), service, arrayOf("a", "30382:$service:$subject")))
                 awaitTrue("score cell removed via a-tag address") { mock.cells[subject]?.containsKey(observer) != true }
+
+                // Retraction by SUPERSESSION: a newer 30382 for the subject without a rank tag.
+                store.insert(card30382("9".repeat(64), 44))
+                awaitTrue("score re-indexed again") { mock.cells[subject]?.get(observer) == 44 }
+                store.insert(card30382("8".repeat(64), rank = null))
+                awaitTrue("score cell removed via rank-less supersession") {
+                    mock.cells[subject]?.containsKey(observer) != true && mock.scoreIds[subject]?.containsKey(observer) != true
+                }
+
+                // NIP-62 vanish by the service key: sweeps its observer's cells + blanks its profile.
+                store.insert(card30382("ab".repeat(32), 45))
+                awaitTrue("score re-indexed for vanish") { mock.cells[subject]?.get(observer) == 45 }
+                store.insert(RequestToVanishEvent("cd".repeat(32), service, next(), arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
+                awaitTrue("observer cells swept via kind 62") {
+                    mock.cells[subject]?.containsKey(observer) != true && mock.docs[service]?.get("name") == ""
+                }
             } finally {
                 scope.cancel()
                 writers.shutdown()
@@ -252,6 +276,12 @@ private class MockVespa {
             val hit = docs.entries.firstOrNull { it.value["event_id"] == id } ?: return NO_HITS
             return """{"root":{"children":[{"fields":{"pubkey":"${hit.key}"}}]}}"""
         }
+        OBSERVER_LOOKUP.find(yql)?.let { m ->
+            val observer = m.groupValues[1]
+            val subjects = scoreIds.filterValues { it.containsKey(observer) }.keys
+            val children = subjects.joinToString(",") { """{"fields":{"pubkey":"$it"}}""" }
+            return """{"root":{"children":[$children]}}"""
+        }
         SCORE_LOOKUP.find(yql)?.let { m ->
             val id = m.groupValues[1]
             for ((doc, map) in scoreIds) {
@@ -268,6 +298,7 @@ private class MockVespa {
     private companion object {
         val PROFILE_LOOKUP = Regex("""event_id contains "([0-9a-f]{64})"""")
         val SCORE_LOOKUP = Regex("""sameElement\(value contains "([0-9a-f]{64})"\)""")
+        val OBSERVER_LOOKUP = Regex("""sameElement\(key contains "([0-9a-f]{64})"\)""")
         const val NO_HITS = """{"root":{"children":[]}}"""
     }
 }

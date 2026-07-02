@@ -143,15 +143,23 @@ class VespaProjection(
             is ContactCardEvent -> {
                 val observer = serviceToObserver[ev.pubKey] ?: resolveObserver(ev.pubKey)
                 val subject = ev.aboutUser()
-                val rank = ev.rank()
                 if (observer == null) {
                     unresolved.incrementAndGet()
                     return
                 }
-                if (subject != null && rank != null) {
+                if (subject == null) return
+                val rank = ev.rank()
+                if (rank != null) {
                     submit("score") {
                         vespa.upsertScore(subject, observer, rank, ev.id)
                         scores.incrementAndGet()
+                    }
+                } else {
+                    // 30382 is addressable: the newest version for this subject is the
+                    // whole truth. No rank tag = the provider retracted the score.
+                    submit("retract-score") {
+                        vespa.removeScore(subject, observer)
+                        deletions.incrementAndGet()
                     }
                 }
             }
@@ -162,14 +170,8 @@ class VespaProjection(
 
             is RequestToVanishEvent -> {
                 // The store's own vanish module already erased the author's events for
-                // this relay identity; mirror the decision into Vespa. (Score cells
-                // keyed by a vanished *observer* aren't reversed — see handleVanish.)
-                if (ev.shouldVanishFrom(store.relay)) {
-                    submit("vanish") {
-                        vespa.blankProfile(ev.pubKey)
-                        deletions.incrementAndGet()
-                    }
-                }
+                // this relay identity; mirror the decision into Vespa.
+                if (ev.shouldVanishFrom(store.relay)) eraseAuthor(ev.pubKey)
             }
 
             else -> {}
@@ -212,21 +214,46 @@ class VespaProjection(
 
     /**
      * The store deleted events matching [filters] via an explicit `store.delete()`
-     * call. (Kind 5/62 enforcement happens inside the store's SQLite modules and
-     * emits nothing — those are mirrored from their Insert instead.) Blank each
-     * targeted author's profile and resolve targeted event ids through the
-     * provenance ids. (Score cells keyed by a vanished *observer* aren't reversed —
-     * Vespa can't remove one tensor label across every doc without knowing the
-     * subjects; those decay when the doc is re-fed.)
+     * call — the score-reconciliation diff, or an administrative wipe. (Kind 5/62
+     * enforcement happens inside the store's SQLite modules and emits nothing —
+     * those are mirrored from their Insert instead.) Erase each targeted author,
+     * and resolve targeted event ids through the provenance ids.
      */
     private suspend fun handleVanish(filters: List<Filter>) {
-        for (author in filters.flatMap { it.authors.orEmpty() }.toSet()) {
-            submit("vanish") {
-                vespa.blankProfile(author)
+        for (author in filters.flatMap { it.authors.orEmpty() }.toSet()) eraseAuthor(author)
+        for (id in filters.flatMap { it.ids.orEmpty() }.toSet()) deleteByEventId(id)
+    }
+
+    /**
+     * Everything [author] contributed to the index goes: their profile fields, the
+     * score cells keyed by them (if they're an observer), and — when they're a
+     * *service key* — the cells keyed by the observer whose 10040 delegated to them.
+     * The cells are found through `score_event_ids`' observer keys, one page of
+     * subjects at a time until the sweep comes back empty.
+     */
+    private suspend fun eraseAuthor(author: String) {
+        submit("vanish") {
+            vespa.blankProfile(author)
+            deletions.incrementAndGet()
+        }
+        val delegatedObserver = serviceToObserver[author] ?: resolveObserver(author)
+        for (observer in setOfNotNull(author, delegatedObserver)) {
+            submit("vanish-scores") { sweepScores(observer) }
+        }
+    }
+
+    /** Remove every score cell keyed by [observer], page by page. Runs on a writer thread. */
+    private fun sweepScores(observer: String) {
+        var rounds = 0
+        while (rounds++ < MAX_SWEEP_ROUNDS) {
+            val subjects = vespa.findSubjectsByObserver(observer)
+            if (subjects.isEmpty()) return
+            for (subject in subjects) {
+                vespa.removeScore(subject, observer)
                 deletions.incrementAndGet()
             }
         }
-        for (id in filters.flatMap { it.ids.orEmpty() }.toSet()) deleteByEventId(id)
+        log("  ! vanish-scores: sweep for ${observer.take(12)} still finding cells after $MAX_SWEEP_ROUNDS pages")
     }
 
     /**
@@ -276,6 +303,11 @@ class VespaProjection(
                 if (failures.incrementAndGet() <= 5) log("  ! $what write failed: ${e.message}")
             }
         }
+    }
+
+    private companion object {
+        // 400 cells per page; 2500 pages = a million cells before we give up loudly.
+        const val MAX_SWEEP_ROUNDS = 2500
     }
 }
 
