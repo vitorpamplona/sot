@@ -26,10 +26,19 @@ import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.sot.vespa.MockVespa
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.Collections
 import kotlin.test.Test
+import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -72,6 +81,46 @@ class SyncServiceLifecycleTest {
             } finally {
                 service.close()
                 store.close()
+                mock.stop()
+            }
+        }
+
+    @Test
+    fun `runForever survives failing passes and stops promptly on cancel`() =
+        runBlocking {
+            val mock = MockVespa()
+            val db =
+                File.createTempFile("sync-service-forever", ".db").also {
+                    it.delete()
+                    it.deleteOnExit()
+                }
+            val store = ObservableEventStore(EventStore(db.path, RelayUrlNormalizer.normalize("ws://localhost:7777"), DefaultIndexingStrategy(indexFullTextSearch = false)))
+            // A closed store makes every pass throw (phase 2 queries it) - the
+            // server's background loop must log and keep going, never die.
+            store.close()
+
+            val logs = Collections.synchronizedList(mutableListOf<String>())
+            val service =
+                SyncService(
+                    store = store,
+                    vespaUrl = "http://127.0.0.1:${mock.port}",
+                    seedRelays = emptyList(),
+                    statePath = "${db.path}.state.json",
+                    opts = SyncOptions(discover = false),
+                    log = { logs.add(it) },
+                )
+            val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+            val loop = scope.launch { service.runForever(50.milliseconds) }
+
+            try {
+                awaitTrue("at least two failed passes were logged") {
+                    logs.count { "sync pass failed" in it } >= 2
+                }
+                scope.cancel()
+                assertTrue(withTimeoutOrNull(5_000) { loop.join() } != null, "cancellation must stop the loop promptly")
+            } finally {
+                scope.cancel()
+                service.close()
                 mock.stop()
             }
         }

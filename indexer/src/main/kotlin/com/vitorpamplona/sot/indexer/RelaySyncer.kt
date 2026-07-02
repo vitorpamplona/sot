@@ -167,17 +167,20 @@ class RelaySyncer(
     }
 
     /**
-     * Full-set sync that can also DETECT silent deletions: events we hold that
-     * the relay no longer serves (a provider wiping rows without publishing a
-     * kind:5 leaves no other trace).
+     * Full-set sync that also returns the relay's complete current id set, so
+     * the caller can DETECT silent deletions: events we hold that the relay no
+     * longer serves (a provider wiping rows without publishing a kind:5 leaves
+     * no other trace).
      *
-     * Always reconciles the whole set (no cursor). On a negentropy-capable relay
-     * the deleted-on-relay side comes free as the protocol's `haveCount`; when it
-     * is zero the sets match and we're done. When it isn't — or when
-     * [forceEnumerate] asks for the authoritative answer on a pages-only relay —
-     * the full set is enumerated with pages so the caller can diff and delete.
-     * The id set is only returned when the enumeration completed (a timeout must
-     * never be read as "everything else was deleted").
+     * Always reconciles the whole set (no cursor). Quartz's negentropy sync
+     * reconciles against an EMPTY local set — it enumerates and downloads
+     * everything the relay matches — so the ids streaming past ARE the relay's
+     * full set; we just collect them. (The protocol's `haveCount` is always 0
+     * for the same reason — it can't detect deletions for us.) When negentropy
+     * isn't available the set is enumerated with pages instead — by default
+     * only when [forceEnumerate] asks, because a full page walk of a big
+     * provider is costly. [relayIds] is only returned when the download
+     * completed (a timeout must never be read as "everything else was deleted").
      */
     suspend fun reconcile(
         relay: NormalizedRelayUrl,
@@ -186,19 +189,20 @@ class RelaySyncer(
     ): ReconcileOutcome {
         val scope = cursorScope(filter)
         val heartbeat = Heartbeat(relay, filter)
+        val ids = Collections.synchronizedSet(HashSet<String>())
         var inserted = 0
         var usedNeg = false
 
         if (state.relay(relay).negentropyCapable != false) {
-            val neg = negentropyStream(relay, filter, maxEvents = 0, heartbeat)
+            val neg = negentropyStream(relay, filter, maxEvents = 0, heartbeat, collectIds = ids)
             inserted += neg.streamed.inserted
-            if (neg.usedNegentropy) {
-                usedNeg = true
+            if (neg.usedNegentropy && neg.streamed.completed) {
                 state.markSynced(relay, scope, nowSecs())
-                val gone = neg.result?.negentropy?.haveCount ?: 0
-                if (gone == 0 && !forceEnumerate) return ReconcileOutcome(inserted, relayIds = null, usedNegentropy = true)
-                if (gone > 0) log("  [${relay.displayUrl()}] $gone event(s) we hold are gone from the relay - enumerating for deletion")
+                return ReconcileOutcome(inserted, HashSet(ids), usedNegentropy = true)
             }
+            // Negentropy failed or fell back to (possibly incomplete) paging:
+            // the collected ids aren't the whole set. Enumerate explicitly.
+            ids.clear()
         } else if (!forceEnumerate) {
             // Pages-only relay and no authoritative pass requested: plain incremental sync.
             val o = sync(relay, filter)
@@ -207,7 +211,6 @@ class RelaySyncer(
 
         // Authoritative enumeration: the relay's complete current set, via pages.
         // Only the (small) id set is held in memory; the events themselves stream.
-        val ids = Collections.synchronizedSet(HashSet<String>())
         val pages = pagesStream(relay, filter, maxEvents = 0, heartbeat, collectIds = ids, timeoutFactor = ENUMERATION_TIMEOUT_FACTOR)
         inserted += pages.inserted
         if (!pages.completed) {
@@ -233,11 +236,12 @@ class RelaySyncer(
         filter: Filter,
         maxEvents: Int,
         heartbeat: Heartbeat,
+        collectIds: MutableSet<String>? = null,
     ): NegentropyStream {
         val need = AtomicInteger(0)
         var result: NegentropyOrFetchResult? = null
         val streamed =
-            streamEvents(relay, filter, heartbeat, needHint = need::get) { onEvent ->
+            streamEvents(relay, filter, heartbeat, collectIds = collectIds, needHint = need::get) { onEvent ->
                 result =
                     runCatching {
                         client.negentropySyncOrFetch(

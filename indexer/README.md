@@ -57,12 +57,12 @@ Providers can retract scores any way they like; all four deletion styles are han
   (or by the observer whose 10040 delegated to them), via the `score_event_ids`
   observer keys.
 - **silent removal** (provider wipes relay rows, no event at all) → on every full
-  sync the negentropy reconciliation reports how many events we hold that the
-  relay no longer serves (`haveCount`); when nonzero, the provider's set is
-  enumerated and the vanished events are deleted from the store — the change
-  feed then erases them from Vespa. Pages-only relays can't auto-detect; pass
-  `--reconcile` on a slow cadence to force the enumeration diff there too. A
-  timed-out enumeration is never treated as deletion.
+  sync the negentropy reconciliation enumerates the provider's complete current
+  set (it reconciles against an empty local set, so the streamed ids ARE the
+  relay's full set); anything we hold that isn't in it is deleted from the
+  store — the change feed then erases it from Vespa. Pages-only relays can't
+  auto-detect; pass `--reconcile` on a slow cadence to force a full page
+  enumeration there too. A timed-out enumeration is never treated as deletion.
 
 Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
 stored 10040s → (3) sync each provider's 30382 from its relay hint.
