@@ -1,6 +1,11 @@
 import com.diffplug.gradle.spotless.SpotlessExtensionPredeclare
 
 plugins {
+    // Load the Kotlin plugins once, on the root classpath (`apply false`): subprojects
+    // applying them per-module would otherwise each get their own classloader copy
+    // ("The Kotlin Gradle plugin was loaded multiple times in different subprojects").
+    alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.diffplug.spotless)
 }
 
