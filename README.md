@@ -43,7 +43,7 @@ can point `VESPA_URL` at a remote Vespa and skip Docker.
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 
 sot up                                     # start Vespa + deploy vespa/app
-sot index all                              # load profiles + NIP-85 scores
+sot index                                  # load profiles + NIP-85 scores
 sot search "vitor"                         # search
 sot search "vitor" --observer <pubkey>     # rank by one observer's trust
 ```

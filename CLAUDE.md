@@ -73,7 +73,7 @@ URL redirects to GitHub releases, which some networks block).
 ./gradlew :cli:installDist      # build the CLI
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 sot up                          # docker compose up Vespa + deploy vespa/app
-sot index all                   # load profiles + NIP-85 scores (stages: all|profiles|nip85)
+sot index                       # load profiles + NIP-85 scores (one indivisible sync)
 sot search "vitor" --observer <hex|npub|nprofile|nip05>
 sot status                      # Vespa/server up? doc + event counts
 

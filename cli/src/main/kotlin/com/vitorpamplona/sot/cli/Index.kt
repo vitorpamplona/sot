@@ -39,15 +39,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
-/**
- * `sot index [<stage>] [flags]` — the composition root for the :indexer library:
- * pull Nostr data from relays into the local EventStore (source of truth) and
- * project it into Vespa. Stages: `all` (default) | `profiles` | `nip85`. Defaults
- * come from Config/.env; flags override.
+/*
+ * `sot index [flags]` — the composition root for the :indexer library: pull
+ * profiles + NIP-85 trust scores from relays into the local EventStore (source
+ * of truth) and project them into Vespa. One indivisible sync — profiles without
+ * scores (or vice versa) leave the index unusable. Defaults come from
+ * Config/.env; flags override.
  *
  * Runs the sync to completion then exits (it spawns non-daemon relay/write threads).
  */
-private const val DEFAULT_PROFILE_RELAY = "wss://wot.grapevine.network"
 
 /** A multi-value flag: values after `--name` up to the next `--flag` (e.g. `--seeds a b c`). */
 private fun argList(
@@ -72,27 +72,20 @@ private fun ts(): String {
 }
 
 internal fun index(args: List<String>) {
-    val stage = args.firstOrNull()?.takeUnless { it.startsWith("--") } ?: "all"
     val vespaUrl = flag(args, "--vespa", Config.vespaUrl)
     val dbPath = flag(args, "--db", Config.eventsDb)
     val statePath = flag(args, "--state", "$dbPath.state.json")
-    val profileRelays = argList(args, "--profile-relays", listOf(DEFAULT_PROFILE_RELAY))
-    val seeds = argList(args, "--seeds", Config.seedRelays)
+    val relays = argList(args, "--seeds", Config.seedRelays)
 
     val opts =
         SyncOptions(
             maxEvents = flag(args, "--max-events", "25000").toInt(),
             fetchTimeoutMs = flag(args, "--fetch-timeout", "30").toLong() * 1000,
             maxProviders = flag(args, "--max-providers", "0").toInt(),
-            profiles = stage != "nip85",
-            scores = stage != "profiles",
             discover = flag(args, "--discover", "false").toBooleanStrict(),
             maxRounds = flag(args, "--max-rounds", "3").toInt(),
             maxRelays = flag(args, "--max-relays", "200").toInt(),
         )
-    // Scores need the broad seed set: kind-10040 provider lists resolve the
-    // observer, and they live on general relays, not the score relay alone.
-    val relays = if (stage == "profiles") profileRelays else seeds
 
     val vespa = VespaClient(vespaUrl)
     val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))
@@ -124,7 +117,7 @@ internal fun index(args: List<String>) {
     writers.shutdown()
     writers.awaitTermination(120, TimeUnit.SECONDS)
     log(
-        "DONE $stage - profiles=${projection.profiles.get()} scores=${projection.scores.get()} " +
+        "DONE - profiles=${projection.profiles.get()} scores=${projection.scores.get()} " +
             "deletions=${projection.deletions.get()} unresolved=${projection.unresolved.get()}",
     )
     store.close()

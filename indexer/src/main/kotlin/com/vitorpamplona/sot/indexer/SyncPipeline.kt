@@ -34,15 +34,11 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  * caller only names what it changes.
  */
 data class SyncOptions(
-    /** Per-stage ingest cap, 0 = unlimited. Relays hold millions of events. */
+    /** Per-kind ingest cap, 0 = unlimited. Relays hold millions of events. */
     val maxEvents: Int = 25_000,
     val fetchTimeoutMs: Long = 30_000,
     /** Cap on how many rank providers phase 3 visits, 0 = all. */
     val maxProviders: Int = 0,
-    /** Pull kind:0 profiles. */
-    val profiles: Boolean = true,
-    /** Pull NIP-85 scores (kind 10040 provider lists + each provider's 30382s). */
-    val scores: Boolean = true,
     /** Expand the relay set with a bounded NIP-65 outbox crawl first. */
     val discover: Boolean = false,
     val maxRounds: Int = 3,
@@ -78,7 +74,7 @@ suspend fun runSync(
                 seedRelays
             }
         syncEvents(syncer, relays, opts, log)
-        if (opts.scores) syncProviderScores(syncer, store, opts, log)
+        syncProviderScores(syncer, store, opts, log)
     } finally {
         SyncState.save(statePath, state)
         log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")
@@ -86,9 +82,8 @@ suspend fun runSync(
 }
 
 /**
- * Phase 1: the kinds this run cares about, from every relay in the set —
- * deletions always, plus profiles (kind 0) and provider lists (kind 10040,
- * only useful when scores are being resolved).
+ * Phase 1: provider lists (10040), deletions (5), and profiles (0) from every
+ * relay in the set.
  */
 private suspend fun syncEvents(
     syncer: RelaySyncer,
@@ -96,18 +91,12 @@ private suspend fun syncEvents(
     opts: SyncOptions,
     log: (String) -> Unit,
 ) {
-    val kinds =
-        buildList {
-            if (opts.scores) add("10040")
-            add("5")
-            if (opts.profiles) add("0")
-        }
-    log("=== phase 1: ${kinds.joinToString(" / ")} from ${relays.size} relay(s) ===")
+    log("=== phase 1: 10040 / 5 / 0 from ${relays.size} relay(s) ===")
     for (r in relays) {
-        val lists = if (opts.scores) syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND))) else null
+        val lists = syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)))
         val dels = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)))
-        val profiles = if (opts.profiles) syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = opts.maxEvents) else null
-        log("[sync] ${short(r)}  10040=${lists?.let { "${it.inserted}${neg(it)}" } ?: "-"}  del=${dels.inserted}  kind0=${profiles?.inserted ?: "-"}")
+        val profiles = syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = opts.maxEvents)
+        log("[sync] ${short(r)}  10040=${lists.inserted}${neg(lists)}  del=${dels.inserted}  kind0=${profiles.inserted}")
     }
 }
 

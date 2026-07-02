@@ -46,7 +46,7 @@ private fun usage() {
         sot - local Nostr profile search
 
           init                          write a .env config template
-          index [<stage>] [flags]       sync Nostr data into Vespa (stage: all | profiles | nip85)
+          index [flags]                 sync profiles + NIP-85 trust scores into Vespa
           search "<query>" [--observer <hex|npub|nprofile|nip05>] [--hits N] [--algo <profile>] [--only-ranked] [--vespa <url>]
           status  [--vespa <url>] [--server <url>]
           up                            start local Vespa (docker compose) and deploy vespa

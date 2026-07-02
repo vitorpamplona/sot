@@ -49,9 +49,9 @@ Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
 stored 10040s → (3) sync each provider's 30382 from its relay hint.
 
 ```bash
-indexer sync --max-events 25000                                # full, from seed relays
-indexer sync --discover true --max-relays 200                  # discover relays via kind-10002 first
-indexer sync --profiles false --max-providers 15 --fetch-timeout 25   # quick scores-only
+sot index --max-events 25000                       # full sync, from the SEED_RELAYS set
+sot index --discover true --max-relays 200         # discover relays via kind-10002 first
+sot index --max-providers 15 --fetch-timeout 25    # bound a quick experimental run
 ```
 
 **Incremental by default.** Each (relay, kind) sync prefers **NIP-77 negentropy**
@@ -68,8 +68,8 @@ or until `--max-relays`, persisting the pool so re-runs don't rediscover.
 Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 `--seeds <urls…>` (defaults to `SEED_RELAYS` from `.env`/env),
 `--discover true|false`, `--max-rounds N`, `--max-relays N`,
-`--max-providers N`, `--fetch-timeout secs`, `--profiles true|false`,
-`--max-events N`.
+`--max-providers N`, `--fetch-timeout secs`, `--max-events N`,
+`--vespa <url>`.
 
 > Note: per-relay syncs run sequentially today; over a large discovered pool the
 > first full run is slow (each relay does a negentropy attempt + fallback).
@@ -91,23 +91,13 @@ root: `sot index` (see `cli/Index.kt`) wires up the store, Vespa client, and
 projection from `.env`/flags and calls into `runSync`.
 
 ```bash
-sot index profiles --max-events 25000   # kind:0 profiles (negentropy full-set sync)
-sot index nip85 --max-events 25000       # kind:30382 NIP-85 Trusted Assertion scores
-sot index all                            # both (default stage)
+sot index                     # profiles + NIP-85 scores — one indivisible sync
+sot index --max-events 0      # no ingest cap (relays hold millions of kind:0s)
 ```
 
-### Flags
-
-| flag | default | meaning |
-| --- | --- | --- |
-| `--mode <pages\|negentropy>` | `pages` | fetch strategy (see above) |
-| `--vespa <url>` | `http://localhost:8080` (or `$VESPA_URL`) | Vespa document API base |
-| `--relays <urls...>` | `wss://wot.grapevine.network` | relays for kind:0 profiles |
-| `--score-relays <urls...>` | `wss://nip85-staging.nosfabrica.com` | relays for kind:30382 assertions |
-| `--max-events <n>` | `25000` | per-stage ingest cap (0 = unlimited) |
-| `--min-rank <n>` | `1` | skip NIP-85 assertions below this rank |
-| `--batch <n>` | `500` | ids per fetch REQ |
-| `--limit-secs <n>` | `240` | overall per-stage timeout |
+There is deliberately no profiles-only or scores-only mode: profiles without
+trust scores (or vice versa) leave the index unusable, so every run syncs both.
+Flags are listed above (see the `sync` section).
 
 ## How it maps to Quartz
 
