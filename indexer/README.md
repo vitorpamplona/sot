@@ -43,7 +43,13 @@ sync events into the store ──► store.changes (Insert/Delete) ──► Ves
   where OBSERVER is the 10040 author — **not** the 30382 signer (a per-observer
   *service key*), per NIP-85 Trusted Assertions. Keying by the signer is wrong
   and makes `--observer <user>` queries miss.
-- **kind 5** (`DeletionEvent`) → erase the profile/score from Vespa.
+- **kind 5** (`DeletionEvent`) → erase the targeted profile/score from Vespa —
+  by address (a-tag) or by raw event id (e-tag). Id targets resolve through the
+  provenance ids Vespa stores (`event_id` on the doc, `score_event_ids{observer}`
+  per score cell).
+- **kind 62** (`RequestToVanishEvent`) → when it covers this store's relay
+  identity, blank the author's profile (the store's vanish module erases their
+  events; this mirrors it into Vespa).
 
 Phases: (1) sync 0/10040/5 from seed relays → (2) resolve rank providers from
 stored 10040s → (3) sync each provider's 30382 from its relay hint.

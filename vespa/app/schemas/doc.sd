@@ -49,6 +49,27 @@ schema doc {
         field quality_scores type tensor<int8>(user{}) {
             indexing: attribute
         }
+
+        # Provenance: the id of the source event behind each piece of data, so a
+        # NIP-09/NIP-62 deletion that references only an event id can be mirrored.
+        # event_id is the kind:0 behind the profile fields; score_event_ids maps
+        # observer pubkey -> the kind:30382 behind that observer's score cell.
+        field event_id type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field score_event_ids type map<string, string> {
+            indexing: summary
+            struct-field key {
+                indexing: attribute
+                attribute: fast-search
+            }
+            struct-field value {
+                indexing: attribute
+                attribute: fast-search
+            }
+        }
     }
 
     field name_gram type string {

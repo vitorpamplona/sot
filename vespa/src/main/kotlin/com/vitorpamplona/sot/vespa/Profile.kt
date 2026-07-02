@@ -23,6 +23,8 @@ package com.vitorpamplona.sot.vespa
 /**
  * A ready-made profile document for the Vespa index — plain data, no Nostr types.
  * The indexer maps a kind:0 event into this; [VespaClient.upsertProfile] writes it.
+ * [eventId] is the id of the source event behind these fields — stored so a
+ * deletion that references only an event id can locate this doc.
  */
 data class Profile(
     val pubkey: String,
@@ -35,6 +37,7 @@ data class Profile(
     val lud06: String? = null,
     val lud16: String? = null,
     val website: String? = null,
+    val eventId: String? = null,
 )
 
 /**
@@ -54,4 +57,5 @@ fun Profile.indexFields(): Map<String, String?> =
         "lud06" to lud06,
         "lud16" to lud16,
         "website" to website,
+        "event_id" to eventId,
     )

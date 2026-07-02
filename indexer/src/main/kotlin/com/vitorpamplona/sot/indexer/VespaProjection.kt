@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore.StoreChange
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -48,7 +49,12 @@ import java.util.concurrent.atomic.AtomicInteger
  *                                       the observer is whoever published a 10040
  *                                       mapping `30382:rank` -> that service key.
  *  - kind 10040 (TrustProviderList) -> learn service-key -> observer mapping
- *  - kind 5  (DeletionEvent)        -> erase the corresponding profile/score
+ *  - kind 5  (DeletionEvent)        -> erase the targeted profile/score, whether
+ *                                       the target is an address (a-tag) or a raw
+ *                                       event id (e-tag, resolved through the
+ *                                       provenance ids Vespa stores)
+ *  - kind 62 (RequestToVanish)      -> blank the author's profile when the request
+ *                                       covers this store's relay identity
  *
  * Map updates happen synchronously on the change-feed thread; the actual Vespa
  * HTTP writes are submitted to [writers] so they don't stall the feed. Sync
@@ -143,7 +149,7 @@ class VespaProjection(
                 }
                 if (subject != null && rank != null) {
                     submit("score") {
-                        vespa.upsertScore(subject, observer, rank)
+                        vespa.upsertScore(subject, observer, rank, ev.id)
                         scores.incrementAndGet()
                     }
                 }
@@ -153,12 +159,29 @@ class VespaProjection(
                 handleDeletion(ev)
             }
 
+            is RequestToVanishEvent -> {
+                // The store's own vanish module already erased the author's events for
+                // this relay identity; mirror the decision into Vespa. (Score cells
+                // keyed by a vanished *observer* aren't reversed — see handleVanish.)
+                if (ev.shouldVanishFrom(store.relay)) {
+                    submit("vanish") {
+                        vespa.blankProfile(ev.pubKey)
+                        deletions.incrementAndGet()
+                    }
+                }
+            }
+
             else -> {}
         }
     }
 
-    /** kind:5 -> erase the targeted profile/score from Vespa. */
+    /** kind:5 -> erase the targeted profile/score from Vespa, by event id (e-tags) and by address (a-tags). */
     private suspend fun handleDeletion(ev: DeletionEvent) {
+        // e-tag targets are raw event ids. The store has already deleted the events
+        // themselves, so the only way back to the affected doc is the provenance ids
+        // Vespa stores (event_id / score_event_ids).
+        for (id in ev.deleteEventIds()) deleteByEventId(id)
+
         for (addr in ev.deleteAddressIds()) {
             // Addressable target = "kind:author(:dtag)". kind:0 -> "0:<profile pubkey>";
             // kind:30382 -> "30382:<service key>:<subject pubkey>".
@@ -187,16 +210,38 @@ class VespaProjection(
     }
 
     /**
-     * The store deleted events matching [filters] — a NIP-62 Request-to-Vanish
-     * (all of a user's events) or an explicit store delete. Mirror it into Vespa
-     * by blanking each affected author's profile. (Score cells keyed by a vanished
-     * *observer* aren't reversed here — Vespa can't remove one tensor label across
-     * every doc without knowing the subjects; those decay when the doc is re-fed.)
+     * The store deleted events matching [filters] via an explicit `store.delete()`
+     * call. (Kind 5/62 enforcement happens inside the store's SQLite modules and
+     * emits nothing — those are mirrored from their Insert instead.) Blank each
+     * targeted author's profile and resolve targeted event ids through the
+     * provenance ids. (Score cells keyed by a vanished *observer* aren't reversed —
+     * Vespa can't remove one tensor label across every doc without knowing the
+     * subjects; those decay when the doc is re-fed.)
      */
     private suspend fun handleVanish(filters: List<Filter>) {
         for (author in filters.flatMap { it.authors.orEmpty() }.toSet()) {
             submit("vanish") {
                 vespa.blankProfile(author)
+                deletions.incrementAndGet()
+            }
+        }
+        for (id in filters.flatMap { it.ids.orEmpty() }.toSet()) deleteByEventId(id)
+    }
+
+    /**
+     * Erase whatever [eventId] produced in Vespa: the profile fields if it was a
+     * kind:0 (blanking is correct for replaceables — an old superseded id simply
+     * no longer matches the doc's event_id and becomes a no-op), or one observer's
+     * score cell if it was a kind:30382.
+     */
+    private fun deleteByEventId(eventId: String) {
+        submit("del-by-id") {
+            vespa.findProfileByEventId(eventId)?.let { pubkey ->
+                vespa.blankProfile(pubkey)
+                deletions.incrementAndGet()
+            }
+            vespa.findScoreByEventId(eventId)?.let { (subject, observer) ->
+                vespa.removeScore(subject, observer)
                 deletions.incrementAndGet()
             }
         }
@@ -244,5 +289,6 @@ private fun MetadataEvent.toProfile(): Profile? {
         lud06 = md.lud06,
         lud16 = md.lud16,
         website = md.website,
+        eventId = id,
     )
 }
