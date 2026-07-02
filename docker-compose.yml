@@ -1,0 +1,29 @@
+# Local single-node Vespa engine. The application package (schema + rank
+# profiles under ./vespa/app) is deployed by the CLI, not by a compose sidecar:
+#
+#   sot up                       # start the engine, then deploy ./vespa/app
+#   docker compose up -d vespa   # just the engine (deploy separately)
+#   sot deploy                   # (re)deploy after editing vespa/app/schemas/doc.sd
+
+services:
+  vespa:
+    image: vespaengine/vespa
+    container_name: vespa
+    hostname: vespa
+    ports:
+      # Host ports come from .env (VESPA_PORT / VESPA_CONFIG_PORT) so a squatted
+      # 8080 doesn't block `sot up` — keep VESPA_URL / VESPA_CONFIG_URL in sync.
+      - "${VESPA_PORT:-8080}:8080" # query / document API
+      - "${VESPA_CONFIG_PORT:-19071}:19071" # config server
+    volumes:
+      - vespa_var:/opt/vespa/var
+    healthcheck:
+      test: ["CMD", "curl", "-fSs", "http://localhost:19071/state/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  vespa_var:
