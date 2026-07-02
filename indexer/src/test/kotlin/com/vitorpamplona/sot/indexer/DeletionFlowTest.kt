@@ -103,6 +103,7 @@ class DeletionFlowTest {
             val projection = VespaProjection(store, vespa) { }
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             scope.launch { projection.run() }
+            projection.awaitSubscribed()
 
             try {
                 // Feed: provider list, profile, score.

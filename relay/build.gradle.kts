@@ -12,6 +12,7 @@ dependencies {
     testImplementation(kotlin("test"))
     // The search-source test ranks against a canned Vespa and reads a real SQLite store.
     testImplementation(libs.androidx.sqlite.bundled)
+    testImplementation(libs.kotlinx.serialization.json) // parse the NIP-11 document
 }
 
 kotlin {

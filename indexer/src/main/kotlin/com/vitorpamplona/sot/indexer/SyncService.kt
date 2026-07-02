@@ -84,7 +84,12 @@ class SyncService(
     }
 
     /** One full incremental pass: relays -> store; Vespa follows via the change feed. */
-    suspend fun runOnce() = runSync(client, store, state, statePath, relays, opts, log)
+    suspend fun runOnce() {
+        // The projection launches in init; don't sync until its subscription is
+        // live, or the first inserts would slip past the (no-replay) change feed.
+        projection.awaitSubscribed()
+        runSync(client, store, state, statePath, relays, opts, log)
+    }
 
     /** [runOnce] forever, waiting [interval] between the END of one pass and the next. */
     suspend fun runForever(interval: Duration) {

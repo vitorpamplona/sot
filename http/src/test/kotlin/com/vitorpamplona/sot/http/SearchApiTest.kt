@@ -31,6 +31,7 @@ import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import java.net.InetSocketAddress
+import java.net.URLDecoder
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,13 +45,26 @@ import kotlin.test.assertEquals
 class SearchApiTest {
     private val alice = "1".repeat(64)
 
-    // Canned Vespa: one ranked hit for any text search; alice's doc by id.
+    /** The query params of the last /search/ call Vespa saw. */
+    private var lastQuery: Map<String, String> = emptyMap()
+
+    // Canned Vespa: one ranked + one zero-trust hit for any text search; alice's doc by id.
     private val vespaMock =
         HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
             createContext("/search/") { ex ->
+                lastQuery =
+                    ex.requestURI.rawQuery
+                        .split("&")
+                        .associate { p ->
+                            URLDecoder.decode(p.substringBefore("="), "UTF-8") to URLDecoder.decode(p.substringAfter("="), "UTF-8")
+                        }
                 val body =
-                    """{"root":{"children":[{"relevance":2.0,"fields":{"pubkey":"$alice","name":"alice","nip05":"alice@example.com","matchfeatures":{"user_score":5.0}}}]}}"""
-                        .encodeToByteArray()
+                    """
+                    {"root":{"children":[
+                      {"relevance":2.0,"fields":{"pubkey":"$alice","name":"alice","nip05":"alice@example.com","matchfeatures":{"user_score":5.0}}},
+                      {"relevance":1.0,"fields":{"pubkey":"${"2".repeat(64)}","name":"stranger","matchfeatures":{"user_score":0.0}}}
+                    ]}}
+                    """.trimIndent().encodeToByteArray()
                 ex.sendResponseHeaders(200, body.size.toLong())
                 ex.responseBody.use { it.write(body) }
             }
@@ -76,14 +90,39 @@ class SearchApiTest {
         }
 
     @Test
-    fun `free text returns ranked results`() =
+    fun `free text returns ranked results, dropping zero-trust hits by default`() =
         withApi { get ->
             val resp = get("/search?text=alice")
             assertEquals("alice", resp.query)
-            assertEquals(1, resp.numResults)
+            assertEquals(1, resp.numResults, "the zero-trust hit is dropped (onlyRanked defaults to true)")
             assertEquals(alice, resp.results.single().pubkey)
             assertEquals(5.0, resp.results.single().trust)
             assertEquals("alice@example.com", resp.results.single().nip05)
+        }
+
+    @Test
+    fun `onlyRanked=false keeps zero-trust hits`() =
+        withApi { get ->
+            val resp = get("/search?text=alice&onlyRanked=false")
+            assertEquals(2, resp.numResults)
+        }
+
+    @Test
+    fun `the observer parameter drives the ranking, and maxHits is clamped`() =
+        withApi { get ->
+            val observer = "b".repeat(64)
+            get("/search?text=alice&observer=$observer&maxHits=99999")
+
+            assertEquals("{$observer:1.0}", lastQuery["ranking.features.query(user_q)"], "results rank by the caller's web of trust")
+            assertEquals(true, (lastQuery["hits"]?.toInt() ?: 0) <= 400, "Vespa never sees more than its max-hits (got ${lastQuery["hits"]})")
+        }
+
+    @Test
+    fun `control characters are stripped before the query reaches Vespa`() =
+        withApi { get ->
+            val resp = get("/search?text=al%01ice%00")
+            assertEquals("alice", resp.query)
+            assertEquals("alice", lastQuery["w0"], "the recall words are clean")
         }
 
     @Test

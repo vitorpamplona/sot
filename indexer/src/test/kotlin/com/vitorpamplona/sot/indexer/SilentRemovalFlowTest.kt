@@ -82,6 +82,7 @@ class SilentRemovalFlowTest {
             val projection = VespaProjection(store, vespa) { }
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             scope.launch { projection.run() }
+            projection.awaitSubscribed()
 
             val statePath = File.createTempFile("silent-removal", ".state.json").also { it.deleteOnExit() }.path
             val state = SyncState.load(statePath)

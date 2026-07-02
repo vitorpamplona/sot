@@ -53,6 +53,10 @@ class MockVespa {
     val cells = ConcurrentHashMap<String, MutableMap<String, Int>>()
     val scoreIds = ConcurrentHashMap<String, MutableMap<String, String>>()
 
+    /** Simulate a write outage: every /document update 500s until turned off again. */
+    @Volatile
+    var failUpdates = false
+
     private val server =
         Server().apply {
             val config = HttpConfiguration()
@@ -104,6 +108,7 @@ class MockVespa {
         // The feed client opens with a no-op handshake request (?dryRun=true).
         if (rawQuery.orEmpty().contains("dryRun=true")) return "{}"
         if (method == "PUT" && path.startsWith("/document/v1/doc/doc/docid/")) {
+            if (failUpdates) error("simulated write outage")
             applyUpdate(path.substringAfterLast("/"), body)
             return """{"id":"$path"}"""
         }
@@ -118,7 +123,13 @@ class MockVespa {
         }
         if (method == "GET" && path == "/search/") {
             val yql = URLDecoder.decode(rawQuery.orEmpty().substringAfter("yql=").substringBefore("&"), "UTF-8")
-            return search(yql)
+            val hits =
+                rawQuery
+                    .orEmpty()
+                    .substringAfter("hits=", "400")
+                    .substringBefore("&")
+                    .toIntOrNull() ?: 400
+            return search(yql, hits)
         }
         error("unexpected request: $method $path")
     }
@@ -162,7 +173,10 @@ class MockVespa {
         }
     }
 
-    private fun search(yql: String): String {
+    private fun search(
+        yql: String,
+        hits: Int,
+    ): String {
         PROFILE_LOOKUP.find(yql)?.let { m ->
             val id = m.groupValues[1]
             val hit = docs.entries.firstOrNull { it.value["event_id"] == id } ?: return NO_HITS
@@ -170,7 +184,8 @@ class MockVespa {
         }
         OBSERVER_LOOKUP.find(yql)?.let { m ->
             val observer = m.groupValues[1]
-            val subjects = scoreIds.filterValues { it.containsKey(observer) }.keys
+            // Honor the hits page size, like Vespa - the sweep-by-page loops depend on it.
+            val subjects = scoreIds.filterValues { it.containsKey(observer) }.keys.take(hits)
             val children = subjects.joinToString(",") { """{"fields":{"pubkey":"$it"}}""" }
             return """{"root":{"children":[$children]}}"""
         }

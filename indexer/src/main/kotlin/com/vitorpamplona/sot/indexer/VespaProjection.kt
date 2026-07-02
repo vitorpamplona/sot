@@ -33,8 +33,10 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 import com.vitorpamplona.sot.vespa.Profile
 import com.vitorpamplona.sot.vespa.VespaClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
 import java.util.concurrent.CompletableFuture
@@ -108,9 +110,18 @@ class VespaProjection(
         }
     }
 
+    private val subscribed = CompletableDeferred<Unit>()
+
+    /**
+     * Suspend until [run]'s collector is registered on the change feed. The feed
+     * has no replay: anything inserted before this point is invisible to the
+     * projection, so a sync must not start until it completes.
+     */
+    suspend fun awaitSubscribed() = subscribed.await()
+
     /** Collect the change feed forever (launch in its own coroutine before syncing). */
     suspend fun run() {
-        store.changes.collect { change ->
+        store.changes.onSubscription { subscribed.complete(Unit) }.collect { change ->
             try {
                 when (change) {
                     is StoreChange.Insert -> {
