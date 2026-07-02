@@ -11,8 +11,10 @@ services:
     container_name: vespa
     hostname: vespa
     ports:
-      - "8080:8080"     # query / document API
-      - "19071:19071"   # config server
+      # Host ports come from .env (VESPA_PORT / VESPA_CONFIG_PORT) so a squatted
+      # 8080 doesn't block `sot up` — keep VESPA_URL / VESPA_CONFIG_URL in sync.
+      - "${VESPA_PORT:-8080}:8080" # query / document API
+      - "${VESPA_CONFIG_PORT:-19071}:19071" # config server
     volumes:
       - vespa_var:/opt/vespa/var
     healthcheck:

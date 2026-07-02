@@ -30,7 +30,7 @@ import com.vitorpamplona.sot.config.Config
  */
 
 /** Run a subprocess, echoing the command; returns its exit code. */
-private fun run(vararg cmd: String): Int {
+internal fun run(vararg cmd: String): Int {
     println("$ ${cmd.joinToString(" ")}")
     return ProcessBuilder(*cmd).inheritIO().start().waitFor()
 }
@@ -58,6 +58,11 @@ internal fun down() {
 internal fun deploy(args: List<String>): Int {
     val app = flag(args, "--app", "vespa/app")
     val configUrl = flag(args, "--config", Config.vespaConfigUrl)
+    if (!ping("$configUrl/state/v1/health")) {
+        println("Vespa config server is not reachable at $configUrl.")
+        println("Start it first: `sot up` (starts Vespa via docker compose AND deploys), or `docker compose up -d vespa` then retry.")
+        return 1
+    }
     val tgz = "/tmp/vespa.tgz"
     if (run("bash", "-c", "tar -czf $tgz -C '$app' .") != 0) return 1
     return run(

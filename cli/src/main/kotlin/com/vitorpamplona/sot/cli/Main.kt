@@ -35,6 +35,7 @@ fun main(argv: Array<String>) {
         "status" -> status(args.drop(1))
         "up" -> up(args.drop(1))
         "down" -> down()
+        "destroy" -> destroy(args.drop(1))
         "deploy" -> deploy(args.drop(1))
         else -> usage()
     }
@@ -51,6 +52,7 @@ private fun usage() {
           status  [--vespa <url>] [--server <url>]
           up                            start local Vespa (docker compose) and deploy vespa
           down                          stop local Vespa
+          destroy [--yes] [--db <path>] wipe events db + sync state + Vespa's data volume
           deploy [--app <dir>] [--config <url>]   redeploy the Vespa app package
         """.trimIndent(),
     )

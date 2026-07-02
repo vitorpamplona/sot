@@ -38,6 +38,8 @@ object Config {
         listOf(
             Triple("VESPA_URL", "http://localhost:8080", "Vespa query/document endpoint"),
             Triple("VESPA_CONFIG_URL", "http://localhost:19071", "Vespa config server (deploy + readiness)"),
+            Triple("VESPA_PORT", "8080", "host port docker publishes Vespa's query/document API on (keep VESPA_URL in sync)"),
+            Triple("VESPA_CONFIG_PORT", "19071", "host port docker publishes Vespa's config server on (keep VESPA_CONFIG_URL in sync)"),
             Triple("SERVER_PORT", "7777", "port for the sot server (web UI + /search API + NIP-50 relay)"),
             Triple("SERVER_URL", "http://localhost:7777", "public http url of the server (web UI base + status)"),
             Triple("RELAY_URL", "ws://localhost:7777", "public ws url the relay advertises (NIP-42)"),
