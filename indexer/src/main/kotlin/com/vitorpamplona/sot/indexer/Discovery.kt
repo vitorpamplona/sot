@@ -23,8 +23,10 @@ package com.vitorpamplona.sot.indexer
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Bounded NIP-65 outbox crawl: sync kind-10002 relay lists, then expand the
@@ -43,6 +45,7 @@ class Discovery(
         seeds: List<NormalizedRelayUrl>,
         maxRounds: Int,
         maxRelays: Int,
+        concurrency: Int,
     ): Set<NormalizedRelayUrl> {
         // The pool persists as url strings (JSON); normalize back on load.
         val pool = LinkedHashSet<NormalizedRelayUrl>()
@@ -51,10 +54,13 @@ class Discovery(
 
         var frontier = pool.toList()
         for (round in 1..maxRounds) {
-            log("=== discovery round $round: sync 10002 from ${frontier.size} relays (pool ${pool.size}) ===")
-            for (r in frontier) {
-                if (pool.size > maxRelays) break
-                syncer.sync(r, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
+            log("=== discovery round $round: sync 10002 from ${frontier.size} relays (pool ${pool.size}, $concurrency in parallel) ===")
+            val done = AtomicInteger(0)
+            forEachParallel(frontier, concurrency) { r ->
+                // Capped: discovery only needs a big-enough sample of relay lists to find
+                // the popular relays — some aggregators hold millions of 10002s.
+                val o = syncer.sync(r, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)), maxEvents = MAX_RELAY_LISTS_PER_RELAY)
+                log("[10002 ${done.incrementAndGet()}/${frontier.size}] ${r.displayUrl()}: +${o.inserted}")
             }
             val fresh = advertisedRelays().filter { it !in pool }.take((maxRelays - pool.size).coerceAtLeast(0))
             if (fresh.isEmpty()) {
@@ -77,4 +83,8 @@ class Discovery(
             .query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
             .flatMap { it.relaysNorm() }
             .toSet()
+
+    private companion object {
+        const val MAX_RELAY_LISTS_PER_RELAY = 25_000
+    }
 }

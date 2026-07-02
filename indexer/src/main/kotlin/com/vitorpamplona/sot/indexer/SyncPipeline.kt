@@ -30,6 +30,12 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Tuning knobs for one [runSync] pass. Everything has a sensible default; the
@@ -45,6 +51,8 @@ data class SyncOptions(
     val discover: Boolean = true,
     val maxRounds: Int = 3,
     val maxRelays: Int = 200,
+    /** How many relays sync at the same time (store writes stay serialized). */
+    val concurrency: Int = 8,
     /** Verify id + signature before storing. Test-only seam — leave on. */
     val verifyEvents: Boolean = true,
 )
@@ -71,7 +79,7 @@ suspend fun runSync(
     try {
         val relays =
             if (opts.discover) {
-                Discovery(syncer, store, state, log).crawl(seedRelays, opts.maxRounds, opts.maxRelays).toList()
+                Discovery(syncer, store, state, log).crawl(seedRelays, opts.maxRounds, opts.maxRelays, opts.concurrency).toList()
             } else {
                 seedRelays
             }
@@ -85,7 +93,8 @@ suspend fun runSync(
 
 /**
  * Phase 1: provider lists (10040), deletions (5), and profiles (0) from every
- * relay in the set.
+ * relay in the set — [SyncOptions.concurrency] relays at a time, kinds still
+ * sequential within a relay (they share its cursors and capability memory).
  */
 private suspend fun syncEvents(
     syncer: RelaySyncer,
@@ -93,12 +102,15 @@ private suspend fun syncEvents(
     opts: SyncOptions,
     log: (String) -> Unit,
 ) {
-    log("=== phase 1: 10040 / 5 / 0 from ${relays.size} relay(s) ===")
-    for (r in relays) {
-        val lists = syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)))
-        val dels = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)))
+    log("=== phase 1: 10040 / 5 / 0 from ${relays.size} relay(s), ${opts.concurrency} in parallel ===")
+    val done = AtomicInteger(0)
+    forEachParallel(relays, opts.concurrency) { r ->
+        val started = System.currentTimeMillis()
+        val lists = syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)), maxEvents = opts.maxEvents)
+        val dels = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)), maxEvents = opts.maxEvents)
         val profiles = syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = opts.maxEvents)
-        log("[sync] ${r.displayUrl()}  10040=${lists.inserted}${neg(lists)}  del=${dels.inserted}  kind0=${profiles.inserted}")
+        val secs = (System.currentTimeMillis() - started) / 1000
+        log("[${done.incrementAndGet()}/${relays.size}] ${r.displayUrl()}  10040=${lists.inserted}${neg(lists)}  del=${dels.inserted}  kind0=${profiles.inserted}  (${secs}s)")
     }
 }
 
@@ -124,11 +136,29 @@ private suspend fun syncProviderScores(
         log("[sync] capped to ${opts.maxProviders} providers for this run")
     }
 
-    log("=== phase 3: kind 30382 per provider, from its relay hint ===")
-    for ((service, relay) in providers) {
+    log("=== phase 3: kind 30382 per provider, from its relay hint (${opts.concurrency} in parallel) ===")
+    val done = AtomicInteger(0)
+    forEachParallel(providers, opts.concurrency) { (service, relay) ->
         val o = syncer.sync(relay, Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), maxEvents = opts.maxEvents)
-        log("[sync] provider ${service.take(12)} @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
+        log("[${done.incrementAndGet()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
     }
+}
+
+/** Run [body] for every item, [concurrency] at a time; one item's failure is logged by [body]'s caller, not fatal to the rest. */
+internal suspend fun <T> forEachParallel(
+    items: List<T>,
+    concurrency: Int,
+    body: suspend (T) -> Unit,
+) = coroutineScope {
+    val gate = Semaphore(concurrency.coerceAtLeast(1))
+    items
+        .map { item ->
+            launch {
+                gate.withPermit {
+                    runCatching { body(item) }
+                }
+            }
+        }.joinAll()
 }
 
 private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""

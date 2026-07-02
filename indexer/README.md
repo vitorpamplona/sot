@@ -76,14 +76,14 @@ Flags: `--db <path>` (SQLite, default `events.db`), `--state <path>`,
 `--seeds <urls…>` (defaults to `SEED_RELAYS` from `.env`/env),
 `--discover true|false`, `--max-rounds N`, `--max-relays N`,
 `--max-providers N`, `--fetch-timeout secs`, `--max-events N`,
-`--vespa <url>`.
+`--concurrency N` (parallel relays, default 8), `--vespa <url>`.
 
-> Note: per-relay syncs run sequentially today; over a large discovered pool the
-> first full run is slow (each relay does a negentropy attempt + fallback).
-> Parallelizing the network fetch (keeping store writes serial) is the obvious
-> next speedup. The robust per-relay negentropy→pages logic is exactly what the
-> Quartz feature request in `../docs/quartz-negentropy-sync-prompt.md` would fold
-> into the library.
+> Relays sync in parallel (`--concurrency`, default 8) in every phase —
+> discovery, phase 1, and per-provider scores. Kinds stay sequential within a
+> relay (they share its cursors and negentropy-capability memory), and store
+> writes are serialized behind a mutex — the fan-out is purely network-side.
+> Progress: each (relay, kind) download logs a throttled `…` heartbeat every
+> ~5s while active, and every finished relay logs a `[done/total]` line.
 
 ## Requirements
 

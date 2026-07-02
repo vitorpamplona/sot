@@ -51,19 +51,20 @@ data class SyncState(
     val relays: MutableMap<String, RelayState> = mutableMapOf(),
     val relayPool: MutableSet<String> = mutableSetOf(),
 ) {
-    fun relay(relay: NormalizedRelayUrl) = relays.getOrPut(relay.url) { RelayState() }
+    // Relay syncs run in parallel; every access to the shared maps synchronizes here.
+    fun relay(relay: NormalizedRelayUrl): RelayState = synchronized(relays) { relays.getOrPut(relay.url) { RelayState() } }
 
     fun cursor(
         relay: NormalizedRelayUrl,
         scope: String,
-    ): Long? = relays[relay.url]?.lastSyncedAt?.get(scope)
+    ): Long? = synchronized(relays) { relays[relay.url]?.lastSyncedAt?.get(scope) }
 
     fun markSynced(
         relay: NormalizedRelayUrl,
         scope: String,
         atSecs: Long,
     ) {
-        relay(relay).lastSyncedAt[scope] = atSecs
+        synchronized(relays) { relays.getOrPut(relay.url) { RelayState() }.lastSyncedAt[scope] = atSecs }
     }
 
     companion object {

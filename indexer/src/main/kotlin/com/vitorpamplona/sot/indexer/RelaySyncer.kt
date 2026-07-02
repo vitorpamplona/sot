@@ -27,11 +27,15 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Syncs one (relay, filter) into the store using Quartz's generalized
@@ -70,6 +74,9 @@ class RelaySyncer(
         val usedNegentropy: Boolean,
     )
 
+    // Relay syncs run in parallel, but the SQLite store stays a single writer.
+    private val storeWrites = Mutex()
+
     suspend fun sync(
         relay: NormalizedRelayUrl,
         filter: Filter,
@@ -80,9 +87,31 @@ class RelaySyncer(
 
         val download = download(relay, sinceCursor(filter, relay, scope), maxEvents, firstSync)
         val valid = dropForged(download.events, relay, filter)
-        val inserted = store.batchInsert(valid).count { it is IEventStore.InsertOutcome.Accepted }
+        val inserted = storeWrites.withLock { store.batchInsert(valid) }.count { it is IEventStore.InsertOutcome.Accepted }
         state.markSynced(relay, scope, nowSecs())
         return Outcome(inserted, download.usedNegentropy, download.events.size)
+    }
+
+    /** Throttled progress line for one (relay, kind) download — silence means it finished fast. */
+    private inner class Heartbeat(
+        private val relay: NormalizedRelayUrl,
+        private val filter: Filter,
+        private val everyMs: Long = 5_000,
+    ) {
+        private val last = AtomicLong(System.currentTimeMillis())
+
+        fun tick(
+            downloaded: Int,
+            need: Int,
+        ) {
+            val now = System.currentTimeMillis()
+            val prev = last.get()
+            if (now - prev >= everyMs && last.compareAndSet(prev, now)) {
+                val kind = filter.kinds?.firstOrNull()
+                val target = if (need > 0) " of ~$need" else ""
+                log("  ... ${relay.displayUrl()} kind $kind: $downloaded$target events so far")
+            }
+        }
     }
 
     /** Cursor scope key: the kind, plus authors so per-provider 30382 syncs don't share a cursor. */
@@ -118,8 +147,9 @@ class RelaySyncer(
         maxEvents: Int,
         firstSync: Boolean,
     ): Download {
+        val heartbeat = Heartbeat(relay, filter)
         if (state.relay(relay).negentropyCapable == false) {
-            return Download(fetchPages(relay, filter, maxEvents), usedNegentropy = false)
+            return Download(fetchPages(relay, filter, maxEvents, heartbeat), usedNegentropy = false)
         }
 
         val buf = Collections.synchronizedList(ArrayList<Event>())
@@ -133,18 +163,24 @@ class RelaySyncer(
                     fetchBatch = fetchBatch,
                     idleTimeoutMs = idleTimeoutMs,
                     onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
-                ) { buf.add(it) }
+                ) {
+                    buf.add(it)
+                    heartbeat.tick(buf.size, need.get())
+                }
             }.getOrElse {
                 log("  ! ${relay.url} sync failed: ${it.message}")
                 null
             }
         var usedNeg = res?.pagedFallback == false
 
+        // A download that ran into the maxEvents cap is SUPPOSED to deliver fewer
+        // events than reconciled — don't let that trip the unreliability check.
+        val capped = maxEvents > 0 && (res?.downloaded ?: 0) >= maxEvents
         val suspicious =
-            res != null && !res.pagedFallback &&
+            res != null && !res.pagedFallback && !capped &&
                 (need.get() > res.downloaded || (res.downloaded == 0 && firstSync))
         if (suspicious) {
-            val paged = fetchPages(relay, filter, maxEvents)
+            val paged = fetchPages(relay, filter, maxEvents, heartbeat)
             if (paged.isNotEmpty()) {
                 state.relay(relay).negentropyCapable = false
                 usedNeg = false
@@ -162,10 +198,16 @@ class RelaySyncer(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int,
+        heartbeat: Heartbeat,
     ): List<Event> {
         val paged = if (maxEvents > 0) filter.copy(limit = maxEvents) else filter
         val buf = Collections.synchronizedList(ArrayList<Event>())
-        withTimeoutOrNull(idleTimeoutMs) { client.fetchAllPages(relay, listOf(paged)) { buf.add(it) } }
+        withTimeoutOrNull(idleTimeoutMs) {
+            client.fetchAllPages(relay, listOf(paged)) {
+                buf.add(it)
+                heartbeat.tick(buf.size, need = 0)
+            }
+        }
         return ArrayList(buf)
     }
 

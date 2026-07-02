@@ -97,6 +97,7 @@ internal fun index(args: List<String>) {
             discover = flag(args, "--discover", "true").toBooleanStrict(),
             maxRounds = flag(args, "--max-rounds", "3").toInt(),
             maxRelays = flag(args, "--max-relays", "200").toInt(),
+            concurrency = flag(args, "--concurrency", "8").toInt(),
         )
 
     val vespa = VespaClient(vespaUrl)
