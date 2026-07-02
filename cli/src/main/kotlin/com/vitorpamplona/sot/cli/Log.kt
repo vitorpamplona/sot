@@ -20,10 +20,13 @@
  */
 package com.vitorpamplona.sot.cli
 
-// Timestamped stdout logging shared by the long-running commands (index, serve).
+// Timestamped stdout logging shared by the long-running commands (index, serve,
+// verify). A dim timestamp, then the message dressed up by [styleLogLine] — the
+// single sink where the app's console output earns its keep. On a pipe or with
+// NO_COLOR both are plain, so redirected logs stay exactly as they always were.
 
 internal fun logLine(msg: String) {
-    println("${ts()} $msg")
+    println("${Ansi.dim(ts())} ${styleLogLine(msg)}")
     System.out.flush()
 }
 
