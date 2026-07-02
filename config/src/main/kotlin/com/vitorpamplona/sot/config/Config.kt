@@ -52,6 +52,7 @@ object Config {
                 "comma-separated seed relays the indexer crawls for kind:0/10040 (sot index)",
             ),
             Triple("DEFAULT_OBSERVER", "", "fallback web-of-trust observer (hex pubkey) when none is given"),
+            Triple("QUARTZ_LOG_LEVEL", "ERROR", "min level for the Nostr library's stderr diagnostics: DEBUG, INFO, WARN, or ERROR"),
             Triple("SERVER_NAME", "sot", "relay name (NIP-11)"),
             Triple("SERVER_DESCRIPTION", "NIP-50 profile search ranked by the Nostr web of trust", "relay description (NIP-11)"),
             Triple("SERVER_ICON", "", "relay icon url (NIP-11)"),
@@ -91,6 +92,7 @@ object Config {
     /** Seed relays for indexing, parsed from the comma-separated `SEED_RELAYS`. */
     val seedRelays get() = env("SEED_RELAYS").split(",").map { it.trim() }.filter { it.isNotEmpty() }
     val defaultObserver get() = env("DEFAULT_OBSERVER")
+    val quartzLogLevel get() = env("QUARTZ_LOG_LEVEL")
     val serverName get() = env("SERVER_NAME")
     val serverDescription get() = env("SERVER_DESCRIPTION")
     val serverIcon get() = env("SERVER_ICON")

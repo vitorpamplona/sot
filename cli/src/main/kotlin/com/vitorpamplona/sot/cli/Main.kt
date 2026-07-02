@@ -20,6 +20,10 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.utils.Log
+import com.vitorpamplona.quartz.utils.LogLevel
+import com.vitorpamplona.sot.config.Config
+
 /**
  * sot CLI entry point. Each command lives in its own file — [init] (Init.kt),
  * [search] (Search.kt), [status] (Status.kt), and the local-Vespa lifecycle
@@ -27,6 +31,11 @@ package com.vitorpamplona.sot.cli
  * and Observer.kt. Config/`.env` handling lives in :config's Config.
  */
 fun main(argv: Array<String>) {
+    // Quartz narrates every oddity it meets (garbage relay urls in 10002s, ...)
+    // to stderr; errors-only by default keeps sync output readable. Set
+    // QUARTZ_LOG_LEVEL=WARN (or DEBUG) when debugging relay behavior.
+    Log.minLevel = runCatching { LogLevel.valueOf(Config.quartzLogLevel.uppercase()) }.getOrDefault(LogLevel.ERROR)
+
     val args = argv.toList()
     when (args.firstOrNull()) {
         "init" -> init(args.drop(1))

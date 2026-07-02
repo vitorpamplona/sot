@@ -83,6 +83,7 @@ sot serve        # refuses to start if Vespa is down; `sot serve --up` starts lo
 any value). Keys: `VESPA_URL`,
 `VESPA_CONFIG_URL`, `SERVER_PORT`, `SYNC_INTERVAL`, `SERVER_URL`, `RELAY_URL`, `EVENTS_DB`,
 `SEED_RELAYS` (comma-separated relays the sync crawls), `DEFAULT_OBSERVER`,
+`QUARTZ_LOG_LEVEL` (the Nostr library's stderr diagnostics; ERROR by default),
 and the NIP-11 relay identity `SERVER_NAME` /
 `SERVER_DESCRIPTION` / `SERVER_ICON` / `SERVER_PUBKEY` / `SERVER_OWNER`. Docker
 only runs Vespa — point `VESPA_URL` at a remote Vespa to skip it.

@@ -97,8 +97,9 @@ events db, sync cursors, and Vespa's data volume for a from-scratch run. Don't r
 All config resolves **env var -> `.env` -> built-in default** via `Config` (in `:config`).
 `sot init` writes a commented `.env`. Keys: `VESPA_URL`, `VESPA_CONFIG_URL`, `SERVER_PORT`,
 `SYNC_INTERVAL` (minutes between `sot serve` background passes; 0 = serve-only),
-`SERVER_URL`, `RELAY_URL`, `EVENTS_DB`, `SEED_RELAYS`, `DEFAULT_OBSERVER`, and the NIP-11
-identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always overrides `.env`.
+`SERVER_URL`, `RELAY_URL`, `EVENTS_DB`, `SEED_RELAYS`, `DEFAULT_OBSERVER`,
+`QUARTZ_LOG_LEVEL` (Quartz's stderr diagnostics; ERROR by default — set WARN/DEBUG to
+debug relay behavior), and the NIP-11 identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always overrides `.env`.
 
 ## Conventions
 
