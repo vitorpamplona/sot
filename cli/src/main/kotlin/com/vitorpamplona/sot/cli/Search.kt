@@ -23,6 +23,7 @@ package com.vitorpamplona.sot.cli
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.vespa.SearchOptions
 import com.vitorpamplona.sot.vespa.VespaSearch
+import kotlinx.coroutines.runBlocking
 
 private val SEARCH_VALUED_FLAGS = setOf("--observer", "--hits", "--algo", "--vespa")
 
@@ -47,11 +48,13 @@ internal fun search(args: List<String>) {
     println("query=$query algo=$algo observer=$obsLabel")
 
     val results =
-        VespaSearch(vespaUrl).search(
-            query,
-            observer,
-            SearchOptions(hits = hits, rankProfile = algo, includeZeroScore = !onlyRanked),
-        )
+        runBlocking {
+            VespaSearch(vespaUrl).search(
+                query,
+                observer,
+                SearchOptions(hits = hits, rankProfile = algo, includeZeroScore = !onlyRanked),
+            )
+        }
 
     println("results=${results.size}")
     println("-".repeat(92))

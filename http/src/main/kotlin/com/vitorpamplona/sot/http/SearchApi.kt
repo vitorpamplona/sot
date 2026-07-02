@@ -61,15 +61,16 @@ fun Route.searchApi(
         val maxHits = (params["maxHits"]?.toIntOrNull() ?: DEFAULT_HITS).coerceIn(1, MAX_HITS)
         val onlyRanked = params["onlyRanked"]?.toBoolean() ?: true
 
+        // Resolve identifiers off the event loop (NIP-05 may hit the network, blocking).
+        val observer = withContext(Dispatchers.IO) { params["observer"]?.let { resolvePubkey(it) } } ?: defaultObserver
+        val queryPubkey = withContext(Dispatchers.IO) { resolvePubkey(text) }
+
+        // A pubkey-shaped query (hex/npub/nprofile/nip05) is a direct doc lookup;
+        // free text is a ranked search. Both suspend on Vespa I/O without holding a
+        // thread, so many requests can be in flight at once.
         val hits =
-            withContext(Dispatchers.IO) {
-                // Resolve identifiers off the event loop (NIP-05 may hit the network).
-                val observer = params["observer"]?.let { resolvePubkey(it) } ?: defaultObserver
-                // A pubkey-shaped query (hex/npub/nprofile/nip05) is a direct doc
-                // lookup; free text is a ranked search.
-                resolvePubkey(text)?.let { listOfNotNull(vespa.getDocument(it)) }
-                    ?: vespa.search(text, observer, SearchOptions(hits = maxHits, includeZeroScore = !onlyRanked))
-            }
+            queryPubkey?.let { listOfNotNull(vespa.getDocument(it)) }
+                ?: vespa.search(text, observer, SearchOptions(hits = maxHits, includeZeroScore = !onlyRanked))
         call.respond(SearchResponse(text, hits.size, hits.map(SearchHit::toResult)))
     }
 }

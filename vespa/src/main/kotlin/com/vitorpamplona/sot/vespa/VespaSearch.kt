@@ -20,6 +20,9 @@
  */
 package com.vitorpamplona.sot.vespa
 
+import kotlinx.coroutines.future.await
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -33,6 +36,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.concurrent.Executors
 
 /** One ranked search result. [trust] is the observer's trust score for this doc. */
 data class SearchHit(
@@ -57,13 +61,32 @@ data class SearchOptions(
  * from the upstream Python `vespa.py` `search()`; shared by the http service, the
  * search relay, and the CLI.
  *
- * Blocking (JDK HttpClient) — call it off a worker/IO dispatcher from coroutines.
+ * Non-blocking: every Vespa round-trip goes out via the JDK client's async
+ * `sendAsync` and is `await`ed, so a suspended search holds no thread while it
+ * waits on the network. Thousands of searches can therefore be in flight at once
+ * without a thread each. To keep that fan-out from opening an unbounded number of
+ * sockets to Vespa (the JDK client speaks HTTP/1.1 to `http://` — no multiplexing),
+ * concurrent round-trips are capped by a coroutine [Semaphore]; excess searches
+ * suspend cheaply on the permit rather than blocking a thread. Tune the ceiling
+ * with [maxConcurrentQueries].
+ *
+ * The default client completes responses on virtual threads (JDK 21), so response
+ * assembly scales with in-flight requests rather than a fixed worker pool.
  */
 class VespaSearch(
     private val baseUrl: String,
-    private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(),
+    maxConcurrentQueries: Int = DEFAULT_MAX_CONCURRENCY,
+    private val http: HttpClient =
+        HttpClient
+            .newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .executor(Executors.newVirtualThreadPerTaskExecutor())
+            .build(),
 ) {
-    fun search(
+    /** Bounds concurrent Vespa round-trips so a burst of searches can't exhaust Vespa's connections. */
+    private val gate = Semaphore(maxConcurrentQueries)
+
+    suspend fun search(
         queryText: String,
         observer: String,
         opts: SearchOptions = SearchOptions(),
@@ -91,7 +114,7 @@ class VespaSearch(
     }
 
     /** Direct doc lookup by pubkey (hex), bypassing text search. Null if absent. */
-    fun getDocument(pubkey: String): SearchHit? {
+    suspend fun getDocument(pubkey: String): SearchHit? {
         val resp = send("$baseUrl/document/v1/doc/doc/docid/$pubkey")
         if (resp.statusCode() == 404) return null
         // quality_scores is a tensor object (not a primitive) — drop it from the string map.
@@ -142,17 +165,21 @@ class VespaSearch(
         )
     }
 
-    private fun getJson(url: String): JsonObject = body(send(url))
+    private suspend fun getJson(url: String): JsonObject = body(send(url))
 
-    private fun send(url: String): HttpResponse<String> =
-        http.send(
-            HttpRequest
-                .newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(30))
-                .GET()
-                .build(),
-            HttpResponse.BodyHandlers.ofString(),
-        )
+    /** One Vespa GET, non-blocking and permit-gated: suspends (no thread held) until the response arrives. */
+    private suspend fun send(url: String): HttpResponse<String> =
+        gate.withPermit {
+            http
+                .sendAsync(
+                    HttpRequest
+                        .newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(30))
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString(),
+                ).await()
+        }
 
     private fun body(resp: HttpResponse<String>): JsonObject {
         if (resp.statusCode() >= 400) throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
@@ -172,5 +199,10 @@ class VespaSearch(
     private companion object {
         val WHITESPACE = Regex("\\s+")
         const val MAX_VESPA_HITS = 400 // Vespa default max-hits
+
+        // Ceiling on concurrent Vespa round-trips per client. High enough to serve
+        // thousands of overlapping searches (they queue on the permit, not a thread),
+        // low enough not to swamp Vespa's HTTP/1.1 connection budget.
+        const val DEFAULT_MAX_CONCURRENCY = 256
     }
 }

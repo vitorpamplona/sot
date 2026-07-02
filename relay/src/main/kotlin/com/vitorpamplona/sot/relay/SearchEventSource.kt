@@ -61,10 +61,9 @@ class SearchEventSource(
                 if (term.isNullOrEmpty()) continue
                 val limit = (f.limit ?: 50).coerceIn(1, 400)
 
-                val hits =
-                    withContext(Dispatchers.IO) {
-                        vespa.search(term, observer, SearchOptions(hits = limit))
-                    }
+                // Non-blocking: suspends on Vespa I/O without holding a thread, so many
+                // concurrent REQs don't contend for the IO pool here.
+                val hits = vespa.search(term, observer, SearchOptions(hits = limit))
                 if (hits.isEmpty()) continue
 
                 // One store query for all ranked authors, indexed by pubkey. The map isn't
