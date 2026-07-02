@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.vespa
 
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import java.net.URLDecoder
 import kotlin.test.AfterTest
@@ -69,40 +70,44 @@ class VespaSearchTest {
     fun tearDown() = server.stop(0)
 
     @Test
-    fun `sends recall words and observer-weighted ranking inputs`() {
-        search.search("vitor pamplona", observer)
+    fun `sends recall words and observer-weighted ranking inputs`() =
+        runBlocking {
+            search.search("vitor pamplona", observer)
 
-        assertEquals("{$observer:1.0}", lastQuery["ranking.features.query(user_q)"])
-        assertEquals("vitor", lastQuery["w0"])
-        assertEquals("pamplona", lastQuery["w1"])
-        assertEquals("vitorpamplona", lastQuery["wj"], "multi-word queries also try the joined form")
-        assertTrue(lastQuery["yql"].orEmpty().startsWith("select"), "yql: ${lastQuery["yql"]}")
-        assertEquals("name_and_quality_score_only", lastQuery["ranking"])
-    }
-
-    @Test
-    fun `maps children to hits with trust from matchfeatures`() {
-        val hits = search.search("vitor", observer)
-
-        assertEquals(2, hits.size)
-        assertEquals(ranked, hits[0].pubkey)
-        assertEquals(9.0, hits[0].trust)
-        assertEquals(2.5, hits[0].relevance)
-        assertEquals("vitor", hits[0].name)
-        assertTrue("matchfeatures" !in hits[0].fields, "the tensor blob stays out of the string fields")
-    }
+            assertEquals("{$observer:1.0}", lastQuery["ranking.features.query(user_q)"])
+            assertEquals("vitor", lastQuery["w0"])
+            assertEquals("pamplona", lastQuery["w1"])
+            assertEquals("vitorpamplona", lastQuery["wj"], "multi-word queries also try the joined form")
+            assertTrue(lastQuery["yql"].orEmpty().startsWith("select"), "yql: ${lastQuery["yql"]}")
+            assertEquals("name_and_quality_score_only", lastQuery["ranking"])
+        }
 
     @Test
-    fun `includeZeroScore=false drops untrusted hits`() {
-        val hits = search.search("vitor", observer, SearchOptions(includeZeroScore = false))
+    fun `maps children to hits with trust from matchfeatures`() =
+        runBlocking {
+            val hits = search.search("vitor", observer)
 
-        assertEquals(listOf(ranked), hits.map { it.pubkey })
-    }
+            assertEquals(2, hits.size)
+            assertEquals(ranked, hits[0].pubkey)
+            assertEquals(9.0, hits[0].trust)
+            assertEquals(2.5, hits[0].relevance)
+            assertEquals("vitor", hits[0].name)
+            assertTrue("matchfeatures" !in hits[0].fields, "the tensor blob stays out of the string fields")
+        }
 
     @Test
-    fun `a blank query never reaches Vespa`() {
-        lastQuery = emptyMap()
-        assertEquals(emptyList(), search.search("   ", observer))
-        assertTrue(lastQuery.isEmpty())
-    }
+    fun `includeZeroScore=false drops untrusted hits`() =
+        runBlocking {
+            val hits = search.search("vitor", observer, SearchOptions(includeZeroScore = false))
+
+            assertEquals(listOf(ranked), hits.map { it.pubkey })
+        }
+
+    @Test
+    fun `a blank query never reaches Vespa`() =
+        runBlocking {
+            lastQuery = emptyMap()
+            assertEquals(emptyList(), search.search("   ", observer))
+            assertTrue(lastQuery.isEmpty())
+        }
 }
