@@ -30,7 +30,7 @@ fun main(argv: Array<String>) {
     val args = argv.toList()
     when (args.firstOrNull()) {
         "init" -> init(args.drop(1))
-        "serve" -> serve()
+        "serve" -> serve(args.drop(1))
         "index" -> index(args.drop(1))
         "search" -> search(args.drop(1))
         "status" -> status(args.drop(1))
@@ -48,7 +48,7 @@ private fun usage() {
         sot - local Nostr profile search
 
           init                          write a .env config template
-          serve                         web UI + /search + NIP-50 relay + background sync (SYNC_INTERVAL)
+          serve [--up]                  web UI + /search + NIP-50 relay + background sync (SYNC_INTERVAL); --up starts Vespa first
           index [flags]                 one sync pass of profiles + NIP-85 trust scores into Vespa
           search "<query>" [--observer <hex|npub|nprofile|nip05>] [--hits N] [--algo <profile>] [--only-ranked] [--vespa <url>]
           status  [--vespa <url>] [--server <url>]

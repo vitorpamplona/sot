@@ -66,7 +66,7 @@ whether Vespa and the server are up (plus doc/event counts).
 everything but Vespa, plus the background sync:
 
 ```bash
-sot serve
+sot serve        # refuses to start if Vespa is down; `sot serve --up` starts local Vespa first
 #   http://localhost:7777/            web UI (browser) or NIP-11 (Accept: application/nostr+json)
 #   http://localhost:7777/search      JSON API   (?text=vitor&observer=<pubkey>)
 #   ws://localhost:7777/              NIP-50 relay (send a `search` REQ; NIP-42 auth picks the observer)

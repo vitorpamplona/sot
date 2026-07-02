@@ -48,6 +48,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -72,7 +73,36 @@ private val WEB_UI: String? by lazy {
         ?.readText()
 }
 
-internal fun serve() {
+/**
+ * A serve with no Vespa would just fail every query and write — refuse to start
+ * instead. `--up` runs the `sot up` sequence first (start + deploy) when the
+ * engine is the local docker one; a remote VESPA_URL never gets docker side
+ * effects (its lifecycle isn't ours to manage).
+ */
+private fun ensureVespaIsUp(args: List<String>) {
+    val statusUrl = "${Config.vespaUrl}/ApplicationStatus"
+    if (ping(statusUrl)) return
+
+    val local = Config.vespaUrl.contains("://localhost") || Config.vespaUrl.contains("://127.0.0.1")
+    if (has(args, "--up") && local) {
+        up(emptyList())
+        if (ping(statusUrl)) return
+        println("Vespa is still not reachable at ${Config.vespaUrl} - see the `sot up` output above.")
+        exitProcess(1)
+    }
+    println("Vespa is not reachable at ${Config.vespaUrl}.")
+    println(
+        if (local) {
+            "Start it first with `sot up` - or run `sot serve --up` to do both in one go."
+        } else {
+            "Check VESPA_URL and the remote engine, then retry."
+        },
+    )
+    exitProcess(1)
+}
+
+internal fun serve(args: List<String>) {
+    ensureVespaIsUp(args)
     val vespa = VespaSearch(Config.vespaUrl)
     // One shared event store (see :event-store): relay identity from env for NIP-62, no SQLite FTS.
     val relayUrl = relayIdentity()
