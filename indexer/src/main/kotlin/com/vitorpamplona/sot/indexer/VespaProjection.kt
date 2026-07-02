@@ -85,6 +85,12 @@ class VespaProjection(
     private val failures = AtomicInteger(0)
     private val pending = AtomicInteger(0)
 
+    /** Vespa writes dispatched but not yet acknowledged — the index's lag behind the store. */
+    fun pendingWrites(): Int = pending.get()
+
+    /** Vespa writes that landed (profiles + scores + deletions). */
+    fun completedWrites(): Long = profiles.get().toLong() + scores.get() + deletions.get()
+
     /**
      * Suspend until the projection is idle — nothing newly processed for
      * [idleMs] AND no Vespa write still in flight — or [maxMs] elapses. Call

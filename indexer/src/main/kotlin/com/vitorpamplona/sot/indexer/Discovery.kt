@@ -26,7 +26,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.ObservableEventStore
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Bounded NIP-65 outbox crawl: sync kind-10002 relay lists, then expand the
@@ -40,6 +39,7 @@ class Discovery(
     private val store: ObservableEventStore,
     private val state: SyncState,
     private val log: (String) -> Unit,
+    private val progress: SyncProgress = SyncProgress(log = { }),
 ) {
     suspend fun crawl(
         seeds: List<NormalizedRelayUrl>,
@@ -55,12 +55,12 @@ class Discovery(
         var frontier = pool.toList()
         for (round in 1..maxRounds) {
             log("=== discovery round $round: sync 10002 from ${frontier.size} relays (pool ${pool.size}, $concurrency in parallel) ===")
-            val done = AtomicInteger(0)
+            progress.startPhase("discovery r$round", frontier.size)
             forEachParallel(frontier, concurrency) { r ->
                 // Capped: discovery only needs a big-enough sample of relay lists to find
                 // the popular relays — some aggregators hold millions of 10002s.
                 val o = syncer.sync(r, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)), maxEvents = MAX_RELAY_LISTS_PER_RELAY)
-                log("[10002 ${done.incrementAndGet()}/${frontier.size}] ${r.displayUrl()}: +${o.inserted}")
+                log("[10002 ${progress.itemDone()}/${frontier.size}] ${r.displayUrl()}: +${o.inserted}")
             }
             val fresh = advertisedRelays().filter { it !in pool }.take((maxRelays - pool.size).coerceAtLeast(0))
             if (fresh.isEmpty()) {

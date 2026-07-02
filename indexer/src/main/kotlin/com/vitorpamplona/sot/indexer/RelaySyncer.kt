@@ -41,7 +41,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Syncs one (relay, filter) into the store using Quartz's generalized
@@ -74,6 +73,8 @@ class RelaySyncer(
     // impersonate a profile or poison the web-of-trust scores. Always on in
     // production; the seam exists only so tests can feed unsigned fixtures.
     private val verifyEvents: Boolean = true,
+    // Live counters for the pass's status line; silent by default (tests, tools).
+    private val progress: SyncProgress = SyncProgress(log = { }),
 ) {
     data class Outcome(
         val inserted: Int,
@@ -120,21 +121,20 @@ class RelaySyncer(
         val scope = cursorScope(filter)
         val firstSync = state.cursor(relay, scope) == null
         val scoped = sinceCursor(filter, relay, scope)
-        val heartbeat = Heartbeat(relay, filter)
 
         if (state.relay(relay).negentropyCapable == false) {
-            val pages = pagesStream(relay, scoped, maxEvents, heartbeat)
+            val pages = pagesStream(relay, scoped, maxEvents)
             state.markSynced(relay, scope, nowSecs())
             return Outcome(pages.inserted, usedNegentropy = false, downloaded = pages.received)
         }
 
-        val neg = negentropyStream(relay, scoped, maxEvents, heartbeat)
+        val neg = negentropyStream(relay, scoped, maxEvents)
         var inserted = neg.streamed.inserted
         var received = neg.streamed.received
         var usedNeg = neg.usedNegentropy
 
         if (looksIncomplete(neg, maxEvents, firstSync)) {
-            val pages = pagesStream(relay, scoped, maxEvents, heartbeat)
+            val pages = pagesStream(relay, scoped, maxEvents)
             if (pages.received > 0) {
                 state.relay(relay).negentropyCapable = false
                 usedNeg = false
@@ -188,13 +188,12 @@ class RelaySyncer(
         forceEnumerate: Boolean = false,
     ): ReconcileOutcome {
         val scope = cursorScope(filter)
-        val heartbeat = Heartbeat(relay, filter)
         val ids = Collections.synchronizedSet(HashSet<String>())
         var inserted = 0
         var usedNeg = false
 
         if (state.relay(relay).negentropyCapable != false) {
-            val neg = negentropyStream(relay, filter, maxEvents = 0, heartbeat, collectIds = ids)
+            val neg = negentropyStream(relay, filter, maxEvents = 0, collectIds = ids)
             inserted += neg.streamed.inserted
             if (neg.usedNegentropy && neg.streamed.completed) {
                 state.markSynced(relay, scope, nowSecs())
@@ -211,7 +210,7 @@ class RelaySyncer(
 
         // Authoritative enumeration: the relay's complete current set, via pages.
         // Only the (small) id set is held in memory; the events themselves stream.
-        val pages = pagesStream(relay, filter, maxEvents = 0, heartbeat, collectIds = ids, timeoutFactor = ENUMERATION_TIMEOUT_FACTOR)
+        val pages = pagesStream(relay, filter, maxEvents = 0, collectIds = ids, timeoutFactor = ENUMERATION_TIMEOUT_FACTOR)
         inserted += pages.inserted
         if (!pages.completed) {
             log("  ! ${relay.displayUrl()} enumeration timed out - skipping the deletion diff")
@@ -235,13 +234,12 @@ class RelaySyncer(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int,
-        heartbeat: Heartbeat,
         collectIds: MutableSet<String>? = null,
     ): NegentropyStream {
         val need = AtomicInteger(0)
         var result: NegentropyOrFetchResult? = null
         val streamed =
-            streamEvents(relay, filter, heartbeat, collectIds = collectIds, needHint = need::get) { onEvent ->
+            streamEvents(relay, filter, collectIds = collectIds, needHint = need::get) { onEvent ->
                 result =
                     runCatching {
                         client.negentropySyncOrFetch(
@@ -272,7 +270,6 @@ class RelaySyncer(
     private suspend fun streamEvents(
         relay: NormalizedRelayUrl,
         filter: Filter,
-        heartbeat: Heartbeat,
         collectIds: MutableSet<String>? = null,
         needHint: () -> Int = { 0 },
         producer: suspend (onEvent: (Event) -> Unit) -> Boolean,
@@ -281,6 +278,7 @@ class RelaySyncer(
             val channel = Channel<Event>(2 * CHUNK_SIZE)
             val received = AtomicInteger(0)
             val inserted = AtomicInteger(0)
+            val watch = progress.download(label(relay, filter))
             val consumer =
                 launch(Dispatchers.IO) {
                     val chunk = ArrayList<Event>(CHUNK_SIZE)
@@ -301,27 +299,42 @@ class RelaySyncer(
                 try {
                     producer { e ->
                         collectIds?.add(e.id)
-                        heartbeat.tick(received.incrementAndGet(), needHint())
+                        progress.onEvent()
+                        watch.tick(received.incrementAndGet(), needHint())
                         channel.trySendBlocking(e)
                     }
                 } finally {
+                    watch.done()
                     channel.close()
                     consumer.join()
                 }
             Streamed(inserted.get(), received.get(), completed)
         }
 
+    /** The download's slot name in the status line: relay, kind, and (for provider syncs) the author. */
+    private fun label(
+        relay: NormalizedRelayUrl,
+        filter: Filter,
+    ): String {
+        val kind = filter.kinds?.firstOrNull()?.let { " k$it" } ?: ""
+        val author =
+            filter.authors
+                ?.firstOrNull()
+                ?.take(8)
+                ?.let { " $it" } ?: ""
+        return "${relay.displayUrl()}$kind$author"
+    }
+
     /** Paginated `since` fetch — works on every relay. [maxEvents] caps ingest via Filter.limit. */
     private suspend fun pagesStream(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int,
-        heartbeat: Heartbeat,
         collectIds: MutableSet<String>? = null,
         timeoutFactor: Int = 1,
     ): Streamed {
         val paged = if (maxEvents > 0) filter.copy(limit = maxEvents) else filter
-        return streamEvents(relay, paged, heartbeat, collectIds) { onEvent ->
+        return streamEvents(relay, paged, collectIds) { onEvent ->
             withTimeoutOrNull(idleTimeoutMs * timeoutFactor) {
                 client.fetchAllPages(relay, listOf(paged), onEvent = onEvent)
             } != null
@@ -334,29 +347,9 @@ class RelaySyncer(
         filter: Filter,
     ): Int {
         val valid = dropForged(events, relay, filter)
-        return storeWrites.withLock { store.batchInsert(valid) }.count { it is IEventStore.InsertOutcome.Accepted }
-    }
-
-    /** Throttled progress line for one (relay, kind) download — silence means it finished fast. */
-    private inner class Heartbeat(
-        private val relay: NormalizedRelayUrl,
-        private val filter: Filter,
-        private val everyMs: Long = 5_000,
-    ) {
-        private val last = AtomicLong(System.currentTimeMillis())
-
-        fun tick(
-            downloaded: Int,
-            need: Int,
-        ) {
-            val now = System.currentTimeMillis()
-            val prev = last.get()
-            if (now - prev >= everyMs && last.compareAndSet(prev, now)) {
-                val kind = filter.kinds?.firstOrNull()
-                val target = if (need > 0) " of ~$need" else ""
-                log("  ... ${relay.displayUrl()} kind $kind: $downloaded$target events so far")
-            }
-        }
+        val accepted = storeWrites.withLock { store.batchInsert(valid) }.count { it is IEventStore.InsertOutcome.Accepted }
+        progress.onInserted(accepted)
+        return accepted
     }
 
     /** Cursor scope key: the kind, plus authors so per-provider 30382 syncs don't share a cursor. */

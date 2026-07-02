@@ -35,7 +35,6 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Tuning knobs for one [runSync] pass. Everything has a sensible default; the
@@ -80,23 +79,30 @@ suspend fun runSync(
     statePath: String,
     seedRelays: List<NormalizedRelayUrl>,
     opts: SyncOptions,
+    sharedProgress: SyncProgress? = null,
     log: (String) -> Unit,
-) {
-    val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = opts.fetchTimeoutMs, verifyEvents = opts.verifyEvents)
-    try {
-        val relays =
-            if (opts.discover) {
-                Discovery(syncer, store, state, log).crawl(seedRelays, opts.maxRounds, opts.maxRelays, opts.concurrency).toList()
-            } else {
-                seedRelays
-            }
-        syncEvents(syncer, relays, opts, log)
-        syncProviderScores(syncer, store, opts, log)
-    } finally {
-        SyncState.save(statePath, state)
-        log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")
+): Unit =
+    coroutineScope {
+        val progress = sharedProgress ?: SyncProgress(log = log)
+        val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = opts.fetchTimeoutMs, verifyEvents = opts.verifyEvents, progress = progress)
+        // ONE live status line every few seconds for the whole pass; every
+        // download and phase reports into it (see SyncProgress).
+        val ticker = launch { progress.run() }
+        try {
+            val relays =
+                if (opts.discover) {
+                    Discovery(syncer, store, state, log, progress).crawl(seedRelays, opts.maxRounds, opts.maxRelays, opts.concurrency).toList()
+                } else {
+                    seedRelays
+                }
+            syncEvents(syncer, relays, opts, log, progress)
+            syncProviderScores(syncer, store, opts, log, progress)
+        } finally {
+            ticker.cancel()
+            SyncState.save(statePath, state)
+            log("[state] saved cursors for ${state.relays.size} relay(s); pool=${state.relayPool.size}")
+        }
     }
-}
 
 /**
  * Phase 1: provider lists (10040), deletions (5), and profiles (0) from every
@@ -108,16 +114,17 @@ private suspend fun syncEvents(
     relays: List<NormalizedRelayUrl>,
     opts: SyncOptions,
     log: (String) -> Unit,
+    progress: SyncProgress,
 ) {
     log("=== phase 1: 10040 / 5 / 0 from ${relays.size} relay(s), ${opts.concurrency} in parallel ===")
-    val done = AtomicInteger(0)
+    progress.startPhase("relays", relays.size)
     forEachParallel(relays, opts.concurrency) { r ->
         val started = System.currentTimeMillis()
         val lists = syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)), maxEvents = opts.maxEvents)
         val dels = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)), maxEvents = opts.maxEvents)
         val profiles = syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = opts.maxEvents)
         val secs = (System.currentTimeMillis() - started) / 1000
-        log("[${done.incrementAndGet()}/${relays.size}] ${r.displayUrl()}  10040=${lists.inserted}${neg(lists)}  del=${dels.inserted}  kind0=${profiles.inserted}  (${secs}s)")
+        log("[${progress.itemDone()}/${relays.size}] ${r.displayUrl()}  10040=${lists.inserted}${neg(lists)}  del=${dels.inserted}  kind0=${profiles.inserted}  (${secs}s)")
     }
 }
 
@@ -130,6 +137,7 @@ private suspend fun syncProviderScores(
     store: ObservableEventStore,
     opts: SyncOptions,
     log: (String) -> Unit,
+    progress: SyncProgress,
 ) {
     log("=== phase 2: resolve rank providers from stored 10040s ===")
     var providers =
@@ -144,7 +152,7 @@ private suspend fun syncProviderScores(
     }
 
     log("=== phase 3: kinds 30382 + 5 per provider, from its relay hint (${opts.concurrency} in parallel) ===")
-    val done = AtomicInteger(0)
+    progress.startPhase("providers", providers.size)
     forEachParallel(providers, opts.concurrency) { (service, relay) ->
         // The provider's own deletion requests live on its relay too — a kind:5
         // published only there must still erase the score from Vespa.
@@ -163,12 +171,12 @@ private suspend fun syncProviderScores(
                     stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }
                 }
             }
-            log("[${done.incrementAndGet()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
+            log("[${progress.itemDone()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
         } else {
             // Bounded experiment: incremental slice only, no deletion diff (a
             // capped download must never be read as "the rest was deleted").
             val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents)
-            log("[${done.incrementAndGet()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
+            log("[${progress.itemDone()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         }
     }
 }

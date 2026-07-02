@@ -88,7 +88,12 @@ class SyncService(
         // The projection launches in init; don't sync until its subscription is
         // live, or the first inserts would slip past the (no-replay) change feed.
         projection.awaitSubscribed()
-        runSync(client, store, state, statePath, relays, opts, log)
+        val progress = SyncProgress(log = log)
+        // The pass's status line also shows whether the index is keeping up.
+        progress.gauge {
+            "vespa ok ${SyncProgress.compact(projection.completedWrites())} inflight ${SyncProgress.compact(projection.pendingWrites().toLong())}"
+        }
+        runSync(client, store, state, statePath, relays, opts, progress, log)
     }
 
     /** [runOnce] forever, waiting [interval] between the END of one pass and the next. */
