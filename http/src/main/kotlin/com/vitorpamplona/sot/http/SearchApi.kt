@@ -47,7 +47,10 @@ private const val DEFAULT_HITS = 100
 private const val MAX_HITS = 400
 
 /** Mount `GET /search`. [defaultObserver] ranks results when no `observer` is passed. */
-fun Route.searchApi(vespa: VespaSearch, defaultObserver: String) {
+fun Route.searchApi(
+    vespa: VespaSearch,
+    defaultObserver: String,
+) {
     get("/search") {
         val params = call.request.queryParameters
         val text = CONTROL_CHARS.replace(params["text"].orEmpty(), "").trim()

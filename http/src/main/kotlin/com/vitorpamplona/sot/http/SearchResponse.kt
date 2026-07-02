@@ -43,16 +43,21 @@ data class Result(
 
 /** The full `GET /search` JSON response. */
 @Serializable
-data class SearchResponse(val query: String, val numResults: Int, val results: List<Result>)
+data class SearchResponse(
+    val query: String,
+    val numResults: Int,
+    val results: List<Result>,
+)
 
 /** Project a query-engine [SearchHit] into an API [Result]. */
-internal fun SearchHit.toResult() = Result(
-    pubkey = pubkey,
-    relevance = relevance,
-    trust = trust,
-    name = fields["name"].orEmpty(),
-    displayName = fields["display_name"].orEmpty(),
-    about = fields["about"].orEmpty(),
-    nip05 = fields["nip05"].orEmpty(),
-    picture = fields["picture"].orEmpty(),
-)
+internal fun SearchHit.toResult() =
+    Result(
+        pubkey = pubkey,
+        relevance = relevance,
+        trust = trust,
+        name = fields["name"].orEmpty(),
+        displayName = fields["display_name"].orEmpty(),
+        about = fields["about"].orEmpty(),
+        nip05 = fields["nip05"].orEmpty(),
+        picture = fields["picture"].orEmpty(),
+    )

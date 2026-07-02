@@ -50,29 +50,36 @@ private const val VERSION = "0.1"
  * Identity fields come from config (`.env`); the technical fields describe what
  * this server actually is — a read-only, optional-auth NIP-50 profile search.
  */
-fun relayInfoJson(): String = relayInformation {
-    name = Config.serverName.ifBlank { "sot" }
-    Config.serverDescription.takeIf { it.isNotBlank() }?.let { description = it }
-    Config.serverIcon.takeIf { it.isNotBlank() }?.let { icon = it }
-    Config.serverPubkey.takeIf { it.isNotBlank() }?.let { pubkey = it } // admin contact
-    Config.serverOwner.takeIf { it.isNotBlank() }?.let { self = it } // relay operator/owner
-    software = SOFTWARE
-    version = VERSION
-    supports(1, 11, 42, 50) // NIP-01/11/42/50
-    limitation {
-        authRequired = false // NIP-42 optional (OptionalAuthPolicy)
-        paymentRequired = false
-        restrictedWrites = true // search-only: this relay doesn't accept event writes
-        defaultLimit = 50 // SearchEventSource: f.limit ?: 50
-        maxLimit = 400 // SearchEventSource: coerceIn(1, 400)
-    }
-}.toJson()
+fun relayInfoJson(): String =
+    relayInformation {
+        name = Config.serverName.ifBlank { "sot" }
+        Config.serverDescription.takeIf { it.isNotBlank() }?.let { description = it }
+        Config.serverIcon.takeIf { it.isNotBlank() }?.let { icon = it }
+        Config.serverPubkey.takeIf { it.isNotBlank() }?.let { pubkey = it } // admin contact
+        Config.serverOwner.takeIf { it.isNotBlank() }?.let { self = it } // relay operator/owner
+        software = SOFTWARE
+        version = VERSION
+        supports(1, 11, 42, 50) // NIP-01/11/42/50
+        limitation {
+            authRequired = false // NIP-42 optional (OptionalAuthPolicy)
+            paymentRequired = false
+            restrictedWrites = true // search-only: this relay doesn't accept event writes
+            defaultLimit = 50 // SearchEventSource: f.limit ?: 50
+            maxLimit = 400 // SearchEventSource: coerceIn(1, 400)
+        }
+    }.toJson()
 
 /** Build the relay engine from the search core + local store; [relayUrl] is the public ws url for NIP-42. */
-fun buildRelayServer(vespa: VespaSearch, store: IEventStore, defaultObserver: String, relayUrl: NormalizedRelayUrl): EventSourceServer = EventSourceServer(
-    source = SearchEventSource(vespa, store, defaultObserver),
-    policyBuilder = { OptionalAuthPolicy(relayUrl) },
-)
+fun buildRelayServer(
+    vespa: VespaSearch,
+    store: IEventStore,
+    defaultObserver: String,
+    relayUrl: NormalizedRelayUrl,
+): EventSourceServer =
+    EventSourceServer(
+        source = SearchEventSource(vespa, store, defaultObserver),
+        policyBuilder = { OptionalAuthPolicy(relayUrl) },
+    )
 
 /** Mount the NIP-50 relay websocket on `/`. */
 fun Route.nostrRelay(server: EventSourceServer) {

@@ -93,14 +93,15 @@ object Config {
     val serverOwner get() = env("SERVER_OWNER")
 
     /** A commented `.env` seed for a fresh setup (used by `sot init`). */
-    fun sampleDotenv(): String = buildString {
-        appendLine("# sot configuration. Picked up by the CLI and the http/relay services.")
-        appendLine("# A real environment variable of the same name overrides any value here.")
-        appendLine()
-        for ((k, v, doc) in KEYS) {
-            appendLine("# $doc")
-            appendLine("$k=$v")
+    fun sampleDotenv(): String =
+        buildString {
+            appendLine("# sot configuration. Picked up by the CLI and the http/relay services.")
+            appendLine("# A real environment variable of the same name overrides any value here.")
             appendLine()
+            for ((k, v, doc) in KEYS) {
+                appendLine("# $doc")
+                appendLine("$k=$v")
+                appendLine()
+            }
         }
-    }
 }

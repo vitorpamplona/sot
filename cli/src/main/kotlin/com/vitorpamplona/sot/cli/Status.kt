@@ -38,7 +38,10 @@ internal fun status(args: List<String>) {
     val vespa = flag(args, "--vespa", Config.vespaUrl)
     val server = flag(args, "--server", Config.serverUrl)
 
-    fun line(name: String, ok: Boolean) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
+    fun line(
+        name: String,
+        ok: Boolean,
+    ) = println("  ${if (ok) "[ UP ]" else "[DOWN]"}  $name")
 
     println("component status:")
     val docs = vespaDocCount(vespa)
@@ -67,7 +70,10 @@ private fun vespaDocCount(vespa: String): Int? {
  * docs are also created for 30382 score subjects, so `vespa docs >= kind:0` is
  * expected; `vespa docs < kind:0` means projection is lagging or failing.
  */
-private fun storeReport(dbPath: String, vespaDocs: Int?) {
+private fun storeReport(
+    dbPath: String,
+    vespaDocs: Int?,
+) {
     if (!File(dbPath).exists()) {
         println("  store: $dbPath (missing)")
         return

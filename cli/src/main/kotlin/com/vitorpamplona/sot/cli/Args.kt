@@ -35,28 +35,42 @@ import com.vitorpamplona.sot.config.Config
 internal val DEFAULT_OBSERVER: String get() = Config.defaultObserver
 
 /** Value of a `--name <value>` flag, or [default] if absent. */
-internal fun flag(args: List<String>, name: String, default: String): String {
+internal fun flag(
+    args: List<String>,
+    name: String,
+    default: String,
+): String {
     val i = args.indexOf(name)
     return if (i >= 0 && i + 1 < args.size) args[i + 1] else default
 }
 
 /** Whether a boolean `--name` flag is present. */
-internal fun has(args: List<String>, name: String) = args.contains(name)
+internal fun has(
+    args: List<String>,
+    name: String,
+) = args.contains(name)
 
 /** Non-flag args, skipping each valued flag's value so it's never mistaken for a positional. */
-internal fun positionalArgs(args: List<String>, valuedFlags: Set<String>): List<String> {
+internal fun positionalArgs(
+    args: List<String>,
+    valuedFlags: Set<String>,
+): List<String> {
     val out = ArrayList<String>()
     var i = 0
     while (i < args.size) {
         val a = args[i]
         when {
             // a valued flag: skip the flag AND its value
-            a in valuedFlags -> i++
+            a in valuedFlags -> {
+                i++
+            }
 
             // a bare/boolean flag: skip just the flag
             a.startsWith("--") -> {}
 
-            else -> out.add(a)
+            else -> {
+                out.add(a)
+            }
         }
         i++
     }

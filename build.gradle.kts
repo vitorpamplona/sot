@@ -20,10 +20,7 @@ allprojects {
         spotless {
             kotlin {
                 target("src/**/*.kt")
-                // We put a file-overview KDoc above the first declaration; that rule forbids it.
-                ktlint(ktlintVersion).editorConfigOverride(
-                    mapOf("ktlint_standard_no-consecutive-comments" to "disabled"),
-                )
+                ktlint(ktlintVersion)
                 licenseHeaderFile(
                     rootProject.file(".spotless/copyright.kt"),
                     "@file:|package|import|class|object|sealed|open|interface|abstract ",

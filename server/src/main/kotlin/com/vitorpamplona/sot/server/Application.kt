@@ -51,7 +51,11 @@ import io.ktor.server.websocket.WebSockets
  * API, no CORS is needed for it (CORS stays only for other-origin/file:// callers).
  */
 private val WEB_UI: String? by lazy {
-    Thread.currentThread().contextClassLoader?.getResource("index.html")?.readText()
+    Thread
+        .currentThread()
+        .contextClassLoader
+        ?.getResource("index.html")
+        ?.readText()
 }
 
 fun main() {
