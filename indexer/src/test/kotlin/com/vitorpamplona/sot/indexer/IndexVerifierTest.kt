@@ -27,6 +27,7 @@ import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.vespa.MockVespa
 import com.vitorpamplona.sot.vespa.VespaClient
 import kotlinx.coroutines.runBlocking
 import java.io.File

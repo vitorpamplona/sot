@@ -10,8 +10,16 @@ dependencies {
     implementation(libs.kotlinx.coroutines)
     implementation(libs.ktor.server.core) // Route DSL only; the engine + plugins live in :server
     implementation(libs.kotlinx.serialization.json) // @Serializable response models
+    testImplementation(kotlin("test"))
+    testImplementation(libs.ktor.server.test.host)
+    testImplementation(libs.ktor.server.content.negotiation)
+    testImplementation(libs.ktor.serialization.json)
 }
 
 kotlin {
     jvmToolchain(21)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

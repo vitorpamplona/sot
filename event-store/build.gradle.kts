@@ -7,8 +7,14 @@ dependencies {
     implementation(libs.quartz) // EventStore / ObservableEventStore / DefaultIndexingStrategy
     // Quartz's SQLiteEventStore uses the bundled AndroidX SQLite driver at runtime.
     implementation(libs.androidx.sqlite.bundled)
+    testImplementation(kotlin("test"))
+    testImplementation(libs.kotlinx.coroutines)
 }
 
 kotlin {
     jvmToolchain(21)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

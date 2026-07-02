@@ -12,9 +12,8 @@ dependencies {
     testImplementation(kotlin("test"))
     // The deletion-flow test runs a real (SQLite) event store through the projection.
     testImplementation(libs.androidx.sqlite.bundled)
-    // MockVespa needs clear-text HTTP/2 (h2c) for the feed client; JDK's HttpServer can't.
-    testImplementation(libs.jetty.server)
-    testImplementation(libs.jetty.http2.server)
+    // MockVespa lives with the API it mocks.
+    testImplementation(testFixtures(project(":vespa")))
 }
 
 kotlin {

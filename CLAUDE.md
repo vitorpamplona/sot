@@ -70,7 +70,9 @@ URL redirects to GitHub releases, which some networks block).
 
 ```bash
 ./gradlew build                 # compile + test + spotlessCheck (the gate)
-./gradlew test                  # unit tests (ProfileQueryTest lives in :vespa)
+./gradlew test                  # unit tests: every module has some; the flow tests
+                                # (:indexer, :vespa) run against MockVespa — the
+                                # HTTP/1.1 + h2c mock in :vespa's testFixtures
 ./gradlew spotlessApply         # auto-format + add license headers (run before committing)
 ./gradlew spotlessCheck         # verify formatting (part of `check`/`build`)
 

@@ -62,7 +62,8 @@ object Config {
 
     private val dotenv: Map<String, String> = loadDotenv(System.getenv("SOT_ENV") ?: ".env")
 
-    private fun loadDotenv(path: String): Map<String, String> {
+    /** Parse a `.env` file: KEY=value lines, `export` prefixes and quotes stripped, comments skipped. */
+    internal fun loadDotenv(path: String): Map<String, String> {
         val f = File(path)
         if (!f.exists()) return emptyMap()
         return f

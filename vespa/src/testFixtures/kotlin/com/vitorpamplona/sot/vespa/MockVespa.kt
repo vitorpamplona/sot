@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.indexer
+package com.vitorpamplona.sot.vespa
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
@@ -48,7 +48,7 @@ import java.util.concurrent.ConcurrentHashMap
  * feed client writes over h2c (it refuses HTTP/1.1) while the query side and
  * the feed client's `?dryRun=true` handshake stay plain.
  */
-internal class MockVespa {
+class MockVespa {
     val docs = ConcurrentHashMap<String, MutableMap<String, String>>()
     val cells = ConcurrentHashMap<String, MutableMap<String, Int>>()
     val scoreIds = ConcurrentHashMap<String, MutableMap<String, String>>()

@@ -19,6 +19,7 @@ dependencies {
     implementation(libs.ktor.server.content.negotiation)
     implementation(libs.ktor.server.cors)
     implementation(libs.ktor.serialization.json)
+    testImplementation(kotlin("test"))
 }
 
 kotlin {
@@ -31,4 +32,8 @@ sourceSets["main"].resources.srcDir(rootProject.file("web"))
 application {
     applicationName = "sot"
     mainClass.set("com.vitorpamplona.sot.cli.MainKt")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
