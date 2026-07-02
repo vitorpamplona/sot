@@ -30,6 +30,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.utils.Hex
 import com.vitorpamplona.sot.vespa.Profile
 import com.vitorpamplona.sot.vespa.VespaClient
 import kotlinx.coroutines.delay
@@ -235,6 +236,9 @@ class VespaProjection(
      * score cell if it was a kind:30382.
      */
     private fun deleteByEventId(eventId: String) {
+        // Deletion tags are attacker-controlled text; only a real 64-hex event id
+        // may reach the engine's YQL lookups.
+        if (!Hex.isHex64(eventId)) return
         submit("del-by-id") {
             vespa.findProfileByEventId(eventId)?.let { pubkey ->
                 vespa.blankProfile(pubkey)

@@ -108,16 +108,22 @@ class VespaClient(
         putJsonObject("score_event_ids{$observer}") { put("remove", 0) }
     }
 
-    /** The pubkey whose profile fields were written from [eventId], or null if none. */
+    /**
+     * The pubkey whose profile fields were written from [eventId], or null if none.
+     * [eventId] must be a validated hex id (see [requireHexId]) — it is embedded in YQL.
+     */
     fun findProfileByEventId(eventId: String): String? {
-        if (!HEX_ID.matches(eventId)) return null
+        requireHexId(eventId)
         return searchHits("""select pubkey from doc where event_id contains "$eventId"""")
             .firstNotNullOfOrNull { it.stringField("pubkey") }
     }
 
-    /** The (subject, observer) whose score cell was written from [eventId], or null if none. */
+    /**
+     * The (subject, observer) whose score cell was written from [eventId], or null if none.
+     * [eventId] must be a validated hex id (see [requireHexId]) — it is embedded in YQL.
+     */
     fun findScoreByEventId(eventId: String): Pair<String, String>? {
-        if (!HEX_ID.matches(eventId)) return null
+        requireHexId(eventId)
         val yql = """select pubkey, score_event_ids from doc where score_event_ids contains sameElement(value contains "$eventId")"""
         for (hit in searchHits(yql)) {
             val subject = hit.stringField("pubkey") ?: continue
@@ -207,9 +213,14 @@ class VespaClient(
         }
     }
 
-    private companion object {
-        // Event ids are 64-char lowercase hex; anything else is refused so a hostile
-        // kind:5 tag can't smuggle YQL into the lookup queries.
-        val HEX_ID = Regex("[0-9a-f]{64}")
+    /**
+     * Callers validate ids with real hex functions (the projection uses Quartz's
+     * `Hex.isHex64`); this module stays Nostr-lib-free, so it only hard-fails on
+     * the characters that could actually break out of the YQL string.
+     */
+    private fun requireHexId(eventId: String) {
+        require(eventId.length == 64 && eventId.all { it.isLetterOrDigit() }) {
+            "not a hex event id: ${eventId.take(80)}"
+        }
     }
 }
