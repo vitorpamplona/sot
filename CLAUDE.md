@@ -24,13 +24,15 @@ event-store   The ONE place that opens the shared Quartz EventStore (com.vitorpa
 vespa         ALL Vespa access, Nostr-agnostic (com.vitorpamplona.sot.vespa):
                 app/ — the Vespa application package (schema + rank profiles).
                 read  — VespaSearch + ProfileQuery (YQL recall; ranking is in the schema)
-                write — VespaClient + Profile (+ Profile.indexFields())
-              Depends on: kotlinx-serialization only.
+                write — VespaClient + Profile (+ Profile.indexFields()). Writes are
+                ASYNC via Vespa's official feed client (HTTP/2 multiplexed, per-doc
+                ordering, retries built in) and return futures; reads are plain queries.
+              Depends on: kotlinx-serialization, vespa-feed-client.
 indexer       Nostr -> Quartz EventStore (com.vitorpamplona.sot.indexer):
                 RelaySyncer (NIP-77 negentropy + paged fallback), Discovery (NIP-65
                 outbox crawl), SyncPipeline.runSync(), SyncState (cursors), Sockets.
                 PLUS VespaProjection — maps store events -> Profile/score and calls VespaClient.
-                PLUS SyncService — owns client/writers/projection; runOnce()/runForever().
+                PLUS SyncService — owns NostrClient/VespaClient/projection; runOnce()/runForever().
                 Consumes an event store; never creates one (the composition root does).
               Depends on: :vespa, quartz, coroutines, okhttp.
 http          Library: the GET /search JSON route (Route.searchApi). -> :vespa

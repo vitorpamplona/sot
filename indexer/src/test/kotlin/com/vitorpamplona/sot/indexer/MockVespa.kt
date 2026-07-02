@@ -20,20 +20,33 @@
  */
 package com.vitorpamplona.sot.indexer
 
-import com.sun.net.httpserver.HttpServer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.net.InetSocketAddress
+import org.eclipse.jetty.http.HttpHeader
+import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory
+import org.eclipse.jetty.io.Content
+import org.eclipse.jetty.server.Handler
+import org.eclipse.jetty.server.HttpConfiguration
+import org.eclipse.jetty.server.HttpConnectionFactory
+import org.eclipse.jetty.server.Request
+import org.eclipse.jetty.server.Response
+import org.eclipse.jetty.server.Server
+import org.eclipse.jetty.server.ServerConnector
+import org.eclipse.jetty.util.Callback
 import java.net.URLDecoder
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The slice of Vespa the engine talks to: partial-update PUTs on /document/v1
  * (assign fields, quality_scores tensor add/remove, score_event_ids{key}
- * assign/remove) and the two provenance lookups on /search/.
+ * assign/remove) and the provenance lookups on /search/.
+ *
+ * Runs on Jetty with HTTP/1.1 AND clear-text HTTP/2 on the same port: the
+ * feed client writes over h2c (it refuses HTTP/1.1) while the query side and
+ * the feed client's `?dryRun=true` handshake stay plain.
  */
 internal class MockVespa {
     val docs = ConcurrentHashMap<String, MutableMap<String, String>>()
@@ -41,26 +54,46 @@ internal class MockVespa {
     val scoreIds = ConcurrentHashMap<String, MutableMap<String, String>>()
 
     private val server =
-        HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
-            createContext("/") { ex ->
-                val body =
-                    try {
-                        handle(ex.requestMethod, ex.requestURI.path, ex.requestURI.rawQuery, ex.requestBody.readBytes().decodeToString())
-                    } catch (e: Exception) {
-                        ex.sendResponseHeaders(500, 0)
-                        ex.responseBody.close()
-                        return@createContext
+        Server().apply {
+            val config = HttpConfiguration()
+            addConnector(
+                ServerConnector(this, HttpConnectionFactory(config), HTTP2CServerConnectionFactory(config)).apply {
+                    host = "127.0.0.1"
+                    port = 0
+                },
+            )
+            handler =
+                object : Handler.Abstract() {
+                    override fun handle(
+                        request: Request,
+                        response: Response,
+                        callback: Callback,
+                    ): Boolean {
+                        val body =
+                            try {
+                                val reqBody =
+                                    Content.Source
+                                        .asInputStream(request)
+                                        .readBytes()
+                                        .decodeToString()
+                                handle(request.method, request.httpURI.path, request.httpURI.query, reqBody)
+                            } catch (e: Exception) {
+                                response.status = 500
+                                callback.succeeded()
+                                return true
+                            }
+                        response.status = 200
+                        response.headers.put(HttpHeader.CONTENT_TYPE, "application/json")
+                        Content.Sink.write(response, true, body, callback)
+                        return true
                     }
-                val bytes = body.encodeToByteArray()
-                ex.sendResponseHeaders(200, bytes.size.toLong())
-                ex.responseBody.use { it.write(bytes) }
-            }
+                }
             start()
         }
 
-    val port: Int get() = server.address.port
+    val port: Int get() = (server.connectors[0] as ServerConnector).localPort
 
-    fun stop() = server.stop(0)
+    fun stop() = server.stop()
 
     private fun handle(
         method: String,
@@ -68,6 +101,8 @@ internal class MockVespa {
         rawQuery: String?,
         body: String,
     ): String {
+        // The feed client opens with a no-op handshake request (?dryRun=true).
+        if (rawQuery.orEmpty().contains("dryRun=true")) return "{}"
         if (method == "PUT" && path.startsWith("/document/v1/doc/doc/docid/")) {
             applyUpdate(path.substringAfterLast("/"), body)
             return """{"id":"$path"}"""

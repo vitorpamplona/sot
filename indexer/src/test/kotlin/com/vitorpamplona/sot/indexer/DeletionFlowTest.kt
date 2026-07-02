@@ -37,7 +37,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.io.File
-import java.util.concurrent.Executors
 import kotlin.test.Test
 import kotlin.test.fail
 
@@ -99,8 +98,8 @@ class DeletionFlowTest {
                     it.deleteOnExit()
                 }
             val store = ObservableEventStore(EventStore(db.path, RelayUrlNormalizer.normalize("ws://localhost:7777"), DefaultIndexingStrategy(indexFullTextSearch = false)))
-            val writers = Executors.newFixedThreadPool(2)
-            val projection = VespaProjection(store, VespaClient("http://127.0.0.1:${mock.port}"), writers) { }
+            val vespa = VespaClient("http://127.0.0.1:${mock.port}")
+            val projection = VespaProjection(store, vespa) { }
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             scope.launch { projection.run() }
 
@@ -154,7 +153,7 @@ class DeletionFlowTest {
                 }
             } finally {
                 scope.cancel()
-                writers.shutdown()
+                vespa.close()
                 store.close()
                 mock.stop()
             }

@@ -33,14 +33,11 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
 
 /**
  * The one composition of the indexing side: owns the Nostr client, the Vespa
- * write pool, and the store->Vespa projection, and runs [runSync] passes over
+ * feed client, and the store->Vespa projection, and runs [runSync] passes over
  * them. It CONSUMES an event store — it never creates one; the composition root
  * does, and may share it with other components (the NIP-50 relay in `sot serve`).
  *
@@ -72,9 +69,10 @@ class SyncService(
     private val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))
     private val state = SyncState.load(statePath)
 
-    // Vespa writes run on a small pool so they don't stall the relay socket readers.
-    private val writers = Executors.newFixedThreadPool(16)
-    private val projection = VespaProjection(store, VespaClient(vespaUrl), writers, log)
+    // Async writes: the feed client multiplexes them over HTTP/2 and owns
+    // concurrency, retries, and throttling — no write pool on our side.
+    private val vespa = VespaClient(vespaUrl)
+    private val projection = VespaProjection(store, vespa, log)
 
     // The projection runs in its OWN supervised scope for the service's whole
     // life: a projection error can't cancel a sync pass, and no change slips
@@ -104,16 +102,10 @@ class SyncService(
     }
 
     /**
-     * Let the projection catch up with the change feed, then flush the pending
-     * Vespa writes. Call once, at end of life — the write pool doesn't restart.
+     * Let the projection catch up with the change feed and its in-flight Vespa
+     * writes land. Call at end of life, before [close].
      */
-    suspend fun drain(maxWait: Duration) {
-        projection.awaitIdle(maxMs = maxWait.inWholeMilliseconds)
-        withContext(Dispatchers.IO) {
-            writers.shutdown()
-            writers.awaitTermination(maxWait.inWholeMilliseconds, TimeUnit.MILLISECONDS)
-        }
-    }
+    suspend fun drain(maxWait: Duration) = projection.awaitIdle(maxMs = maxWait.inWholeMilliseconds)
 
     fun summary(): String =
         "profiles=${projection.profiles.get()} scores=${projection.scores.get()} " +
@@ -121,7 +113,7 @@ class SyncService(
 
     override fun close() {
         projScope.cancel()
-        writers.shutdownNow()
+        vespa.close()
         client.close()
     }
 }

@@ -20,6 +20,10 @@
  */
 package com.vitorpamplona.sot.vespa
 
+import ai.vespa.feed.client.DocumentId
+import ai.vespa.feed.client.FeedClient
+import ai.vespa.feed.client.FeedClientBuilder
+import ai.vespa.feed.client.OperationParameters
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -40,12 +44,18 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 
 /**
  * Writes ready-made objects to the local Vespa document API — the sink the
  * indexer's projection calls. Knows the Vespa schema, not Nostr. Every write is
- * a partial update (`create=true`): a `PUT .../docid/<id>` with a `{"fields":{…}}`
- * body — profile fields for a [Profile], or a `quality_scores` tensor op for a score.
+ * a partial update (`create=true`) with a `{"fields":{…}}` body — profile fields
+ * for a [Profile], or a `quality_scores` tensor op for a score.
+ *
+ * Writes go through Vespa's async feed client — many operations multiplexed
+ * over few HTTP/2 connections, with per-document ordering, retries, and
+ * throttling built in — so each method returns a future the caller can count
+ * or await; reads stay simple blocking queries. [close] drains what's in flight.
  *
  * Each write also records the id of the source event (`event_id` for the profile,
  * `score_event_ids{observer}` for a score cell), and [findProfileByEventId] /
@@ -54,24 +64,34 @@ import java.time.Duration
  */
 class VespaClient(
     private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
-) {
+) : AutoCloseable {
+    private val feed: FeedClient =
+        FeedClientBuilder
+            .create(URI.create(baseUrl))
+            .setRetryStrategy(
+                object : FeedClient.RetryStrategy {
+                    // Bounded: a dead Vespa should surface as failed futures, not hang a drain.
+                    override fun retries() = 5
+                },
+            ).build()
+
     private val http =
         HttpClient
             .newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
-            // Vespa is local; never route document writes through the egress proxy.
+            // Vespa is local; never route queries through the egress proxy.
             .proxy(java.net.ProxySelector.of(null))
             .build()
 
     /** Partial-update the standard profile fields, creating the doc if absent. */
-    fun upsertProfile(p: Profile) =
+    fun upsertProfile(p: Profile): CompletableFuture<Unit> =
         putFields(p.pubkey) {
             put("pubkey", assign(p.pubkey))
             for ((field, value) in p.indexFields()) put(field, assign(value))
         }
 
     /** Blank the profile fields (deletion of the kind:0); keep the doc so its scores survive. */
-    fun blankProfile(pubkey: String) = upsertProfile(Profile(pubkey))
+    fun blankProfile(pubkey: String): CompletableFuture<Unit> = upsertProfile(Profile(pubkey))
 
     /** Set quality_scores{observer}=rank on the subject's doc, remembering the source [eventId]. */
     fun upsertScore(
@@ -79,34 +99,36 @@ class VespaClient(
         observer: String,
         rank: Int,
         eventId: String,
-    ) = putFields(subject) {
-        putJsonObject("quality_scores") {
-            putJsonObject("add") {
-                putJsonArray("cells") {
-                    addJsonObject {
-                        putJsonObject("address") { put("user", observer) }
-                        put("value", rank)
+    ): CompletableFuture<Unit> =
+        putFields(subject) {
+            putJsonObject("quality_scores") {
+                putJsonObject("add") {
+                    putJsonArray("cells") {
+                        addJsonObject {
+                            putJsonObject("address") { put("user", observer) }
+                            put("value", rank)
+                        }
                     }
                 }
             }
+            putJsonObject("score_event_ids{$observer}") { put("assign", eventId) }
         }
-        putJsonObject("score_event_ids{$observer}") { put("assign", eventId) }
-    }
 
     /** Remove one observer's score cell (and its source-id entry) from a subject's doc. */
     fun removeScore(
         subject: String,
         observer: String,
-    ) = putFields(subject) {
-        putJsonObject("quality_scores") {
-            putJsonObject("remove") {
-                putJsonArray("addresses") {
-                    addJsonObject { put("user", observer) }
+    ): CompletableFuture<Unit> =
+        putFields(subject) {
+            putJsonObject("quality_scores") {
+                putJsonObject("remove") {
+                    putJsonArray("addresses") {
+                        addJsonObject { put("user", observer) }
+                    }
                 }
             }
+            putJsonObject("score_event_ids{$observer}") { put("remove", 0) }
         }
-        putJsonObject("score_event_ids{$observer}") { put("remove", 0) }
-    }
 
     /**
      * The pubkey whose profile fields were written from [eventId], or null if none.
@@ -142,14 +164,17 @@ class VespaClient(
         return null
     }
 
-    /** PUT a partial `{"fields": {…}}` update to [docId]'s doc, creating it if absent. */
+    /** Feed a partial `{"fields": {…}}` update to [docId]'s doc, creating it if absent. */
     private fun putFields(
         docId: String,
         fields: JsonObjectBuilder.() -> Unit,
-    ) = send(
-        "$baseUrl/document/v1/doc/doc/docid/$docId?create=true",
-        buildJsonObject { putJsonObject("fields", fields) }.toString(),
-    )
+    ): CompletableFuture<Unit> =
+        feed
+            .update(
+                DocumentId.of("doc", "doc", docId),
+                buildJsonObject { putJsonObject("fields", fields) }.toString(),
+                OperationParameters.empty().createIfNonExistent(true),
+            ).thenApply { }
 
     private fun assign(value: String?): JsonObject = buildJsonObject { put("assign", value ?: "") }
 
@@ -205,20 +230,6 @@ class VespaClient(
             }
         }
 
-    private fun send(
-        url: String,
-        json: String,
-    ) {
-        val req =
-            HttpRequest
-                .newBuilder(URI.create(url))
-                .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(30))
-                .PUT(HttpRequest.BodyPublishers.ofString(json))
-                .build()
-        val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
-        if (resp.statusCode() >= 400) {
-            throw RuntimeException("vespa ${resp.statusCode()}: ${resp.body().take(300)}")
-        }
-    }
+    /** Graceful: waits for in-flight feed operations before closing the connections. */
+    override fun close() = feed.close(true)
 }

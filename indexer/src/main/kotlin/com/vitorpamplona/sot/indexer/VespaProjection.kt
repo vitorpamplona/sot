@@ -33,9 +33,12 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 import com.vitorpamplona.sot.vespa.Profile
 import com.vitorpamplona.sot.vespa.VespaClient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.future.await
+import kotlinx.coroutines.withContext
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -57,14 +60,16 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - kind 62 (RequestToVanish)      -> blank the author's profile when the request
  *                                       covers this store's relay identity
  *
- * Map updates happen synchronously on the change-feed thread; the actual Vespa
- * HTTP writes are submitted to [writers] so they don't stall the feed. Sync
- * 10040s before 30382s so the mapping is populated first.
+ * Writes are ASYNC: [VespaClient]'s feed client multiplexes them over HTTP/2
+ * and orders them per document, so the change feed only dispatches — it never
+ * waits on Vespa. [pending] counts the in-flight futures so [awaitIdle] can
+ * drain them. Deletions run inline, in feed order, after the inserts that
+ * preceded them. Sync 10040s before 30382s so the observer mapping is
+ * populated first.
  */
 class VespaProjection(
     private val store: ObservableEventStore,
     private val vespa: VespaClient,
-    private val writers: ExecutorService,
     private val log: (String) -> Unit,
 ) {
     // service key (30382 signer) -> observer pubkey (10040 author)
@@ -76,11 +81,12 @@ class VespaProjection(
     val unresolved = AtomicInteger(0)
     private val processed = AtomicInteger(0)
     private val failures = AtomicInteger(0)
+    private val pending = AtomicInteger(0)
 
     /**
-     * Suspend until the change feed has been idle — nothing newly processed for
-     * [idleMs] — or [maxMs] elapses. Call after the sync finishes to let the
-     * projection catch up before the writers are drained.
+     * Suspend until the projection is idle — nothing newly processed for
+     * [idleMs] AND no Vespa write still in flight — or [maxMs] elapses. Call
+     * after the sync finishes to let the index catch up before shutdown.
      */
     suspend fun awaitIdle(
         idleMs: Long = 3000,
@@ -93,7 +99,7 @@ class VespaProjection(
             delay(300)
             total += 300
             val p = processed.get()
-            if (p == last) {
+            if (p == last && pending.get() == 0) {
                 stable += 300
             } else {
                 last = p
@@ -130,10 +136,7 @@ class VespaProjection(
         when (ev) {
             is MetadataEvent -> {
                 val profile = ev.toProfile() ?: return
-                submit("profile") {
-                    vespa.upsertProfile(profile)
-                    profiles.incrementAndGet()
-                }
+                dispatch("profile", profiles) { vespa.upsertProfile(profile) }
             }
 
             is TrustProviderListEvent -> {
@@ -150,17 +153,11 @@ class VespaProjection(
                 if (subject == null) return
                 val rank = ev.rank()
                 if (rank != null) {
-                    submit("score") {
-                        vespa.upsertScore(subject, observer, rank, ev.id)
-                        scores.incrementAndGet()
-                    }
+                    dispatch("score", scores) { vespa.upsertScore(subject, observer, rank, ev.id) }
                 } else {
                     // 30382 is addressable: the newest version for this subject is the
                     // whole truth. No rank tag = the provider retracted the score.
-                    submit("retract-score") {
-                        vespa.removeScore(subject, observer)
-                        deletions.incrementAndGet()
-                    }
+                    dispatch("retract-score", deletions) { vespa.removeScore(subject, observer) }
                 }
             }
 
@@ -193,20 +190,14 @@ class VespaProjection(
             val author = parts.getOrNull(1) ?: continue
             when (kind) {
                 MetadataEvent.KIND -> {
-                    submit("del-profile") {
-                        vespa.blankProfile(author)
-                        deletions.incrementAndGet()
-                    }
+                    dispatch("del-profile", deletions) { vespa.blankProfile(author) }
                 }
 
                 ContactCardEvent.KIND -> {
                     val subject = parts.getOrNull(2) ?: continue
                     // The 30382 author is a *service key*; the score cell is keyed by its observer.
                     val observer = serviceToObserver[author] ?: resolveObserver(author) ?: continue
-                    submit("del-score") {
-                        vespa.removeScore(subject, observer)
-                        deletions.incrementAndGet()
-                    }
+                    dispatch("del-score", deletions) { vespa.removeScore(subject, observer) }
                 }
             }
         }
@@ -232,26 +223,24 @@ class VespaProjection(
      * subjects at a time until the sweep comes back empty.
      */
     private suspend fun eraseAuthor(author: String) {
-        submit("vanish") {
-            vespa.blankProfile(author)
-            deletions.incrementAndGet()
-        }
+        dispatch("vanish", deletions) { vespa.blankProfile(author) }
         val delegatedObserver = serviceToObserver[author] ?: resolveObserver(author)
-        for (observer in setOfNotNull(author, delegatedObserver)) {
-            submit("vanish-scores") { sweepScores(observer) }
-        }
+        for (observer in setOfNotNull(author, delegatedObserver)) sweepScores(observer)
     }
 
-    /** Remove every score cell keyed by [observer], page by page. Runs on a writer thread. */
-    private fun sweepScores(observer: String) {
+    /**
+     * Remove every score cell keyed by [observer], page by page. Each page's
+     * removals are awaited before re-querying — otherwise the next page would
+     * just find the same cells again.
+     */
+    private suspend fun sweepScores(observer: String) {
         var rounds = 0
         while (rounds++ < MAX_SWEEP_ROUNDS) {
-            val subjects = vespa.findSubjectsByObserver(observer)
+            val subjects = query { vespa.findSubjectsByObserver(observer) }
             if (subjects.isEmpty()) return
-            for (subject in subjects) {
-                vespa.removeScore(subject, observer)
-                deletions.incrementAndGet()
-            }
+            subjects
+                .mapNotNull { subject -> dispatch("vanish-scores", deletions) { vespa.removeScore(subject, observer) } }
+                .forEach { runCatching { it.await() } }
         }
         log("  ! vanish-scores: sweep for ${observer.take(12)} still finding cells after $MAX_SWEEP_ROUNDS pages")
     }
@@ -262,19 +251,15 @@ class VespaProjection(
      * no longer matches the doc's event_id and becomes a no-op), or one observer's
      * score cell if it was a kind:30382.
      */
-    private fun deleteByEventId(eventId: String) {
+    private suspend fun deleteByEventId(eventId: String) {
         // Deletion tags are attacker-controlled text; only a real 64-hex event id
         // may reach the engine's YQL lookups.
         if (!Hex.isHex64(eventId)) return
-        submit("del-by-id") {
-            vespa.findProfileByEventId(eventId)?.let { pubkey ->
-                vespa.blankProfile(pubkey)
-                deletions.incrementAndGet()
-            }
-            vespa.findScoreByEventId(eventId)?.let { (subject, observer) ->
-                vespa.removeScore(subject, observer)
-                deletions.incrementAndGet()
-            }
+        query { vespa.findProfileByEventId(eventId) }?.let { pubkey ->
+            dispatch("del-profile", deletions) { vespa.blankProfile(pubkey) }
+        }
+        query { vespa.findScoreByEventId(eventId) }?.let { (subject, observer) ->
+            dispatch("del-score", deletions) { vespa.removeScore(subject, observer) }
         }
     }
 
@@ -292,18 +277,39 @@ class VespaProjection(
         return serviceToObserver[serviceKey]
     }
 
-    private fun submit(
+    /**
+     * Start one async Vespa write: count it in [pending] while it flies, bump
+     * [counter] when it lands, log the first few failures. Failed writes are
+     * dropped — SQLite stays the source of truth, and the next full pass (or
+     * the anti-entropy verify) re-feeds whatever the index missed.
+     */
+    private fun dispatch(
         what: String,
-        block: () -> Unit,
-    ) {
-        writers.submit {
+        counter: AtomicInteger,
+        op: () -> CompletableFuture<Unit>,
+    ): CompletableFuture<Unit>? {
+        pending.incrementAndGet()
+        val future =
             try {
-                block()
+                op()
             } catch (e: Exception) {
+                pending.decrementAndGet()
                 if (failures.incrementAndGet() <= 5) log("  ! $what write failed: ${e.message}")
+                return null
+            }
+        future.whenComplete { _, e ->
+            pending.decrementAndGet()
+            if (e == null) {
+                counter.incrementAndGet()
+            } else if (failures.incrementAndGet() <= 5) {
+                log("  ! $what write failed: ${e.message}")
             }
         }
+        return future
     }
+
+    /** Blocking Vespa lookups (the provenance queries) run off the change-feed thread. */
+    private suspend fun <T> query(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
     private companion object {
         // 400 cells per page; 2500 pages = a million cells before we give up loudly.
