@@ -45,15 +45,22 @@ import kotlinx.coroutines.sync.withPermit
 data class SyncOptions(
     /** Per-kind ingest cap for bounded experiments; 0 (the default) = full sync. */
     val maxEvents: Int = 0,
-    val fetchTimeoutMs: Long = 30_000,
+    /** Idle timeout: give up on a relay only after this long with NOTHING received. */
+    val fetchTimeoutMs: Long = 10_000,
     /** Cap on how many rank providers phase 3 visits, 0 = all. */
     val maxProviders: Int = 0,
     /** Expand the relay set with a bounded NIP-65 outbox crawl first (on by default). */
     val discover: Boolean = true,
     val maxRounds: Int = 3,
     val maxRelays: Int = 200,
-    /** How many relays sync at the same time (store writes stay serialized). */
-    val concurrency: Int = 8,
+    /**
+     * How many relays sync at the same time (store writes stay serialized).
+     * Sync is network/idle-bound — a relay spends most of a sync waiting on the
+     * wire or idling toward its timeout — so this runs well above CPU count.
+     * The shared OkHttp dispatcher is lifted to 1024 concurrent calls (see
+     * [okHttpWebsocketBuilder]) so it never throttles this fan-out.
+     */
+    val concurrency: Int = 64,
     /**
      * Force the authoritative silent-deletion pass on pages-only provider relays
      * too (full enumeration + diff). Negentropy-capable relays detect silent
@@ -94,7 +101,7 @@ suspend fun runSync(
         try {
             val relays =
                 if (opts.discover) {
-                    Discovery(syncer, store, state, log, progress).crawl(seedRelays, opts.maxRounds, opts.maxRelays, opts.concurrency).toList()
+                    Discovery(syncer, state, log, progress).crawl(seedRelays, opts.maxRounds, opts.maxRelays, opts.concurrency).toList()
                 } else {
                     seedRelays
                 }
@@ -108,9 +115,11 @@ suspend fun runSync(
     }
 
 /**
- * Phase 1: provider lists (10040), deletions (5), and profiles (0) from every
- * relay in the set — [SyncOptions.concurrency] relays at a time, kinds still
- * sequential within a relay (they share its cursors and capability memory).
+ * Phase 1: profiles (0), deletions (5), and provider lists (10040) from every
+ * relay in the set — [SyncOptions.concurrency] relays at a time. All three kinds
+ * ride ONE filter per relay: negentropy reconciles the union in a single session
+ * (and the pages fallback interleaves them), so it's one round-trip per relay
+ * instead of three — each kind used to pay its own connect + idle-timeout tail.
  */
 private suspend fun syncEvents(
     syncer: RelaySyncer,
@@ -119,15 +128,14 @@ private suspend fun syncEvents(
     log: (String) -> Unit,
     progress: SyncProgress,
 ) {
-    log("=== phase 1: 10040 / 5 / 0 from ${relays.size} relay(s), ${opts.concurrency} in parallel ===")
+    log("=== phase 1: kinds 0 / 5 / 10040 from ${relays.size} relay(s), ${opts.concurrency} in parallel ===")
     progress.startPhase("relays", relays.size)
+    val filter = Filter(kinds = listOf(MetadataEvent.KIND, DeletionEvent.KIND, TrustProviderListEvent.KIND))
     forEachParallel(relays, opts.concurrency) { r ->
         val started = System.currentTimeMillis()
-        val lists = syncer.sync(r, Filter(kinds = listOf(TrustProviderListEvent.KIND)), maxEvents = opts.maxEvents)
-        val dels = syncer.sync(r, Filter(kinds = listOf(DeletionEvent.KIND)), maxEvents = opts.maxEvents)
-        val profiles = syncer.sync(r, Filter(kinds = listOf(MetadataEvent.KIND)), maxEvents = opts.maxEvents)
+        val o = syncer.sync(r, filter, maxEvents = opts.maxEvents)
         val secs = (System.currentTimeMillis() - started) / 1000
-        log("[${progress.itemDone()}/${relays.size}] ${r.displayUrl()}  10040=${lists.inserted}${neg(lists)}  del=${dels.inserted}  kind0=${profiles.inserted}  (${secs}s)")
+        log("[${progress.itemDone()}/${relays.size}] ${r.displayUrl()}  0/5/10040=+${o.inserted}/${o.downloaded}${neg(o)}  (${secs}s)")
     }
 }
 
@@ -154,35 +162,52 @@ private suspend fun syncProviderScores(
         log("[sync] capped to ${opts.maxProviders} providers for this run")
     }
 
-    log("=== phase 3: kinds 30382 + 5 per provider, from its relay hint (${opts.concurrency} in parallel) ===")
-    progress.startPhase("providers", providers.size)
-    forEachParallel(providers, opts.concurrency) { (service, relay) ->
-        // The provider's own deletion requests live on its relay too — a kind:5
-        // published only there must still erase the score from Vespa.
-        syncer.sync(relay, Filter(kinds = listOf(DeletionEvent.KIND), authors = listOf(service)), maxEvents = opts.maxEvents)
+    // Providers cluster hard on a few NIP-85 relays (one relay routinely hints
+    // for 100+ services). Syncing each provider as its own (relay, author) REQ
+    // fires hundreds of round-trips — and their idle waits — at a single host,
+    // one author at a time; cross-provider concurrency can't help because they
+    // all contend on that one relay. Group by relay and fold every service on it
+    // into ONE multi-author filter (chunked so a huge set doesn't blow a relay's
+    // filter limit), turning N per-provider round-trips into ~one per relay.
+    val units =
+        providers
+            .groupBy({ it.second }, { it.first })
+            .flatMap { (relay, services) -> services.distinct().chunked(AUTHORS_PER_FILTER).map { relay to it } }
 
-        val scores = Filter(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))
+    log("=== phase 3: kinds 30382 + 5 for ${providers.size} provider(s) across ${units.size} relay batch(es) (${opts.concurrency} in parallel) ===")
+    progress.startPhase("providers", units.size)
+    forEachParallel(units, opts.concurrency) { (relay, services) ->
+        // The providers' own deletion requests live on their relay too — a kind:5
+        // published only there must still erase the score from Vespa.
+        syncer.sync(relay, Filter(kinds = listOf(DeletionEvent.KIND), authors = services), maxEvents = opts.maxEvents)
+
+        val scores = Filter(kinds = listOf(ContactCardEvent.KIND), authors = services)
         if (opts.maxEvents == 0) {
-            // Full sync: reconcile the provider's complete set, so scores the
-            // provider silently removed (no kind:5, no supersession) get deleted
-            // from the store — the change feed then erases them from Vespa.
+            // Full sync: reconcile the batch's complete set, so scores a provider
+            // silently removed (no kind:5, no supersession) get deleted from the
+            // store — the change feed then erases them from Vespa. The diff is over
+            // the whole author batch at once, which is equivalent to per-provider:
+            // an id the relay no longer serves for any of these authors is stale.
             val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores)
             if (r.relayIds != null) {
                 val stale = store.query<ContactCardEvent>(scores).map { it.id }.filterNot { it in r.relayIds }
                 if (stale.isNotEmpty()) {
-                    log("[reconcile] provider ${service.take(12)}: ${stale.size} score event(s) vanished from ${relay.displayUrl()} - deleting")
+                    log("[reconcile] ${services.size} provider(s) @ ${relay.displayUrl()}: ${stale.size} score event(s) vanished - deleting")
                     stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }
                 }
             }
-            log("[${progress.itemDone()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
+            log("[${progress.itemDone()}/${units.size}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
         } else {
             // Bounded experiment: incremental slice only, no deletion diff (a
             // capped download must never be read as "the rest was deleted").
             val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents)
-            log("[${progress.itemDone()}/${providers.size}] provider ${service.take(12)} @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
+            log("[${progress.itemDone()}/${units.size}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         }
     }
 }
+
+/** Relays reject filters with unboundedly many authors; fold a relay's providers into batches this size. */
+private const val AUTHORS_PER_FILTER = 500
 
 /** Run [body] for every item, [concurrency] at a time; one item's failure is logged by [body]'s caller, not fatal to the rest. */
 internal suspend fun <T> forEachParallel(

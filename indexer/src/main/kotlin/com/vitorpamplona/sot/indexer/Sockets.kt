@@ -23,6 +23,7 @@ package com.vitorpamplona.sot.indexer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.net.Proxy
 
@@ -33,12 +34,22 @@ import java.net.Proxy
  * proxy — the JVM's https.proxyHost system property would otherwise tunnel wss
  * through 127.0.0.1, which the relays aren't reachable behind. Direct wss egress
  * to public relays works in this environment.
+ *
+ * The dispatcher limits are lifted to Amethyst's values (1024 total, 1024
+ * per-host): OkHttp defaults to 64 concurrent calls / 5 per host, which would
+ * silently queue relay connects once the sync fans out to dozens of relays — the
+ * cap has to sit above the sync concurrency, not below it.
  */
 fun okHttpWebsocketBuilder(): WebsocketBuilder {
     val shared =
         OkHttpClient
             .Builder()
             .proxy(Proxy.NO_PROXY)
-            .build()
+            .dispatcher(
+                Dispatcher().apply {
+                    maxRequests = 1024
+                    maxRequestsPerHost = 1024
+                },
+            ).build()
     return BasicOkHttpWebSocket.Builder { _: NormalizedRelayUrl -> shared }
 }

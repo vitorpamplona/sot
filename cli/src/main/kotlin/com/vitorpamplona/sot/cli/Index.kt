@@ -61,12 +61,12 @@ internal fun index(args: List<String>) {
     val opts =
         SyncOptions(
             maxEvents = flag(args, "--max-events", "0").toInt(),
-            fetchTimeoutMs = flag(args, "--fetch-timeout", "30").toLong() * 1000,
+            fetchTimeoutMs = flag(args, "--fetch-timeout", "10").toLong() * 1000,
             maxProviders = flag(args, "--max-providers", "0").toInt(),
             discover = flag(args, "--discover", "true").toBooleanStrict(),
             maxRounds = flag(args, "--max-rounds", "3").toInt(),
             maxRelays = flag(args, "--max-relays", "200").toInt(),
-            concurrency = flag(args, "--concurrency", "8").toInt(),
+            concurrency = flag(args, "--concurrency", "64").toInt(),
             reconcileScores = flag(args, "--reconcile", "false").toBooleanStrict(),
         )
 
