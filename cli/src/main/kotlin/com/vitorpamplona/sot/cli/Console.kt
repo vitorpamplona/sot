@@ -107,6 +107,17 @@ internal fun hint(msg: String) = println(Ansi.dim(msg))
 /** Echo a shell command we're about to run, `$`-prompt style and dimmed. */
 internal fun shellEcho(cmd: String) = println(Ansi.dim("$ $cmd"))
 
+// Compiled once, not per log line — the `~` gauge alone reprints every few seconds.
+private val HARD_TROUBLE = Regex("fail|timed out|MISSING|invalid|dropped|unreliable", RegexOption.IGNORE_CASE)
+private val PROGRESS_HEAD = Regex("^\\[[^\\]]*\\d+/\\d+\\]")
+private val TAG_HEAD = Regex("^\\[[a-z0-9 ]+\\]", RegexOption.IGNORE_CASE)
+private val INSERT_COUNT = Regex("\\+\\d[\\d.kM]*")
+private val GAUGE_NEW = Regex("\\bnew (\\S+)")
+private val GAUGE_OK = Regex("\\bok (\\S+)")
+private val GAUGE_INFLIGHT = Regex("\\binflight (\\S+)")
+private val GAUGE_RATE = Regex("\\((\\S+/s)\\)")
+private val GAUGE_IDLE = Regex("\\(idle ([^)]+)\\)")
+
 /**
  * Turn one raw log message into its terminal-ready form. A no-op (returns [msg]
  * unchanged) unless [Ansi.enabled] — so redirected logs never gain a stray glyph
@@ -128,7 +139,7 @@ internal fun styleLogLine(msg: String): String {
     // `! purplepag.es sync failed: ...` -> trouble; red if it actually failed.
     if (body.startsWith("!")) {
         val text = body.removePrefix("!").trim()
-        val hard = Regex("fail|timed out|MISSING|invalid|dropped|unreliable", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        val hard = HARD_TROUBLE.containsMatchIn(text)
         return if (hard) "$indent${Ansi.red("✗")} ${Ansi.red(text)}" else "$indent${Ansi.amber("▲")} ${Ansi.amber(text)}"
     }
 
@@ -137,13 +148,13 @@ internal fun styleLogLine(msg: String): String {
 
     // `[42/127] relay.damus.io  10040=... kind0=...` -> per-item progress; the
     // `[n/total]` counter carries the eye, `+N` inserts are the good news.
-    Regex("^\\[[^\\]]*\\d+/\\d+\\]").find(body)?.let { m ->
+    PROGRESS_HEAD.find(body)?.let { m ->
         val rest = body.substring(m.value.length)
         return indent + Ansi.cyan(m.value) + highlightCounts(rest)
     }
 
     // `[state] ...`, `[sync] ...`, `[discovery] ...`, `[reconcile] ...` -> a dim tag.
-    Regex("^\\[[a-z0-9 ]+\\]", RegexOption.IGNORE_CASE).find(body)?.let { m ->
+    TAG_HEAD.find(body)?.let { m ->
         val rest = body.substring(m.value.length)
         return "$indent${Ansi.gray("·")} ${Ansi.dim(m.value)}${highlightCounts(rest)}"
     }
@@ -163,14 +174,14 @@ private fun phaseRule(title: String): String {
 /** The `~` live line: a spinner gutter, dim pipes, and the numbers that matter lit up. */
 private fun statusGauge(text: String): String {
     var t = text
-    t = Regex("\\bnew (\\S+)").replace(t) { "new " + Ansi.green(it.groupValues[1]) }
-    t = Regex("\\bok (\\S+)").replace(t) { "ok " + Ansi.green(it.groupValues[1]) }
-    t = Regex("\\binflight (\\S+)").replace(t) { "inflight " + Ansi.amber(it.groupValues[1]) }
-    t = Regex("\\((\\S+/s)\\)").replace(t) { "(" + Ansi.cyan(it.groupValues[1]) + ")" }
-    t = Regex("\\(idle ([^)]+)\\)").replace(t) { Ansi.amber("(idle " + it.groupValues[1] + ")") }
+    t = GAUGE_NEW.replace(t) { "new " + Ansi.green(it.groupValues[1]) }
+    t = GAUGE_OK.replace(t) { "ok " + Ansi.green(it.groupValues[1]) }
+    t = GAUGE_INFLIGHT.replace(t) { "inflight " + Ansi.amber(it.groupValues[1]) }
+    t = GAUGE_RATE.replace(t) { "(" + Ansi.cyan(it.groupValues[1]) + ")" }
+    t = GAUGE_IDLE.replace(t) { Ansi.amber("(idle " + it.groupValues[1] + ")") }
     t = t.replace(" | ", " ${Ansi.gray("│")} ")
     return "${Ansi.cyan("≈")} $t"
 }
 
 /** Light up the `+N` new-event counts green wherever they appear in a progress line. */
-private fun highlightCounts(s: String): String = Regex("\\+\\d[\\d.kM]*").replace(s) { Ansi.green(it.value) }
+private fun highlightCounts(s: String): String = INSERT_COUNT.replace(s) { Ansi.green(it.value) }

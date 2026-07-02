@@ -97,6 +97,9 @@ that narration is coloured: sync phase headers as rules, per-relay progress with
 lit-up `+N` insert counts, a live `≈` gauge (relays, receive rate, Vespa
 backlog), amber warnings, red failures, and a green `✓` at the finish; `sot
 search` prints a banner and a trust-bar table; `sot status` uses `● UP`/`● DOWN`
-badges. Colour is applied **only** on a TTY, so piping or redirecting yields the
-same plain, greppable text as before. Set `NO_COLOR=1` to force plain even on a
-terminal, or `SOT_COLOR=always` to keep colour through a pipe.
+badges. Colour is applied **only** on a TTY: piping or redirecting is always
+plain (no escape codes). The timestamped `index`/`serve`/`verify` log stream is
+byte-for-byte identical to what it was before colour existed, so log-scraping
+keeps working; `search` and `status` render a new plain layout. Set `NO_COLOR=1`
+to force plain even on a terminal, or `SOT_COLOR=always` to keep colour through a
+pipe.
