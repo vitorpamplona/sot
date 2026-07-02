@@ -9,8 +9,15 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization.json)
+    testImplementation(kotlin("test"))
+    // The deletion-flow test runs a real (SQLite) event store through the projection.
+    testImplementation(libs.androidx.sqlite.bundled)
 }
 
 kotlin {
     jvmToolchain(21)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
