@@ -47,16 +47,18 @@ internal fun resolveObserver(input: String): String? {
  */
 internal fun observerOrWarn(args: List<String>): String {
     val raw = flag(args, "--observer", DEFAULT_OBSERVER)
+    // Warnings go to stderr so they never mix into piped search results.
     if (raw.isBlank()) {
         System.err.println(
-            "note: no observer set - pass --observer <hex|npub|nprofile|nip05> or set " +
+            warnGlyph() +
+                "no observer set - pass --observer <hex|npub|nprofile|nip05> or set " +
                 "DEFAULT_OBSERVER; results are not trust-ranked (every score is 0).",
         )
         return ""
     }
     val hex = resolveObserver(raw)
     if (hex == null) {
-        System.err.println("warning: could not resolve observer '$raw' (hex/npub/nprofile/nip05); results are not trust-ranked.")
+        System.err.println(warnGlyph() + "could not resolve observer '$raw' (hex/npub/nprofile/nip05); results are not trust-ranked.")
         return ""
     }
     return hex

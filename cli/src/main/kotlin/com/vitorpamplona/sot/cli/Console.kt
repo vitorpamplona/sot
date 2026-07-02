@@ -82,6 +82,31 @@ internal object Ansi {
     fun boldGreen(s: String) = if (enabled) "${ESC}1;92m$s$RESET" else s
 }
 
+/*
+ * One-shot lines for the short commands (init, up, destroy, ...). These aren't
+ * timestamped log output — they're the CLI talking to you — but they share the
+ * log path's glyph vocabulary so the whole tool reads as one thing. On a pipe or
+ * with NO_COLOR the glyphs fall back to plain ASCII, keeping output greppable.
+ */
+
+/** A red-✗ failure line (falls back to `! ` when colour is off). */
+internal fun err(msg: String) = println(if (Ansi.enabled) "${Ansi.red("✗")} ${Ansi.red(msg)}" else "! $msg")
+
+/** An amber-▲ warning line (falls back to `! ` when colour is off). */
+internal fun warn(msg: String) = println("${warnGlyph()}$msg")
+
+/** The `▲ ` (or plain `! `) prefix, for callers that need to write the line themselves (e.g. to stderr). */
+internal fun warnGlyph(): String = if (Ansi.enabled) "${Ansi.amber("▲")} " else "! "
+
+/** A green-✓ success line (no glyph when colour is off). */
+internal fun ok(msg: String) = println(if (Ansi.enabled) "${Ansi.boldGreen("✓")} $msg" else msg)
+
+/** A dim aside — next steps, hints, the quiet stuff. */
+internal fun hint(msg: String) = println(Ansi.dim(msg))
+
+/** Echo a shell command we're about to run, `$`-prompt style and dimmed. */
+internal fun shellEcho(cmd: String) = println(Ansi.dim("$ $cmd"))
+
 /**
  * Turn one raw log message into its terminal-ready form. A no-op (returns [msg]
  * unchanged) unless [Ansi.enabled] — so redirected logs never gain a stray glyph

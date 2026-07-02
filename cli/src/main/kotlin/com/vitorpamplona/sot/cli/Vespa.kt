@@ -32,7 +32,7 @@ import kotlin.system.exitProcess
 
 /** Run a subprocess, echoing the command; returns its exit code. */
 internal fun run(vararg cmd: String): Int {
-    println("$ ${cmd.joinToString(" ")}")
+    shellEcho(cmd.joinToString(" "))
     return ProcessBuilder(*cmd).inheritIO().start().waitFor()
 }
 
@@ -51,11 +51,11 @@ internal fun ensureVespaIsUp(args: List<String>) {
     if (has(args, "--up") && local) {
         up(emptyList())
         if (ping(statusUrl)) return
-        println("Vespa is still not reachable at ${Config.vespaUrl} - see the `sot up` output above.")
+        err("Vespa is still not reachable at ${Config.vespaUrl} - see the `sot up` output above.")
         exitProcess(1)
     }
-    println("Vespa is not reachable at ${Config.vespaUrl}.")
-    println(
+    err("Vespa is not reachable at ${Config.vespaUrl}.")
+    hint(
         if (local) {
             "Start it first with `sot up` - or pass `--up` to do both in one go."
         } else {
@@ -70,13 +70,13 @@ internal fun up(args: List<String>) {
     if (run("docker", "compose", "up", "-d", "vespa") != 0) return
     print("waiting for Vespa config server")
     if (!waitUntil("${Config.vespaConfigUrl}/state/v1/health")) {
-        println(" - timed out")
+        println(Ansi.red(" - timed out"))
         return
     }
-    println(" ready; deploying vespa/app ...")
+    println(Ansi.green(" ready") + "; deploying vespa/app ...")
     if (deploy(args) != 0) return
     print("waiting for Vespa to serve the app")
-    println(if (waitUntil("${Config.vespaUrl}/ApplicationStatus")) " ready." else " - timed out")
+    println(if (waitUntil("${Config.vespaUrl}/ApplicationStatus")) Ansi.green(" ready.") else Ansi.red(" - timed out"))
 }
 
 /** `sot down` — stop local Vespa. */
@@ -89,8 +89,8 @@ internal fun deploy(args: List<String>): Int {
     val app = flag(args, "--app", "vespa/app")
     val configUrl = flag(args, "--config", Config.vespaConfigUrl)
     if (!ping("$configUrl/state/v1/health")) {
-        println("Vespa config server is not reachable at $configUrl.")
-        println("Start it first: `sot up` (starts Vespa via docker compose AND deploys), or `docker compose up -d vespa` then retry.")
+        err("Vespa config server is not reachable at $configUrl.")
+        hint("Start it first: `sot up` (starts Vespa via docker compose AND deploys), or `docker compose up -d vespa` then retry.")
         return 1
     }
     val tgz = "/tmp/vespa.tgz"

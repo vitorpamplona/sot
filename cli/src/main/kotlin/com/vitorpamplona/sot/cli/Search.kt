@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.sot.config.Config
+import com.vitorpamplona.sot.vespa.SearchHit
 import com.vitorpamplona.sot.vespa.SearchOptions
 import com.vitorpamplona.sot.vespa.VespaSearch
 
@@ -45,11 +46,6 @@ internal fun search(args: List<String>) {
 
     val obsLabel = if (observer.isEmpty()) "(none)" else observer.take(12) + ".."
 
-    // A little banner: the query in lights, the knobs dimmed underneath.
-    println()
-    println("  ${Ansi.cyan("⌕")}  ${Ansi.bold(query)}")
-    println("     ${Ansi.dim("algo $algo · observer $obsLabel")}")
-
     val results =
         VespaSearch(vespaUrl).search(
             query,
@@ -57,31 +53,50 @@ internal fun search(args: List<String>) {
             SearchOptions(hits = hits, rankProfile = algo, includeZeroScore = !onlyRanked),
         )
 
-    if (results.isEmpty()) {
-        println("     ${Ansi.dim("no matches")}")
-        println()
-        return
-    }
-
-    // Trust bars scale to the strongest hit in THIS result set, so the column
-    // reads as a comparison even when the absolute scores are tiny.
-    val maxTrust = results.mapNotNull { it.trust }.maxOrNull()?.takeIf { it > 0 } ?: 1.0
-
-    println()
-    println(Ansi.dim("     %-3s  %-30s  %-8s  %-9s  %s".format("#", "name / display", "trust", "relevance", "nip05")))
-    println(Ansi.gray("     " + "─".repeat(72)))
-    results.forEachIndexed { i, h ->
-        val rank = Ansi.gray("%-3d".format(i + 1))
-        val label = Ansi.bold((h.displayName.ifBlank { h.name }).take(30).padEnd(30))
-        val trust = trustCell(h.trust, maxTrust)
-        val rel = Ansi.dim((h.relevance?.let { "%.2f".format(it) } ?: "-").padEnd(9))
-        val nip05 = Ansi.blue(h.fields["nip05"] ?: "")
-        println("     $rank  $label  $trust  $rel  $nip05")
-    }
-    println()
-    println(Ansi.dim("     ${results.size} result${if (results.size == 1) "" else "s"}"))
-    println()
+    print(renderResults(query, algo, obsLabel, results))
 }
+
+/**
+ * The whole `sot search` render as one string (banner + table + footer), pure so
+ * it can be eyeballed and tested without a live Vespa. A little banner up top —
+ * the query in lights, the knobs dimmed under it — then the ranked table.
+ */
+internal fun renderResults(
+    query: String,
+    algo: String,
+    obsLabel: String,
+    results: List<SearchHit>,
+): String =
+    buildString {
+        appendLine()
+        appendLine("  ${Ansi.cyan("⌕")}  ${Ansi.bold(query)}")
+        appendLine("     ${Ansi.dim("algo $algo · observer $obsLabel")}")
+
+        if (results.isEmpty()) {
+            appendLine("     ${Ansi.dim("no matches")}")
+            appendLine()
+            return@buildString
+        }
+
+        // Trust bars scale to the strongest hit in THIS result set, so the column
+        // reads as a comparison even when the absolute scores are tiny.
+        val maxTrust = results.mapNotNull { it.trust }.maxOrNull()?.takeIf { it > 0 } ?: 1.0
+
+        appendLine()
+        appendLine(Ansi.dim("     %-3s  %-30s  %-8s  %-9s  %s".format("#", "name / display", "trust", "relevance", "nip05")))
+        appendLine(Ansi.gray("     " + "─".repeat(72)))
+        results.forEachIndexed { i, h ->
+            val rank = Ansi.gray("%-3d".format(i + 1))
+            val label = Ansi.bold((h.displayName.ifBlank { h.name }).take(30).padEnd(30))
+            val trust = trustCell(h.trust, maxTrust)
+            val rel = Ansi.dim((h.relevance?.let { "%.2f".format(it) } ?: "-").padEnd(9))
+            val nip05 = Ansi.blue(h.fields["nip05"] ?: "")
+            appendLine("     $rank  $label  $trust  $rel  $nip05")
+        }
+        appendLine()
+        appendLine(Ansi.dim("     ${results.size} result${if (results.size == 1) "" else "s"}"))
+        appendLine()
+    }
 
 /** A `▁▂▃▄▅` bar + the number, coloured by strength, padded to the column's plain width. */
 private fun trustCell(

@@ -35,12 +35,12 @@ internal fun init(args: List<String>) {
     val path = flag(args, "--path", System.getenv("SOT_ENV") ?: ".env")
     val f = File(path)
     if (f.exists() && !has(args, "--force")) {
-        println("$path already exists - edit it, or re-run with --force to overwrite.")
+        warn("$path already exists - edit it, or re-run with --force to overwrite.")
         return
     }
     // A fresh identity for this relay: NIP-11 `self` + NIP-42 auth to upstream relays.
     val identity = KeyPair()
     f.writeText(Config.sampleDotenv().replace("\nSERVER_NSEC=\n", "\nSERVER_NSEC=${identity.privKey!!.toNsec()}\n"))
-    println("wrote $path - edit it to configure sot (VESPA_URL, SERVER_PORT, DEFAULT_OBSERVER, ...).")
-    println("generated this relay's identity: ${identity.pubKey.toNpub()}")
+    ok("wrote $path - edit it to configure sot (VESPA_URL, SERVER_PORT, DEFAULT_OBSERVER, ...).")
+    hint("generated this relay's identity: ${identity.pubKey.toNpub()}")
 }
