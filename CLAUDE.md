@@ -30,14 +30,15 @@ indexer       Nostr -> Quartz EventStore (com.vitorpamplona.sot.indexer):
                 RelaySyncer (NIP-77 negentropy + paged fallback), Discovery (NIP-65
                 outbox crawl), SyncPipeline.runSync(), SyncState (cursors), Sockets.
                 PLUS VespaProjection — maps store events -> Profile/score and calls VespaClient.
+                PLUS SyncService — owns client/writers/projection; runOnce()/runForever().
                 Consumes an event store; never creates one (the composition root does).
               Depends on: :vespa, quartz, coroutines, okhttp.
 http          Library: the GET /search JSON route (Route.searchApi). -> :vespa
 relay         Library: NIP-50 relay route + NIP-11 info + NIP-42 auth. -> :config, :vespa
-server        Composition root: ONE Ktor app on ONE port (SERVER_PORT) = web UI +
-              /search + NIP-50 relay. -> :config, :event-store, :vespa, :http, :relay
-cli           `sot` command. Composition root for `sot index`.
-              -> :config, :event-store, :vespa, :indexer
+cli           `sot` — the ONE executable and composition root. `sot serve` = ONE Ktor
+              app on ONE port (SERVER_PORT): web UI + /search + NIP-50 relay + the
+              background SyncService loop (SYNC_INTERVAL). `sot index` = one pass.
+              -> :config, :event-store, :vespa, :indexer, :http, :relay
 ```
 
 Key rule: **`:vespa` never imports a Nostr/Quartz type.** The indexer maps
@@ -46,10 +47,11 @@ Nostr events into `vespa`'s plain objects (`Profile`, score triples) and calls
 
 ## Data flow
 
-- **Indexing** (`sot index`): relays --(RelaySyncer)--> EventStore (SQLite, source of
-  truth) --(`store.changes` feed)--> `VespaProjection` --(Profile/score)--> `VespaClient`
-  --HTTP--> Vespa. The CLI (`cli/Index.kt`) is the composition root: it launches the
-  projection, runs `runSync`, drains, exits.
+- **Indexing** (`sot index` once, or `sot serve`'s background loop): relays
+  --(RelaySyncer)--> EventStore (SQLite, source of truth) --(`store.changes` feed)-->
+  `VespaProjection` --(Profile/score)--> `VespaClient` --HTTP--> Vespa. `SyncService`
+  (in :indexer) owns that composition; `sot serve` shares ONE store between it and
+  the relay, so everything inserted flows to Vespa through the same feed.
 - **Querying**: `VespaSearch.search()` builds YQL via `ProfileQuery` + observer-weighted
   ranking params, calls Vespa `/search/`, maps children to `SearchHit`. Used by `http`,
   `relay`, and `cli`.
@@ -73,21 +75,23 @@ URL redirects to GitHub releases, which some networks block).
 ./gradlew :cli:installDist      # build the CLI
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 sot up                          # docker compose up Vespa + deploy vespa/app
-sot index                       # load profiles + NIP-85 scores (one indivisible sync)
+sot serve                       # the one-port server on :7777 (web UI + /search + relay)
+                                # + a background sync pass every SYNC_INTERVAL minutes
+sot index                       # ONE sync pass (initial backfill / bounded experiments)
 sot search "vitor" --observer <hex|npub|nprofile|nip05>
-sot status                      # Vespa/server up? doc + event counts
-
-./gradlew :server:run           # the one-port server on :7777 (web UI + /search + relay)
+sot status                      # Vespa/server up? doc + event counts + last-sync age
 ```
 
-`sot` subcommands: `init | index | search | status | up | down | destroy | deploy` —
-each in its own file under `cli/src/main/kotlin/.../cli/`. `sot destroy` wipes the
-events db, sync cursors, and Vespa's data volume for a from-scratch run.
+`sot` subcommands: `init | serve | index | search | status | up | down | destroy | deploy`
+— each in its own file under `cli/src/main/kotlin/.../cli/`. `sot destroy` wipes the
+events db, sync cursors, and Vespa's data volume for a from-scratch run. Don't run
+`sot index` while `sot serve` is syncing the same db (two processes, one SQLite file).
 
 ## Configuration
 
 All config resolves **env var -> `.env` -> built-in default** via `Config` (in `:config`).
 `sot init` writes a commented `.env`. Keys: `VESPA_URL`, `VESPA_CONFIG_URL`, `SERVER_PORT`,
+`SYNC_INTERVAL` (minutes between `sot serve` background passes; 0 = serve-only),
 `SERVER_URL`, `RELAY_URL`, `EVENTS_DB`, `SEED_RELAYS`, `DEFAULT_OBSERVER`, and the NIP-11
 identity `SERVER_NAME/DESCRIPTION/ICON/PUBKEY/OWNER`. A real env var always overrides `.env`.
 

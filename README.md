@@ -27,9 +27,10 @@ indexer/        Nostr -> Quartz EventStore (NIP-77 negentropy sync + NIP-65 outb
                 vespa's objects and writes them.
 http/           Library: the GET /search JSON API route.
 relay/          Library: the NIP-50 relay route; NIP-42 auth picks the observer.
-server/         One Ktor app on one port composing http + relay + the web UI.
-web/            Search UI (one index.html), served by the server (same origin).
-cli/            sot: init / index / search / status / up / down / destroy / deploy.
+web/            Search UI (one index.html), served by `sot serve` (same origin).
+cli/            sot — the one executable: serve / init / index / search / status /
+                up / down / destroy / deploy. `sot serve` composes http + relay +
+                web UI + a background sync loop in a single process.
 ```
 
 ## Quickstart
@@ -44,10 +45,15 @@ export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 
 sot init                                   # write a commented .env (seed relays, observer, ports)
 sot up                                     # start Vespa + deploy vespa/app
-sot index                                  # full sync of profiles + NIP-85 scores (--max-events N for a quick slice)
+sot serve                                  # web UI + /search + NIP-50 relay + background sync loop
 sot search "vitor"                         # search
 sot search "vitor" --observer <pubkey>     # rank by one observer's trust
 ```
+
+`sot index` runs a single full sync pass and exits — useful for the initial
+backfill or bounded experiments (`--max-events N`); `sot serve` runs the same
+pass every `SYNC_INTERVAL` minutes in the background, so a running server keeps
+itself fresh. Don't run both against the same db at once.
 
 Search as the observer whose scores you loaded: set `DEFAULT_OBSERVER` (or pass
 `--observer` — hex, npub, nprofile, or a NIP-05 `name@domain`) to a pubkey you've
@@ -56,21 +62,23 @@ whether Vespa and the server are up (plus doc/event counts).
 
 ## The server
 
-One process on one port (`SERVER_PORT`, default `:7777`) serves everything but Vespa:
+`sot serve` is one process on one port (`SERVER_PORT`, default `:7777`) serving
+everything but Vespa, plus the background sync:
 
 ```bash
-./gradlew :server:run
+sot serve
 #   http://localhost:7777/            web UI (browser) or NIP-11 (Accept: application/nostr+json)
 #   http://localhost:7777/search      JSON API   (?text=vitor&observer=<pubkey>)
 #   ws://localhost:7777/              NIP-50 relay (send a `search` REQ; NIP-42 auth picks the observer)
+# background: an incremental sync pass every SYNC_INTERVAL minutes (default 15; 0 = serve-only)
 ```
 
 ## Configuration
 
-`sot init` writes a commented `.env`; the CLI **and** the server read it (a real
-environment variable still overrides any value). Keys: `VESPA_URL`,
-`VESPA_CONFIG_URL`, `SERVER_PORT`, `SERVER_URL`, `RELAY_URL`, `EVENTS_DB`,
-`SEED_RELAYS` (comma-separated relays `sot index` crawls), `DEFAULT_OBSERVER`,
+`sot init` writes a commented `.env` (a real environment variable still overrides
+any value). Keys: `VESPA_URL`,
+`VESPA_CONFIG_URL`, `SERVER_PORT`, `SYNC_INTERVAL`, `SERVER_URL`, `RELAY_URL`, `EVENTS_DB`,
+`SEED_RELAYS` (comma-separated relays the sync crawls), `DEFAULT_OBSERVER`,
 and the NIP-11 relay identity `SERVER_NAME` /
 `SERVER_DESCRIPTION` / `SERVER_ICON` / `SERVER_PUBKEY` / `SERVER_OWNER`. Docker
 only runs Vespa — point `VESPA_URL` at a remote Vespa to skip it.

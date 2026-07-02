@@ -96,6 +96,11 @@ private fun storeReport(
     }
     val (profiles, providers, assertions) = Triple(counts[0], counts[1], counts[2])
     println("  store: $dbPath")
+    // The sync-state file is rewritten at the end of every pass — its age IS the index's staleness.
+    File("$dbPath.state.json").takeIf { it.exists() }?.let {
+        val mins = (System.currentTimeMillis() - it.lastModified()) / 60_000
+        println("    last sync:  ${if (mins == 0L) "just now" else "${mins}m ago"}")
+    }
     println("    kind:0      profiles      ${"%,d".format(profiles)}")
     println("    kind:10040  providers     ${"%,d".format(providers)}")
     println("    kind:30382  assertions    ${"%,d".format(assertions)}")

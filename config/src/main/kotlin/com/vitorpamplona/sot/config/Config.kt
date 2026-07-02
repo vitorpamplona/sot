@@ -41,6 +41,7 @@ object Config {
             Triple("VESPA_PORT", "8080", "host port docker publishes Vespa's query/document API on (keep VESPA_URL in sync)"),
             Triple("VESPA_CONFIG_PORT", "19071", "host port docker publishes Vespa's config server on (keep VESPA_CONFIG_URL in sync)"),
             Triple("SERVER_PORT", "7777", "port for the sot server (web UI + /search API + NIP-50 relay)"),
+            Triple("SYNC_INTERVAL", "15", "minutes between background sync passes in `sot serve`; 0 = serve-only"),
             Triple("SERVER_URL", "http://localhost:7777", "public http url of the server (web UI base + status)"),
             Triple("RELAY_URL", "ws://localhost:7777", "public ws url the relay advertises (NIP-42)"),
             Triple("EVENTS_DB", "events.db", "SQLite event store shared by indexer + server"),
@@ -81,6 +82,7 @@ object Config {
     val vespaUrl get() = env("VESPA_URL")
     val vespaConfigUrl get() = env("VESPA_CONFIG_URL")
     val serverPort get() = env("SERVER_PORT").toInt()
+    val syncIntervalMinutes get() = env("SYNC_INTERVAL").toInt()
     val serverUrl get() = env("SERVER_URL")
     val relayUrl get() = env("RELAY_URL")
     val eventsDb get() = env("EVENTS_DB")

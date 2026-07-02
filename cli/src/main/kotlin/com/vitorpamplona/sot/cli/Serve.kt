@@ -18,14 +18,16 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.server
+package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.sot.config.Config
 import com.vitorpamplona.sot.http.searchApi
+import com.vitorpamplona.sot.indexer.SyncOptions
+import com.vitorpamplona.sot.indexer.SyncService
 import com.vitorpamplona.sot.relay.buildRelayServer
 import com.vitorpamplona.sot.relay.nostrRelay
 import com.vitorpamplona.sot.relay.relayInfoJson
-import com.vitorpamplona.sot.store.openEventStore
+import com.vitorpamplona.sot.store.openObservableStore
 import com.vitorpamplona.sot.store.relayIdentity
 import com.vitorpamplona.sot.vespa.VespaSearch
 import io.ktor.http.ContentType
@@ -40,13 +42,25 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
-/**
- * The sot server: one Ktor app on one port ([Config.serverPort]) serving
- * everything but Vespa —
+/*
+ * `sot serve` — THE long-running process: one Ktor app on one port
+ * ([Config.serverPort]) serving everything but Vespa —
  *   WS   /        -> NIP-50 relay        (from :relay)
  *   GET  /        -> NIP-11 (Accept: application/nostr+json) or the web UI
  *   GET  /search  -> JSON search API     (from :http)
+ * plus, unless SYNC_INTERVAL=0, a background [SyncService] loop that keeps the
+ * index fresh with incremental passes. Both sides share ONE event store, so
+ * everything the sync inserts flows to Vespa through the same change feed.
+ *
  * The web UI is bundled from `web/index.html`; because it's same-origin with the
  * API, no CORS is needed for it (CORS stays only for other-origin/file:// callers).
  */
@@ -58,12 +72,35 @@ private val WEB_UI: String? by lazy {
         ?.readText()
 }
 
-fun main() {
+internal fun serve() {
     val vespa = VespaSearch(Config.vespaUrl)
     // One shared event store (see :event-store): relay identity from env for NIP-62, no SQLite FTS.
     val relayUrl = relayIdentity()
-    val store = openEventStore()
+    val store = openObservableStore()
     val relaySrv = buildRelayServer(vespa, store, Config.defaultObserver, relayUrl)
+
+    val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    val syncMinutes = Config.syncIntervalMinutes
+    val sync =
+        if (syncMinutes > 0) {
+            logLine("background sync: every ${syncMinutes}m (SYNC_INTERVAL=0 to disable)")
+            SyncService(store, Config.vespaUrl, Config.seedRelays, "${Config.eventsDb}.state.json", SyncOptions(), ::logLine)
+                .also { s -> syncScope.launch { s.runForever(syncMinutes.minutes) } }
+        } else {
+            logLine("background sync: disabled (SYNC_INTERVAL=0)")
+            null
+        }
+
+    // Ctrl-C / SIGTERM: stop syncing, give in-flight Vespa writes a short window
+    // (whatever misses heals on the next start's pass), release everything.
+    Runtime.getRuntime().addShutdownHook(
+        Thread {
+            syncScope.cancel()
+            runBlocking { sync?.drain(10.seconds) }
+            sync?.close()
+            store.close()
+        },
+    )
 
     embeddedServer(Netty, port = Config.serverPort) {
         install(WebSockets)

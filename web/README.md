@@ -8,11 +8,11 @@ by *your* web of trust via a NIP-07 extension (off = the server's
 
 ## Run it
 
-The `server` module serves this file itself (bundled as a resource), same-origin
+`sot serve` serves this file itself (bundled as a resource), same-origin
 with the API — so just run the server and open it:
 
 ```bash
-./gradlew :server:run
+sot serve
 # open http://localhost:7777
 ```
 
