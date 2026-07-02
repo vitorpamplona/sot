@@ -111,8 +111,9 @@ class IndexVerifier(
             }
         }
         store.query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND))) { ev ->
-            val subject = ev.aboutUser() ?: return@query
-            if (visited(subject)) return@query
+            // aboutUser() is the d-tag: never null, but "" when the tag is missing.
+            val subject = ev.aboutUser()
+            if (subject.isEmpty() || visited(subject)) return@query
             val observer = serviceToObserver[ev.pubKey] ?: return@query
             val rank = ev.rank() ?: return@query
             report.missingWrites++

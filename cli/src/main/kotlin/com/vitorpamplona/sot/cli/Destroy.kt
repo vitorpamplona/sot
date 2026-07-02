@@ -47,7 +47,7 @@ internal fun destroy(args: List<String>) {
 
     if (!has(args, "--yes")) {
         print("Continue? [y/N] ")
-        val answer = readLine()?.trim()?.lowercase()
+        val answer = readlnOrNull()?.trim()?.lowercase()
         if (answer != "y" && answer != "yes") {
             println("aborted")
             return

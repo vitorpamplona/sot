@@ -162,12 +162,13 @@ class VespaProjection(
 
             is ContactCardEvent -> {
                 val observer = serviceToObserver[ev.pubKey] ?: resolveObserver(ev.pubKey)
+                // aboutUser() is the d-tag: never null, but "" when the tag is missing.
                 val subject = ev.aboutUser()
                 if (observer == null) {
                     unresolved.incrementAndGet()
                     return
                 }
-                if (subject == null) return
+                if (subject.isEmpty()) return
                 val rank = ev.rank()
                 if (rank != null) {
                     dispatch("score", scores) { vespa.upsertScore(subject, observer, rank, ev.id) }

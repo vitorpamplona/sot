@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocketListener
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.DefaultIndexingStrategy
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
+import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,6 +50,9 @@ import java.io.File
  */
 internal class InProcessRelay(
     val url: NormalizedRelayUrl = RelayUrlNormalizer.normalize("wss://in-process.test"),
+    // Default: full NIP-77. Pass maxSessionsPerConnection=0 to model a relay
+    // that refuses negentropy (forces the client's pages fallback).
+    private val negentropy: NegentropySettings = NegentropySettings.Default,
 ) : AutoCloseable {
     val store =
         EventStore(
@@ -62,16 +66,16 @@ internal class InProcessRelay(
             DefaultIndexingStrategy(indexFullTextSearch = false),
         )
 
-    private val server = NostrServer(store, policyBuilder = { PassThroughPolicy() })
+    private val server = NostrServer(store, policyBuilder = { PassThroughPolicy() }, negentropySettings = negentropy)
     private val clientScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     val client =
         NostrClient(
             object : WebsocketBuilder {
                 override fun build(
-                    relay: NormalizedRelayUrl,
-                    listener: WebSocketListener,
-                ): WebSocket = InProcessWebSocket(server, listener)
+                    url: NormalizedRelayUrl,
+                    out: WebSocketListener,
+                ): WebSocket = InProcessWebSocket(server, out)
             },
             clientScope,
         )

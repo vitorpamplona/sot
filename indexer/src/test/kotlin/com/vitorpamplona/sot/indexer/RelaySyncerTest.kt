@@ -169,6 +169,30 @@ class RelaySyncerTest {
         }
 
     @Test
+    fun `a relay that refuses negentropy is remembered, so later syncs skip the attempt`() =
+        runBlocking {
+            InProcessRelay(
+                negentropy =
+                    com.vitorpamplona.quartz.nip77Negentropy
+                        .NegentropySettings(frameSizeLimit = 0, maxSyncEvents = 0, maxSessionsPerConnection = 0),
+            ).use { relay ->
+                relay.store.batchInsert((1..200).map { kind0(it) })
+
+                val store = localStore()
+                val state = SyncState()
+                try {
+                    val o = syncer(relay, store, state).sync(relay.url, kind0)
+
+                    assertEquals(200, o.inserted, "the pages fallback still delivers everything")
+                    assertTrue(!o.usedNegentropy)
+                    assertEquals(false, state.relay(relay.url).negentropyCapable, "the refusal is remembered - no stall on the next kind/pass")
+                } finally {
+                    store.close()
+                }
+            }
+        }
+
+    @Test
     fun `a relay marked negentropy-incapable syncs completely over pages`() =
         runBlocking {
             InProcessRelay().use { relay ->

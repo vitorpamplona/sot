@@ -124,7 +124,13 @@ class RelaySyncer(
 
         if (state.relay(relay).negentropyCapable == false) {
             val pages = pagesStream(relay, scoped, maxEvents)
-            state.markSynced(relay, scope, nowSecs())
+            // A truncated pages download must not advance the cursor, or the
+            // missing tail would be since-filtered away forever.
+            if (pages.completed) {
+                state.markSynced(relay, scope, nowSecs())
+            } else {
+                log("  ! ${relay.displayUrl()} pages sync timed out - cursor not advanced, next pass retries")
+            }
             return Outcome(pages.inserted, usedNegentropy = false, downloaded = pages.received)
         }
 
@@ -144,6 +150,12 @@ class RelaySyncer(
             received += pages.received
         } else if (usedNeg && neg.downloaded > 0 && state.relay(relay).negentropyCapable == null) {
             state.relay(relay).negentropyCapable = true
+        } else if (neg.result?.pagedFallback == true && state.relay(relay).negentropyCapable == null) {
+            // The relay couldn't reconcile at all (Quartz already paged this filter
+            // as the fallback). Remember it: without this, every kind on every pass
+            // re-attempts negentropy and stalls out its idle timeout first.
+            state.relay(relay).negentropyCapable = false
+            log("  [${relay.displayUrl()}] no negentropy - using pages from now on")
         }
 
         state.markSynced(relay, scope, nowSecs())
@@ -201,6 +213,7 @@ class RelaySyncer(
             }
             // Negentropy failed or fell back to (possibly incomplete) paging:
             // the collected ids aren't the whole set. Enumerate explicitly.
+            if (neg.result?.pagedFallback == true && state.relay(relay).negentropyCapable == null) state.relay(relay).negentropyCapable = false
             ids.clear()
         } else if (!forceEnumerate) {
             // Pages-only relay and no authoritative pass requested: plain incremental sync.
@@ -210,7 +223,7 @@ class RelaySyncer(
 
         // Authoritative enumeration: the relay's complete current set, via pages.
         // Only the (small) id set is held in memory; the events themselves stream.
-        val pages = pagesStream(relay, filter, maxEvents = 0, collectIds = ids, timeoutFactor = ENUMERATION_TIMEOUT_FACTOR)
+        val pages = pagesStream(relay, filter, maxEvents = 0, collectIds = ids)
         inserted += pages.inserted
         if (!pages.completed) {
             log("  ! ${relay.displayUrl()} enumeration timed out - skipping the deletion diff")
@@ -331,12 +344,14 @@ class RelaySyncer(
         filter: Filter,
         maxEvents: Int,
         collectIds: MutableSet<String>? = null,
-        timeoutFactor: Int = 1,
     ): Streamed {
         val paged = if (maxEvents > 0) filter.copy(limit = maxEvents) else filter
         return streamEvents(relay, paged, collectIds) { onEvent ->
-            withTimeoutOrNull(idleTimeoutMs * timeoutFactor) {
-                client.fetchAllPages(relay, listOf(paged), onEvent = onEvent)
+            // fetchAllPages' own watchdog handles stalled pages ([idleTimeoutMs]);
+            // the outer cap only guards a wedged download, so it must be roomy
+            // enough for a big full sync — many pages, each fast.
+            withTimeoutOrNull(idleTimeoutMs * PAGES_TOTAL_TIMEOUT_FACTOR) {
+                client.fetchAllPages(relay, listOf(paged), timeoutMs = idleTimeoutMs, onEvent = onEvent)
             } != null
         }
     }
@@ -387,7 +402,8 @@ class RelaySyncer(
         // Verify + insert in chunks of this many events as they stream in.
         const val CHUNK_SIZE = 5_000
 
-        // Enumerating a big provider's full set takes longer than one idle window.
-        const val ENUMERATION_TIMEOUT_FACTOR = 20
+        // Hard ceiling on one whole pages download, in idle windows: a big full
+        // sync is many pages that each move well within the idle timeout.
+        const val PAGES_TOTAL_TIMEOUT_FACTOR = 20
     }
 }
