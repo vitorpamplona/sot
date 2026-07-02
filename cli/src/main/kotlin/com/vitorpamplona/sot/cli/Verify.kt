@@ -36,6 +36,7 @@ import kotlin.system.exitProcess
  * db), but quietest between sync passes.
  */
 internal fun verify(args: List<String>) {
+    ensureVespaIsUp(args)
     val repair = has(args, "--repair")
     val dbPath = flag(args, "--db", Config.eventsDb)
     logLine(if (repair) "verifying $dbPath against ${Config.vespaUrl} (repairing) ..." else "verifying $dbPath against ${Config.vespaUrl} (read-only) ...")

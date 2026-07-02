@@ -54,6 +54,9 @@ private fun argList(
 }
 
 internal fun index(args: List<String>) {
+    // The whole point of a pass is feeding Vespa - and the feed client won't
+    // even construct against a down engine. Same gate as `sot serve`.
+    ensureVespaIsUp(args)
     val dbPath = flag(args, "--db", Config.eventsDb)
     val opts =
         SyncOptions(

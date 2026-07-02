@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.sot.config.Config
+import kotlin.system.exitProcess
 
 /*
  * Local Vespa lifecycle: `up` / `down` via docker compose, and `deploy` of the
@@ -33,6 +34,35 @@ import com.vitorpamplona.sot.config.Config
 internal fun run(vararg cmd: String): Int {
     println("$ ${cmd.joinToString(" ")}")
     return ProcessBuilder(*cmd).inheritIO().start().waitFor()
+}
+
+/**
+ * Refuse to start a command that needs Vespa when it isn't up — every query and
+ * write would just fail (and the feed client won't even construct). `--up` runs
+ * the `sot up` sequence first (start + deploy) when the engine is the local
+ * docker one; a remote VESPA_URL never gets docker side effects (its lifecycle
+ * isn't ours to manage).
+ */
+internal fun ensureVespaIsUp(args: List<String>) {
+    val statusUrl = "${Config.vespaUrl}/ApplicationStatus"
+    if (ping(statusUrl)) return
+
+    val local = Config.vespaUrl.contains("://localhost") || Config.vespaUrl.contains("://127.0.0.1")
+    if (has(args, "--up") && local) {
+        up(emptyList())
+        if (ping(statusUrl)) return
+        println("Vespa is still not reachable at ${Config.vespaUrl} - see the `sot up` output above.")
+        exitProcess(1)
+    }
+    println("Vespa is not reachable at ${Config.vespaUrl}.")
+    println(
+        if (local) {
+            "Start it first with `sot up` - or pass `--up` to do both in one go."
+        } else {
+            "Check VESPA_URL and the remote engine, then retry."
+        },
+    )
+    kotlin.system.exitProcess(1)
 }
 
 /** `sot up` — start Vespa (docker compose) and deploy the app package. */
