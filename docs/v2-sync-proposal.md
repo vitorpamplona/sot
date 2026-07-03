@@ -105,9 +105,10 @@ from the directory: sync `{kinds: SYNC_KINDS + [5, 62, 10002], authors: batch}`.
 Kind 5 and 62 ride along because the v2 store *interprets* them (unlike the
 old mirror design, deletion semantics are local again — an author's deletion
 published only to their outbox still erases here). `SYNC_KINDS` is config,
-defaulting to the curated searchable set (0, 30023, 31922/31923?, git kinds,
-classifieds, …) — NOT kind 1; notes are volume without search value for this
-product.
+defaulting to **kind 1 + kind 0** — notes and profiles are the product —
+plus the curated searchable set (30023, git kinds, classifieds, …). Kind 1
+dominates the corpus by orders of magnitude; see the scale section below for
+what that commits us to.
 
 ### "Constant": live subscriptions + reconcile cadence
 
@@ -155,10 +156,15 @@ Replace the single `search_text` field with three kind-agnostic **tiers** in
 the event schema, all bm25-indexed:
 
 ```
-search_primary     kind 0: name + display_name        30023: title
-search_secondary   kind 0: nip05 + lud16 domain       30023: summary + t-tags
-search_tertiary    kind 0: about                      30023: content
+search_primary     kind 0: name + display_name   kind 1: subject tag (NIP-14)   30023: title
+search_secondary   kind 0: nip05 + lud16 domain  kind 1: t-tags                 30023: summary + t-tags
+search_tertiary    kind 0: about                 kind 1: content                30023: content
 ```
+
+Note-content lands in the tertiary tier deliberately: within a
+`kinds:[1]` search only notes compete, so the tier is neutral; in a
+mixed-kind search a profile whose *name* matches outranks a note that merely
+mentions the term.
 
 - **Extractors**: a `SearchTiers(primary, secondary, tertiary)` value +
   a per-kind extractor registry in `:v2:store` (it has Quartz's typed
@@ -176,6 +182,41 @@ search_tertiary    kind 0: about                      30023: content
   Brainstorm weighting, a new kind) rolls out via `reindexFullTextSearch` —
   re-derive in place, **no resync**. This is why the tiers live on the doc
   rather than in query-time logic.
+
+## Scale: what kind 1 from day one commits us to
+
+Roster-scoped kind 1 is still tens of millions of docs growing continuously
+(network-wide it's hundreds of millions; even a 100k-author roster posting
+normally produces ~10⁷/year). Three specific consequences, each with a known
+answer:
+
+1. **Vespa attribute memory.** Attributes are RAM-resident by default, and
+   notes are tag-heavy (a reply carries several e/p tags → fat `tag_index`
+   arrays). Rough envelope: ~0.5–1 KB of attribute footprint per note →
+   50–100 GB RAM at 10⁸ docs if we do nothing. The knobs, in order:
+   `attribute: paged` (disk-backed with OS paging) on the fat, rarely-ranked
+   attributes (`tag_index`, `owner`, `expires_at`); the summary store
+   (`tags`, `content`, `sig`) is already on disk; a multi-node content
+   cluster is the eventual answer and only touches `services.xml` +
+   `redundancy`. Schema work, not code work.
+2. **Store ingest throughput.** `insertLocked` runs 3 index round-trips per
+   regular event (dup check, tombstone probe, vanish probe) under the single
+   writer — fine for scores/profiles, a ceiling of low-thousands/s for a
+   kind-1 backfill. The fix stays inside `VespaEventStore` with no interface
+   change: a **bulk fast path** in `batchInsert` that batches the semantic
+   checks per chunk (one `ids in (…)` dup query, one kind-5 `#e` query for
+   the whole chunk, one vanish query per distinct owner), then feeds the
+   survivors through the async feed client concurrently. Round-trips become
+   ~4 per 5 000 events instead of 3 per event.
+3. **Negentropy snapshots.** `snapshotIdsForNegentropy` currently pages
+   through `/search/` capped at 10 k hits — useless against a
+   million-note (relay, author-batch) scope. The **visit-based id walk**
+   (document API visits streaming just `id` + `created_at`, exactly what v1's
+   `visitDocs` did) stops being a nice-to-have and moves into phase 1.
+
+None of this changes the architecture — the store interface, the relay, and
+the sync planes are unaffected. It changes which optimizations are mandatory
+versus optional.
 
 ## Module plan for `:v2:sync`
 
@@ -197,6 +238,8 @@ size, 0 = reconcile-only), `MAX_AUTHORS_PER_FILTER`.
 1. **Scores plane**: port RelaySyncer/SyncState; 10040 → provider → 30382
    pipeline writing to the Vespa store (v1 phases 1–3 minus Discovery).
    This alone reaches feature parity with `sot index` for trust data.
+   Includes the kind-1 scale prerequisites: the visit-based negentropy
+   snapshot and the store's bulk-ingest fast path.
 2. **Search tiers + extractor registry** (requirement 5) — independent of
    sync; can even land first. Includes the kind-0 Brainstorm port and the
    30023 extractor as the second proof. The `write_relays` derived attribute
@@ -212,9 +255,6 @@ size, 0 = reconcile-only), `MAX_AUTHORS_PER_FILTER`.
 - **Roster eviction**: when every score for a subject is retracted, stop
   syncing them (directory drops the author) but keep their stored events
   until an optional GC sweep. Default: keep, GC later.
-- **Kind 1**: excluded from `SYNC_KINDS` by default. Text-note search is a
-  different product (volume, spam) — the schema supports it if an operator
-  opts in.
 - **Third-party 10002 hints**: when a scored subject has no 10002, we could
   mine relay hints from the 30382's tags or p-tag hints. Default: INDEX_RELAYS
   fallback only, hints later.
