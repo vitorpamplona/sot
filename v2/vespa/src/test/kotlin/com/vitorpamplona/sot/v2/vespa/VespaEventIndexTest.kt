@@ -53,7 +53,7 @@ class VespaEventIndexTest {
         tags: List<List<String>> = emptyList(),
         content: String = "",
         owner: String = pubkey,
-        searchText: String? = null,
+        search: SearchFields = SearchFields.NONE,
     ) = EventDoc(
         id = (++seq).toString(16).padStart(64, '0'),
         pubkey = pubkey,
@@ -63,7 +63,7 @@ class VespaEventIndexTest {
         content = content,
         sig = "e".repeat(128),
         owner = owner,
-        searchText = searchText,
+        search = search,
     )
 
     private fun seed(vararg docs: EventDoc) =
@@ -88,7 +88,7 @@ class VespaEventIndexTest {
                     kind = 30382,
                     tags = listOf(listOf("d", "b2".repeat(32)), listOf("e", "f".repeat(64), "wss://relay.example.com", "root")),
                     content = "line\n\"quoted\" 🫥",
-                    searchText = "findable text",
+                    search = SearchFields(name = "findable", primary = "also findable"),
                 )
             index.put(d)
             assertEquals(d, index.get(d.id))
@@ -101,7 +101,7 @@ class VespaEventIndexTest {
     fun `search agrees with the in-memory spec across the filter surface`() {
         val bob = "b2".repeat(32)
         seed(
-            doc(kind = 0, searchText = "vitor pamplona"),
+            doc(kind = 0, search = SearchFields(name = "vitor", about = "pamplona dev")),
             doc(kind = 1, tags = listOf(listOf("p", bob)), content = "hi bob"),
             doc(kind = 1, pubkey = bob, at = 5000),
             doc(kind = 30382, pubkey = bob, tags = listOf(listOf("d", "x"), listOf("t", "nostr"), listOf("t", "search"))),

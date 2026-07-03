@@ -66,11 +66,11 @@ class EventDocTest {
 
     @Test
     fun `derived owner and search text round-trip too`() {
-        val derived = doc.copy(owner = "9".repeat(64), searchText = "alice about")
+        val derived = doc.copy(owner = "9".repeat(64), search = SearchFields(name = "alice", primary = "a title", text = "the body"))
         assertEquals(derived, EventDoc.fromSummary(derived.indexFields()))
-        // Defaults: owner falls back to the author, searchText to unsearchable.
+        // Defaults: owner falls back to the author, search to unsearchable.
         assertEquals(doc.pubkey, doc.owner)
-        assertEquals(null, doc.searchText)
+        assertEquals(SearchFields.NONE, doc.search)
     }
 
     @Test

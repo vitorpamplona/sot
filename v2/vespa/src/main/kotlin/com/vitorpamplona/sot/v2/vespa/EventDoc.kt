@@ -45,11 +45,12 @@ import kotlinx.serialization.json.long
  * and verifies signatures BEFORE constructing one — everything in the index
  * is assumed already verified.
  *
- * [owner] and [searchText] are DERIVED fields the store computes with Nostr
+ * [owner] and [search] are DERIVED fields the store computes with Nostr
  * knowledge this module doesn't have: the owner is the pubkey Nostr semantics
  * key off (the gift-wrap recipient for kind 1059, else the author), and
- * searchText is the kind-specific indexable text of searchable kinds (null =
- * invisible to NIP-50 search, like SQLite's FTS table).
+ * [search] is the kind-specific decomposition of searchable kinds into the
+ * schema's search fields (all-null = invisible to NIP-50 search, like
+ * SQLite's FTS table).
  */
 data class EventDoc(
     val id: String,
@@ -60,7 +61,7 @@ data class EventDoc(
     val content: String,
     val sig: String,
     val owner: String = pubkey,
-    val searchText: String? = null,
+    val search: SearchFields = SearchFields.NONE,
 ) {
     /**
      * The queryable `"<letter>:<value>"` pairs: one per tag whose name is a
@@ -89,7 +90,7 @@ data class EventDoc(
             put("content", JsonPrimitive(content))
             put("sig", JsonPrimitive(sig))
             put("owner", JsonPrimitive(owner))
-            searchText?.let { put("search_text", JsonPrimitive(it)) }
+            for ((field, value) in search.fields()) put(field, JsonPrimitive(value))
             // Always written: an absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
             put("expires_at", JsonPrimitive(expiresAt() ?: NO_EXPIRATION))
@@ -143,7 +144,7 @@ data class EventDoc(
                 content = fields["content"]?.jsonPrimitive?.content ?: "",
                 sig = fields.getValue("sig").jsonPrimitive.content,
                 owner = fields["owner"]?.jsonPrimitive?.content ?: pubkey,
-                searchText = fields["search_text"]?.jsonPrimitive?.content,
+                search = SearchFields.fromFields { fields[it]?.jsonPrimitive?.content },
             )
         }
     }

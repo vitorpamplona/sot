@@ -26,9 +26,9 @@ package com.vitorpamplona.sot.v2.vespa
  * spec the real Vespa client must agree with (same fields [EventYql] queries),
  * and what store/relay tests run against without a Vespa container.
  *
- * Search-term matching is a naive case-insensitive substring over searchText —
- * recall-equivalent for tests (docs without searchText are invisible to
- * search, like SQLite's FTS table); real ranking is Vespa's job.
+ * Search-term matching is a naive case-insensitive substring over the derived
+ * search fields — recall-equivalent for tests (docs with no search fields are
+ * invisible to search, like SQLite's FTS table); real ranking is Vespa's job.
  */
 class InMemoryEventIndex : EventIndex {
     private val docs = LinkedHashMap<String, EventDoc>()
@@ -66,7 +66,7 @@ class InMemoryEventIndex : EventIndex {
             (q.until == null || createdAt <= q.until) &&
             (q.expiresBefore == null || (expiresAt()?.let { it < q.expiresBefore } == true)) &&
             (q.notExpiredAt == null || (expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
-            (q.search.isNullOrBlank() || searchText?.contains(q.search.trim(), ignoreCase = true) == true)
+            (q.search.isNullOrBlank() || search.matches(q.search.trim()))
     }
 
     private companion object {

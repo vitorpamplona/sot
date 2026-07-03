@@ -40,6 +40,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.sot.v2.vespa.EventDoc
 import com.vitorpamplona.sot.v2.vespa.EventIndex
 import com.vitorpamplona.sot.v2.vespa.EventQuery
+import com.vitorpamplona.sot.v2.vespa.SearchFields
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
@@ -70,8 +71,9 @@ import kotlin.coroutines.coroutineContext
  *    events rejected; [deleteExpiredEvents] sweeps due NIP-40 expirations via
  *    the derived `expires_at` attribute;
  *  - NIP-50: only kinds implementing [SearchableEvent] are searchable, via
- *    their `indexableContent()` (the `search_text` field = SQLite's FTS
- *    table); [reindexFullTextSearch] re-derives it after Quartz upgrades.
+ *    [SearchExtractors] — every kind's indexable content decomposed into the
+ *    schema's per-kind search fields (= SQLite's FTS table, tiered);
+ *    [reindexFullTextSearch] re-derives them after extractor/Quartz upgrades.
  *
  * Correctness rests on two properties: all writes serialize behind one [Mutex]
  * (query-then-write is atomic against other writers in this process — mirror
@@ -301,10 +303,10 @@ class VespaEventStore(
     // ---- full-text reindex ----------------------------------------------------
 
     /**
-     * Re-derive `search_text` for every stored event. Which kinds implement
-     * [SearchableEvent] — and what text they contribute — is baked into the
-     * Quartz build, so docs indexed under old code can be stale (or missing
-     * from search) until this runs; it also clears text for kinds that LOST
+     * Re-derive the search fields for every stored event. Which kinds are
+     * searchable — and how [SearchExtractors] decomposes them — is baked into
+     * this build, so docs indexed under old code can be stale (or missing
+     * from search) until this runs; it also clears fields for kinds that LOST
      * searchability, mirroring the one-shot SQLite rebuild.
      */
     override suspend fun reindexFullTextSearch() {
@@ -332,8 +334,8 @@ class VespaEventStore(
                     .filter { resumeFrom == null || it.id > resumeFrom }
                     .take(batchSize)
             for (doc in batch) {
-                val text = (Event.fromJsonOrNull(doc.toEventJson()) as? SearchableEvent)?.indexableContent()
-                if (text != doc.searchText) index.put(doc.copy(searchText = text))
+                val fields = Event.fromJsonOrNull(doc.toEventJson())?.let(SearchExtractors::extract) ?: SearchFields.NONE
+                if (fields != doc.search) index.put(doc.copy(search = fields))
             }
             FtsReindexProgress(cursor = batch.lastOrNull()?.id, processedThisBatch = batch.size, done = batch.size < batchSize)
         }
@@ -377,9 +379,8 @@ internal fun Filter.toEventQuery(): EventQuery? {
 
 /**
  * The event's exact stored form plus the two derived fields: [EventDoc.owner]
- * (gift-wrap recipient or author) and [EventDoc.searchText] (searchable kinds'
- * indexable text — SQLite's FTS row). Scope stays empty: provenance is the
- * syncer's concern, never semantics.
+ * (gift-wrap recipient or author) and [EventDoc.search] (the kind-specific
+ * decomposition from [SearchExtractors] — SQLite's FTS row, tiered).
  */
 internal fun Event.toDoc(): EventDoc =
     EventDoc(
@@ -391,7 +392,7 @@ internal fun Event.toDoc(): EventDoc =
         content = content,
         sig = sig,
         owner = owner(),
-        searchText = (this as? SearchableEvent)?.indexableContent(),
+        search = SearchExtractors.extract(this),
     )
 
 /** The pubkey Nostr semantics key off (SQLite's pubkey_owner_hash): the gift-wrap recipient, else the author. */

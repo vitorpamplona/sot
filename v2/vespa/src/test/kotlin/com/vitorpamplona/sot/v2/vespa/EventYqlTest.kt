@@ -62,7 +62,7 @@ class EventYqlTest {
     @Test
     fun `search term goes out-of-band and switches ranking on`() {
         val q = EventYql.build(EventQuery(kinds = listOf(0), search = "vitor pamplona"))!!
-        assertEquals("select * from event where kind in (0) and ({defaultIndex:\"search_text\"}userInput(@search))", q.yql)
+        assertEquals("select * from event where kind in (0) and ({defaultIndex:\"default\"}userInput(@search))", q.yql)
         assertEquals(mapOf("search" to "vitor pamplona"), q.params)
         assertEquals(EventYql.RANK_TEXT, q.ranking)
         assertFalse("order by" in q.yql, "ranked queries must not force recency order")

@@ -101,7 +101,8 @@ object EventYql {
         val term = q.search?.trim().orEmpty()
         val params = LinkedHashMap<String, String>()
         if (term.isNotEmpty()) {
-            clauses += "({defaultIndex:\"search_text\"}userInput(@search))"
+            // The `default` fieldset spans the profile group AND the tiers (event.sd).
+            clauses += "({defaultIndex:\"default\"}userInput(@search))"
             params["search"] = term
             q.observer
                 ?.lowercase()

@@ -221,7 +221,7 @@ object MockYql {
                     clause.startsWith("created_at <= ") -> q.copy(until = clause.substringAfterLast(' ').toLong())
                     clause.startsWith("expires_at < ") -> q.copy(expiresBefore = clause.substringAfterLast(' ').toLong())
                     clause.startsWith("expires_at > ") -> q.copy(notExpiredAt = clause.substringAfterLast(' ').toLong())
-                    clause == "({defaultIndex:\"search_text\"}userInput(@search))" -> q.copy(search = params.getValue("search"))
+                    clause == "({defaultIndex:\"default\"}userInput(@search))" -> q.copy(search = params.getValue("search"))
                     clause.startsWith("(tag_index contains ") -> tagGroup(q, clause)
                     else -> error("unparseable clause: $clause")
                 }
