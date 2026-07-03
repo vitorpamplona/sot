@@ -93,7 +93,9 @@ data class EventDoc(
             put("scope", JsonPrimitive(scope))
             put("owner", JsonPrimitive(owner))
             searchText?.let { put("search_text", JsonPrimitive(it)) }
-            expiresAt()?.let { put("expires_at", JsonPrimitive(it)) }
+            // Always written: an absent numeric attribute reads as 0 in Vespa,
+            // which would make "not yet expired" range queries impossible.
+            put("expires_at", JsonPrimitive(expiresAt() ?: NO_EXPIRATION))
         }
 
     /** The complete NIP-01 event JSON, rebuilt from the exact stored values. */
@@ -111,6 +113,9 @@ data class EventDoc(
     private fun tagsAsJson(): JsonArray = JsonArray(tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) })
 
     companion object {
+        /** The `expires_at` value of an event without a NIP-40 expiration: far enough to outlive every range check. */
+        const val NO_EXPIRATION = Long.MAX_VALUE
+
         /** Parse a raw NIP-01 event JSON into a doc for [scope]. Throws on a malformed event. */
         fun fromEventJson(
             raw: String,

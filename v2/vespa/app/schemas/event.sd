@@ -78,7 +78,9 @@ schema event {
         }
 
         # NIP-40: derived from the expiration tag at feed time, so the expiry
-        # sweep finds due docs with one range query. Absent = never expires.
+        # sweep AND the never-serve-expired query guard are single range
+        # clauses. Always written — Long.MAX_VALUE means "never expires" (an
+        # absent numeric attribute would read as 0 and break the guard).
         field expires_at type long {
             indexing: attribute | summary
             attribute: fast-search

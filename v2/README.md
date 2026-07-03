@@ -71,6 +71,16 @@ packages under `com.vitorpamplona.sot.v2`.
    NIP-50 search over `SearchableEvent.indexableContent()` only (the
    `search_text` field = SQLite's FTS table; raw `content` is never searched),
    with a working one-shot + resumable `reindexFullTextSearch`.
+   **Where the spec and Quartz disagree, the spec wins** (audited against
+   nostr-protocol/nips): NIP-62 vanish erases up to and INCLUDING the
+   request's `created_at` (Quartz: strict `<`); NIP-40 expired events are
+   never served, even stored-but-unswept (Quartz serves them until a sweep);
+   kind 5 has no effect against a kind 5 or a kind 62 (Quartz deletes them);
+   and NIP-50 `key:value` extension tokens are stripped from the search term
+   instead of matched as text (Quartz feeds them to FTS). One deliberate
+   extension kept from Quartz beyond NIP-09's letter: gift-wraps are
+   deletable by their p-tag recipient (NIP-62 explicitly wants this for
+   vanish; applying it to kind 5 is the consistent reading).
 8. **Single-writer, read-your-writes.** All store writes serialize behind one
    mutex, and the `EventIndex` contract requires an acked put to be visible
    to search (Vespa's proton updates the memory index on the write path).

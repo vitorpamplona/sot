@@ -298,14 +298,64 @@ class VespaEventStoreTest {
             assertEquals(0, store.count(Filter(kinds = listOf(GiftWrapEvent.KIND))))
         }
 
-    /** RightToVanishModule deletes strictly-older only: an event AT the vanish's created_at survives. */
+    /** NIP-62: history is erased "until its created_at" — INCLUSIVE (the spec; Quartz's trigger uses strict <). */
     @Test
-    fun `vanish keeps events at its exact timestamp`() =
+    fun `vanish erases events up to and including its timestamp`() =
         runBlocking {
             val atBoundary = note(at = 200)
+            val after = note(at = 201)
             store.insert(atBoundary)
+            store.insert(after)
             store.insert(RequestToVanishEvent(id(), alice, 200, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
-            assertEquals(setOf(atBoundary.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            assertEquals(setOf(after.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+        }
+
+    /** NIP-40: "Relays SHOULD NOT send expired events to clients, even if they are stored." */
+    @Test
+    fun `expired events are not served even before the sweep`() =
+        runBlocking {
+            val realNow = System.currentTimeMillis() / 1000
+            val expiring = note(tags = arrayOf(arrayOf("expiration", "${realNow + 50_000}")))
+            val keeper = note()
+            store.insert(expiring)
+            store.insert(keeper)
+
+            // Same index, clock past the expiration, no sweep has run:
+            val lateStore = VespaEventStore(index, nowSecs = { realNow + 100_000 })
+            assertEquals(setOf(keeper.id), lateStore.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            assertEquals(1, lateStore.count(Filter(kinds = listOf(1))))
+            // The doc is still stored (the sweep hasn't run) — only serving is guarded.
+            assertEquals(2, index.size())
+        }
+
+    /** NIP-09/NIP-62: a deletion request against a kind 5 or a kind 62 has no effect. */
+    @Test
+    fun `deletion requests cannot erase deletions or vanish requests`() =
+        runBlocking {
+            val target = note()
+            store.insert(target)
+            val deletion = DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", target.id)), "", "")
+            store.insert(deletion)
+
+            val vanishOther = RequestToVanishEvent(id(), bob, next(), arrayOf(arrayOf("relay", "wss://elsewhere.example.com/")), "", "")
+            store.insert(vanishOther)
+
+            store.insert(DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", deletion.id)), "", ""))
+            store.insert(DeletionEvent(id(), bob, next(), arrayOf(arrayOf("e", vanishOther.id)), "", ""))
+
+            // Both tombstones survive their own deletion requests.
+            assertEquals(3, store.count(Filter(kinds = listOf(DeletionEvent.KIND))))
+            assertEquals(1, store.count(Filter(kinds = listOf(RequestToVanishEvent.KIND))))
+        }
+
+    /** NIP-50: unsupported key:value extensions are ignored, not matched as text. */
+    @Test
+    fun `search ignores unsupported extensions`() =
+        runBlocking {
+            store.insert(metadata(name = "satoshi"))
+            assertEquals(1, store.query<Event>(Filter(search = "satoshi language:en nsfw:false")).size)
+            // An all-extensions query imposes no text constraint at all.
+            assertEquals(1, store.query<Event>(Filter(kinds = listOf(0), search = "language:en")).size)
         }
 
     /** reindexFullTextSearch: docs indexed without search_text become searchable after the rebuild. */

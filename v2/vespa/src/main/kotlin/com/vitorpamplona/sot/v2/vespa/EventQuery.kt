@@ -42,6 +42,8 @@ data class EventQuery(
     val until: Long? = null,
     /** Match docs whose NIP-40 expiration is strictly before this — the expiry sweep. */
     val expiresBefore: Long? = null,
+    /** Exclude docs already expired at this time (NIP-40: never serve expired events). */
+    val notExpiredAt: Long? = null,
     val limit: Int? = null,
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
@@ -89,6 +91,7 @@ object EventYql {
         q.since?.let { clauses += "created_at >= $it" }
         q.until?.let { clauses += "created_at <= $it" }
         q.expiresBefore?.let { clauses += "expires_at < $it" }
+        q.notExpiredAt?.let { clauses += "expires_at > $it" }
         q.scope?.let { clauses += "scope contains ${quote(it)}" }
 
         val term = q.search?.trim().orEmpty()

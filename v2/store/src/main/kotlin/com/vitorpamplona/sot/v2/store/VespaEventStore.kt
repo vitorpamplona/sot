@@ -139,7 +139,7 @@ class VespaEventStore(
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> =
         filters
-            .mapNotNull { it.toEventQuery() }
+            .mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs()) }
             .flatMap { index.search(it) }
             .distinctBy { it.id }
             .sortedWith(NEWEST_FIRST)
@@ -155,7 +155,7 @@ class VespaEventStore(
         onEach: (T) -> Unit,
     ) = query<T>(filters).forEach(onEach)
 
-    override suspend fun count(filter: Filter): Int = filter.toEventQuery()?.let { index.count(it) } ?: 0
+    override suspend fun count(filter: Filter): Int = filter.toEventQuery()?.let { index.count(it.copy(notExpiredAt = nowSecs())) } ?: 0
 
     override suspend fun count(filters: List<Filter>): Int = if (filters.size == 1) count(filters[0]) else query<Event>(filters).size
 
@@ -206,6 +206,9 @@ class VespaEventStore(
      * reject_deleted_events trigger, both target styles time-guarded).
      */
     private suspend fun rejectIfDeleted(event: Event) {
+        // NIP-09/NIP-62: a deletion request against a deletion request or a
+        // request to vanish has no effect — they are immune to kind-5 tombstones.
+        if (event is DeletionEvent || event is RequestToVanishEvent) return
         val owner = event.owner()
         val byId = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner), tags = mapOf("e" to listOf(event.id)), since = event.createdAt, limit = 1))
         if (byId.isNotEmpty()) throw RejectedException("blocked: a deletion event exists")
@@ -263,6 +266,8 @@ class VespaEventStore(
     private suspend fun applyDeletion(ev: DeletionEvent) {
         for (id in ev.deleteEventIds()) {
             val doc = index.get(id) ?: continue
+            // NIP-09/NIP-62: kind 5 against a kind 5 or a kind 62 has no effect.
+            if (doc.kind == DeletionEvent.KIND || doc.kind == RequestToVanishEvent.KIND) continue
             if (doc.owner == ev.pubKey) index.remove(id)
         }
         for (address in ev.deleteAddressIds()) {
@@ -280,10 +285,15 @@ class VespaEventStore(
         }
     }
 
-    /** NIP-62 enforcement: when the request covers [relay], erase the owner's STRICTLY-older history (the request itself survives). */
+    /**
+     * NIP-62 enforcement: when the request covers [relay], erase the owner's
+     * history "until its created_at" — INCLUSIVE, per the spec (Quartz's
+     * SQLite trigger uses strict <; the spec wins). The request itself is only
+     * stored after this runs, so it survives its own sweep.
+     */
     private suspend fun applyVanish(ev: RequestToVanishEvent) {
         if (!ev.shouldVanishFrom(relay)) return
-        sweep(EventQuery(owners = listOf(ev.pubKey), until = ev.createdAt - 1))
+        sweep(EventQuery(owners = listOf(ev.pubKey), until = ev.createdAt))
     }
 
     // ---- full-text reindex ----------------------------------------------------
@@ -354,9 +364,25 @@ internal fun Filter.toEventQuery(): EventQuery? {
         since = since,
         until = until,
         limit = limit,
-        search = search,
+        search = search?.stripSearchExtensions(),
     )
 }
+
+/**
+ * NIP-50: "a query string may contain key:value pairs (two words separated by
+ * colon), these are extensions, relays SHOULD ignore extensions they don't
+ * support." None are supported yet, so all extension tokens are dropped; only
+ * the plain terms constrain the match. All-extensions queries become
+ * unconstrained (null), not match-nothing.
+ */
+private val SEARCH_EXTENSION = Regex("^\\w+:\\S+$")
+
+internal fun String.stripSearchExtensions(): String? =
+    split(" ")
+        .filterNot { SEARCH_EXTENSION.matches(it) }
+        .joinToString(" ")
+        .trim()
+        .ifEmpty { null }
 
 /**
  * The event's exact stored form plus the two derived fields: [EventDoc.owner]
