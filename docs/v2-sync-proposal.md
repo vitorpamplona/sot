@@ -118,6 +118,31 @@ reconciliation of the scope (see negentropy below). This plane is
 authoritative per observer — one provider relay per 10040 entry, exactly the
 scope model that survived from the mirror design.
 
+**Provider switches invalidate scores.** When an observer's 10040 changes —
+new provider, or the same provider on a different relay — the stored 30382s
+synced for that observer are stale the moment the new list supersedes: they
+pollute ranking and must go, and the new provider's set must sync from its
+relay. Mechanics:
+
+- **Trigger**: the change feed's 10040 insert re-plans immediately — the new
+  provider scope is scheduled, the old one leaves the planner.
+- **Cleanup is reference-counted, not per-observer**: one service key often
+  serves many observers, so the old provider's 30382s are deleted only when
+  NO stored 10040 still lists that service key for `30382:rank`. The check
+  parses the stored 10040s (observer-cardinality — thousands, cheap; their
+  provider tags aren't single-letter, so this is a parse, not a tag query),
+  then `store.delete(kinds=[30382], authors=[orphaned service key])`.
+- **The correctness backstop is stateless**: a periodic **orphan sweep** —
+  referenced service keys (parsed from all stored 10040s) vs distinct 30382
+  authors (one Vespa grouping query) — deletes anything unreferenced. The
+  sweep catches every path to staleness (provider switch, observer removed,
+  a 10040 deleted or vanished) even if a feed reaction was missed, so the
+  in-flight reaction only buys promptness, never correctness.
+- Ranking follows automatically: `:v2:profile`'s projection derives
+  `quality_scores` from stored 30382s, so deleting the old provider's events
+  plus syncing the new provider's set re-derives the observer's cells — no
+  special invalidation code.
+
 **Records plane** (per author): for each (outbox relay → author batch) unit
 from the directory: sync `{kinds: SYNC_KINDS + [5, 62, 10002], authors: batch}`.
 Kind 5 and 62 ride along because the v2 store *interprets* them (unlike the
