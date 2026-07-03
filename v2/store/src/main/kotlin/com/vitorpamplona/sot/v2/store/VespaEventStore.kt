@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.v2.store
 
+import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
@@ -29,8 +30,10 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
+import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
@@ -252,7 +255,7 @@ class VespaEventStore(
         if (!event.kind.isReplaceable() && !event.kind.isAddressable()) return emptyList()
         val sameKindAuthor = index.search(EventQuery(kinds = listOf(event.kind), authors = listOf(event.pubKey)))
         if (!event.kind.isAddressable()) return sameKindAuthor
-        val d = event.dTagOrEmpty()
+        val d = event.tags.dTag()
         return sameKindAuthor.filter { doc -> dTagOf(doc.tags) == d }
     }
 
@@ -270,17 +273,13 @@ class VespaEventStore(
             if (doc.kind == DeletionEvent.KIND || doc.kind == RequestToVanishEvent.KIND) continue
             if (doc.owner == ev.pubKey) index.remove(id)
         }
-        for (address in ev.deleteAddressIds()) {
-            val parts = address.split(":", limit = 3)
-            val kind = parts.getOrNull(0)?.toIntOrNull() ?: continue
-            val author = parts.getOrNull(1) ?: continue
-            if (author != ev.pubKey) continue
-            if (!kind.isAddressable() && !kind.isReplaceable()) continue
-            val d = parts.getOrNull(2) ?: ""
+        for (address in ev.deleteAddresses()) {
+            if (address.pubKeyHex != ev.pubKey) continue
+            if (!address.kind.isAddressable() && !address.kind.isReplaceable()) continue
             index
-                .search(EventQuery(kinds = listOf(kind), authors = listOf(author), until = ev.createdAt))
+                .search(EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt))
                 // Replaceable kinds have ONE address regardless of the a-tag's d part.
-                .filter { !kind.isAddressable() || dTagOf(it.tags) == d }
+                .filter { !address.kind.isAddressable() || dTagOf(it.tags) == address.dTag }
                 .forEach { index.remove(it.id) }
         }
     }
@@ -364,25 +363,14 @@ internal fun Filter.toEventQuery(): EventQuery? {
         since = since,
         until = until,
         limit = limit,
-        search = search?.stripSearchExtensions(),
+        // NIP-50: extensions are relay hints, not text ("relays SHOULD ignore
+        // extensions they don't support"). Quartz's parser splits them off —
+        // and, unlike a naive key:value regex, keeps `scheme://…` tokens as
+        // terms. None are honored yet; an all-extensions query becomes
+        // unconstrained (null), not match-nothing.
+        search = SearchQuery.parse(search).terms.ifEmpty { null },
     )
 }
-
-/**
- * NIP-50: "a query string may contain key:value pairs (two words separated by
- * colon), these are extensions, relays SHOULD ignore extensions they don't
- * support." None are supported yet, so all extension tokens are dropped; only
- * the plain terms constrain the match. All-extensions queries become
- * unconstrained (null), not match-nothing.
- */
-private val SEARCH_EXTENSION = Regex("^\\w+:\\S+$")
-
-internal fun String.stripSearchExtensions(): String? =
-    split(" ")
-        .filterNot { SEARCH_EXTENSION.matches(it) }
-        .joinToString(" ")
-        .trim()
-        .ifEmpty { null }
 
 /**
  * The event's exact stored form plus the two derived fields: [EventDoc.owner]
@@ -407,15 +395,17 @@ internal fun Event.toDoc(): EventDoc =
 /** The pubkey Nostr semantics key off (SQLite's pubkey_owner_hash): the gift-wrap recipient, else the author. */
 internal fun Event.owner(): String = (this as? GiftWrapEvent)?.recipientPubKey() ?: pubKey
 
-/** The NIP-01 address ("kind:pubkey:dtag") for replaceable/addressable kinds; null for regular events. */
+/**
+ * The NIP-01 address for replaceable/addressable kinds; null for regular
+ * events. Replaceables use the fixed empty d-tag regardless of stray d tags,
+ * matching Quartz's BaseReplaceableEvent.FIXED_D_TAG.
+ */
 internal fun Event.addressOrNull(): String? =
     when {
-        kind.isReplaceable() -> "$kind:$pubKey:"
-        kind.isAddressable() -> "$kind:$pubKey:${dTagOrEmpty()}"
+        kind.isReplaceable() -> Address.assemble(kind, pubKey)
+        kind.isAddressable() -> Address.assemble(kind, pubKey, tags.dTag())
         else -> null
     }
 
-/** The d tag straight off the raw tags — typed OR unknown addressable kinds both resolve. */
-internal fun Event.dTagOrEmpty(): String = tags.firstOrNull { it.size >= 2 && it[0] == "d" }?.get(1) ?: ""
-
+/** The doc-side twin of Quartz's TagArray.dTag() — EventDoc tags are plain lists, not TagArrays. */
 internal fun dTagOf(tags: List<List<String>>): String = tags.firstOrNull { it.size >= 2 && it[0] == "d" }?.get(1) ?: ""

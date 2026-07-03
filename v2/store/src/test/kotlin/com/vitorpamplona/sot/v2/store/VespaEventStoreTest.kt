@@ -363,6 +363,9 @@ open class VespaEventStoreTest {
             assertEquals(1, store.query<Event>(Filter(search = "satoshi language:en nsfw:false")).size)
             // An all-extensions query imposes no text constraint at all.
             assertEquals(1, store.query<Event>(Filter(kinds = listOf(0), search = "language:en")).size)
+            // But a URL is NOT an extension — scheme://… stays a search term
+            // (a naive key:value strip would have turned this into match-all).
+            assertEquals(0, store.query<Event>(Filter(kinds = listOf(0), search = "https://unknown.example.com")).size)
         }
 
     /** reindexFullTextSearch: docs indexed without search_text become searchable after the rebuild. */
