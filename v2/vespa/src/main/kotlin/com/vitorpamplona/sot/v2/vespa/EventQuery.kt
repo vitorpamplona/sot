@@ -47,6 +47,13 @@ data class EventQuery(
     val limit: Int? = null,
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
+    /**
+     * RANKING context, never recall: the 64-hex pubkey whose web-of-trust
+     * weighs search hits (the NIP-42-authenticated user, or the operator's
+     * default). Only emitted alongside a search term, as the `user_q` ranking
+     * feature.
+     */
+    val observer: String? = null,
 )
 
 /** A ready-to-send Vespa query: the YQL, its query parameters, and the rank profile. */
@@ -96,6 +103,10 @@ object EventYql {
         if (term.isNotEmpty()) {
             clauses += "({defaultIndex:\"search_text\"}userInput(@search))"
             params["search"] = term
+            q.observer
+                ?.lowercase()
+                ?.takeIf(HEX64::matches)
+                ?.let { params["ranking.features.query(user_q)"] = "{$it:1.0}" }
         }
 
         val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")

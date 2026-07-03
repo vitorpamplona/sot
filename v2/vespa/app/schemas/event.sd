@@ -90,6 +90,13 @@ schema event {
     # profile document type (see v2/README.md module plan); until events can
     # import their author's trust tensor, text relevance is what we have.
     rank-profile text {
+        # The observer's web-of-trust tensor, plumbed end-to-end from NIP-42
+        # auth already (declared so the query feature is accepted); the
+        # expression starts weighing it when the profile document type lands.
+        inputs {
+            query(user_q) tensor<float>(user{})
+        }
+
         first-phase {
             expression: bm25(search_text)
         }

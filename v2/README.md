@@ -83,7 +83,15 @@ packages under `com.vitorpamplona.sot.v2`.
    extension kept from Quartz beyond NIP-09's letter: gift-wraps are
    deletable by their p-tag recipient (NIP-62 explicitly wants this for
    vanish; applying it to kind 5 is the consistent reading).
-8. **Single-writer, read-your-writes.** All store writes serialize behind one
+8. **The NIP-42 observer rides the coroutine context.** Quartz's
+   `IEventStore` has no per-caller parameter, so the relay backend resolves
+   the ranking observer (first authenticated pubkey, else the operator's
+   default) and wraps each REQ/COUNT in `withContext(ObserverContext(...))`;
+   the store reads it back and stamps `EventQuery.observer` — ranking
+   context only, never recall. `EventYql` emits it as the `user_q` query
+   feature; the `text` rank profile declares the input today and starts
+   weighing it when the profile document type lands.
+9. **Single-writer, read-your-writes.** All store writes serialize behind one
    mutex, and the `EventIndex` contract requires an acked put to be visible
    to search (Vespa's proton updates the memory index on the write path).
    That pair is what makes query-then-write semantics sound without SQL
@@ -97,6 +105,6 @@ packages under `com.vitorpamplona.sot.v2`.
 | `:v2:vespa` | **started** | `app/` (the `event` schema + query profile), `EventDoc` (field mapping + complete-event reconstruction), `EventQuery` → YQL, the `EventIndex` port, and `VespaEventIndex` — the real client (h2c feed writes, document-API gets, `/search/` queries). testFixtures: the in-memory reference + `MockVespaEngine`, which parses the emitted YQL back into an `EventQuery` and must agree with the reference. Next: a visit-based full-corpus walk; validate the YQL against a real deployed Vespa. |
 | `:v2:store` | **started** | `VespaEventStore : IEventStore` — the SQLite store's semantics on Vespa, `Filter` → `EventQuery` mapping, negentropy snapshots. The whole semantics suite runs twice: in-memory AND over the wire through `VespaEventIndex` + `MockVespaEngine`. Next: `ObservableEventStore` wiring; integration test: Quartz event → doc → reconstructed JSON → Quartz parse → `verify()`. |
 | `:v2:sync` | planned | Multi-relay ingest through the store (verify → `batchInsert`), NIP-77 delta sync seeded from `snapshotIdsForNegentropy`, optional per-source reconcile diffs for silent removals. |
-| `:v2:relay` | planned | NIP-50 relay serving complete events reconstructed from Vespa; full filter REQs; NIP-42 picks the observer. |
+| `:v2:relay` | **started** | `SotRelayServer` — Quartz's protocol engine (`RelayServerBase` + `LiveEventStore`) over the Vespa store: full-filter REQs + live subscriptions, VerifyPolicy-gated EVENT publishes, NIP-45 COUNT, server-side NIP-77, NIP-11 doc, Ktor mount. NIP-42 auth switches the ranking observer per connection (`ObserverRoutingBackend`). Next: Quartz `verify()` round-trip integration test; wire into a composition root. |
 | `:v2:profile` | planned | The ranked `profile` document type (pubkey-keyed, `quality_scores` tensor — port of v1's `doc.sd` ranking math) and the kind-0/30382/10040 mapping rules. |
 | `:v2:cli` | planned | Composition root: `serve` / `sync` / `status`. |

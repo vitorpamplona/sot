@@ -28,3 +28,4 @@ include(":cli")
 // version catalog, wrapper, and formatting; replaces the modules above when done.
 include(":v2:vespa")
 include(":v2:store")
+include(":v2:relay")

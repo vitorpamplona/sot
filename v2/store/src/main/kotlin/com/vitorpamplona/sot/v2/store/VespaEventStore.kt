@@ -42,6 +42,7 @@ import com.vitorpamplona.sot.v2.vespa.EventIndex
 import com.vitorpamplona.sot.v2.vespa.EventQuery
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.coroutineContext
 
 /**
  * Quartz [IEventStore] backed by the search engine itself — the v2 replacement
@@ -140,13 +141,15 @@ class VespaEventStore(
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 
     @Suppress("UNCHECKED_CAST")
-    override suspend fun <T : Event> query(filters: List<Filter>): List<T> =
-        filters
-            .mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs()) }
+    override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
+        val observer = coroutineContext[ObserverContext]?.pubkey
+        return filters
+            .mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer) }
             .flatMap { index.search(it) }
             .distinctBy { it.id }
             .sortedWith(NEWEST_FIRST)
             .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) } as List<T>
+    }
 
     override suspend fun <T : Event> query(
         filter: Filter,
