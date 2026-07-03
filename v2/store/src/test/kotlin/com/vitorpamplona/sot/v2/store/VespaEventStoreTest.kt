@@ -373,7 +373,7 @@ open class VespaEventStoreTest {
     fun `reindex re-derives search text`() =
         runBlocking {
             // Simulate a doc fed under old code: correct fields, no derived search_text.
-            index.put(EventDoc.fromEventJson(metadata(name = "satoshi").toJson(), scope = ""))
+            index.put(EventDoc.fromEventJson(metadata(name = "satoshi").toJson()))
             store.insert(note())
             assertEquals(0, store.count(Filter(search = "satoshi")))
 

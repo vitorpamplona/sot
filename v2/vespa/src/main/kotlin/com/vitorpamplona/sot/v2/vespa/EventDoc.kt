@@ -59,8 +59,6 @@ data class EventDoc(
     val tags: List<List<String>>,
     val content: String,
     val sig: String,
-    /** Optional provenance (where this doc was first synced from); never semantics. */
-    val scope: String,
     val owner: String = pubkey,
     val searchText: String? = null,
 ) {
@@ -90,7 +88,6 @@ data class EventDoc(
             put("tag_index", JsonArray(tagIndex().map(::JsonPrimitive)))
             put("content", JsonPrimitive(content))
             put("sig", JsonPrimitive(sig))
-            put("scope", JsonPrimitive(scope))
             put("owner", JsonPrimitive(owner))
             searchText?.let { put("search_text", JsonPrimitive(it)) }
             // Always written: an absent numeric attribute reads as 0 in Vespa,
@@ -116,11 +113,8 @@ data class EventDoc(
         /** The `expires_at` value of an event without a NIP-40 expiration: far enough to outlive every range check. */
         const val NO_EXPIRATION = Long.MAX_VALUE
 
-        /** Parse a raw NIP-01 event JSON into a doc for [scope]. Throws on a malformed event. */
-        fun fromEventJson(
-            raw: String,
-            scope: String,
-        ): EventDoc {
+        /** Parse a raw NIP-01 event JSON into a doc. Throws on a malformed event. */
+        fun fromEventJson(raw: String): EventDoc {
             val o = Json.parseToJsonElement(raw).jsonObject
             return EventDoc(
                 id = o.getValue("id").jsonPrimitive.content,
@@ -130,7 +124,6 @@ data class EventDoc(
                 tags = o.getValue("tags").jsonArray.map { tag -> tag.jsonArray.map { it.jsonPrimitive.content } },
                 content = o.getValue("content").jsonPrimitive.content,
                 sig = o.getValue("sig").jsonPrimitive.content,
-                scope = scope,
             )
         }
 
@@ -149,7 +142,6 @@ data class EventDoc(
                         .map { tag -> tag.jsonArray.map { it.jsonPrimitive.content } },
                 content = fields["content"]?.jsonPrimitive?.content ?: "",
                 sig = fields.getValue("sig").jsonPrimitive.content,
-                scope = fields["scope"]?.jsonPrimitive?.content ?: "",
                 owner = fields["owner"]?.jsonPrimitive?.content ?: pubkey,
                 searchText = fields["search_text"]?.jsonPrimitive?.content,
             )

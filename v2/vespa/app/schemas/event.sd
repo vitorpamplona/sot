@@ -70,13 +70,6 @@ schema event {
             index: enable-bm25
         }
 
-        # Optional provenance: where this doc was first synced from. Never part
-        # of store semantics — see v2/README.md decision 4.
-        field scope type string {
-            indexing: attribute | summary
-            attribute: fast-search
-        }
-
         # NIP-40: derived from the expiration tag at feed time, so the expiry
         # sweep AND the never-serve-expired query guard are single range
         # clauses. Always written — Long.MAX_VALUE means "never expires" (an

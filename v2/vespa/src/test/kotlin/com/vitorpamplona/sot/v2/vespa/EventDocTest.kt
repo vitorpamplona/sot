@@ -47,7 +47,6 @@ class EventDocTest {
                 ),
             content = "line one\n\"quoted\" \\backslash\\ emoji 🫥 tab\there",
             sig = "e".repeat(128),
-            scope = "wss://relay.example.com|kind=30382",
         )
 
     @Test
@@ -57,7 +56,7 @@ class EventDocTest {
 
     @Test
     fun `event json round-trips losslessly`() {
-        assertEquals(doc, EventDoc.fromEventJson(doc.toEventJson(), doc.scope))
+        assertEquals(doc, EventDoc.fromEventJson(doc.toEventJson()))
     }
 
     @Test
@@ -118,17 +117,17 @@ class EventDocTest {
         val raw =
             """{"id":"${"1".repeat(64)}","pubkey":"${"2".repeat(64)}","created_at":1700000001,""" +
                 """"kind":0,"tags":[["p","${"3".repeat(64)}"]],"content":"{\"name\":\"vitor\"}","sig":"${"4".repeat(128)}"}"""
-        val parsed = EventDoc.fromEventJson(raw, scope = "s")
+        val parsed = EventDoc.fromEventJson(raw)
         assertEquals(0, parsed.kind)
         assertEquals(1_700_000_001L, parsed.createdAt)
         assertEquals("""{"name":"vitor"}""", parsed.content)
         assertEquals(listOf(listOf("p", "3".repeat(64))), parsed.tags)
         // ...and what we would serve back is the same event.
-        assertEquals(parsed, EventDoc.fromEventJson(parsed.toEventJson(), "s"))
+        assertEquals(parsed, EventDoc.fromEventJson(parsed.toEventJson()))
     }
 
     @Test
     fun `malformed event json throws`() {
-        assertFailsWith<Exception> { EventDoc.fromEventJson("""{"id":"x"}""", "s") }
+        assertFailsWith<Exception> { EventDoc.fromEventJson("""{"id":"x"}""") }
     }
 }

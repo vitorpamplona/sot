@@ -47,10 +47,12 @@ packages under `com.vitorpamplona.sot.v2`.
    exactly the space NIP-01 filters can address (`#a`–`#Z`). Everything else
    still round-trips through `tags`. The one other derived attribute is
    `expires_at` (NIP-40), so the expiry sweep is a single range query.
-4. **`scope` is provenance, never semantics.** (Revised from "reconciliation
-   scopes own deletion".) The store writes it empty; a syncer may stamp where
-   a doc was first seen. Per-source reconcile diffs remain possible on top,
-   but nothing in the store keys correctness off it.
+4. **No per-source `scope` field.** (Revised twice: first from
+   "reconciliation scopes own deletion" to "provenance only", then removed —
+   the store was the only write path and always left it empty, making it dead
+   weight.) If the sync module ever needs per-source provenance for
+   silent-removal diffs, it can add a field it can actually populate, or
+   track source→ids outside the docs.
 5. **`:v2:vespa` stays Nostr-library-agnostic.** Plain values in (`EventDoc`,
    `EventQuery`), YQL/JSON out, plus the `EventIndex` port the store talks to.
    Quartz enters in `:v2:store` and above. Events are verified once at ingest

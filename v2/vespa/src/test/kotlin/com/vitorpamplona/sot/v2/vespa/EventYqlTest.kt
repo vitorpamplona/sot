@@ -49,13 +49,11 @@ class EventYqlTest {
                     since = 100,
                     until = 200,
                     limit = 50,
-                    scope = "wss://relay.example.com|kind=30382",
                 ),
             )!!
         assertEquals(
             "select * from event where kind in (0, 30382) and pubkey in (\"$hexA\") " +
                 "and (tag_index contains \"p:$hexB\") and created_at >= 100 and created_at <= 200 " +
-                "and scope contains \"wss://relay.example.com|kind=30382\" " +
                 "order by created_at desc limit 50",
             q.yql,
         )
@@ -120,7 +118,7 @@ class EventYqlTest {
                 "order by created_at desc",
             q.yql,
         )
-        val newline = EventYql.build(EventQuery(scope = "a\nb\\c"))!!
-        assertTrue("scope contains \"a\\nb\\\\c\"" in newline.yql)
+        val newline = EventYql.build(EventQuery(tags = mapOf("t" to listOf("a\nb\\c"))))!!
+        assertTrue("tag_index contains \"t:a\\nb\\\\c\"" in newline.yql)
     }
 }

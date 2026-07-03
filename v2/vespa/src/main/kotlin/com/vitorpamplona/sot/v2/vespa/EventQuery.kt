@@ -47,8 +47,6 @@ data class EventQuery(
     val limit: Int? = null,
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
-    /** Restrict to one mirror scope; null = all scopes. */
-    val scope: String? = null,
 )
 
 /** A ready-to-send Vespa query: the YQL, its query parameters, and the rank profile. */
@@ -92,7 +90,6 @@ object EventYql {
         q.until?.let { clauses += "created_at <= $it" }
         q.expiresBefore?.let { clauses += "expires_at < $it" }
         q.notExpiredAt?.let { clauses += "expires_at > $it" }
-        q.scope?.let { clauses += "scope contains ${quote(it)}" }
 
         val term = q.search?.trim().orEmpty()
         val params = LinkedHashMap<String, String>()

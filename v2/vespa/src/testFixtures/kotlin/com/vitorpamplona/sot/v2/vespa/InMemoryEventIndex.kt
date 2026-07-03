@@ -66,8 +66,7 @@ class InMemoryEventIndex : EventIndex {
             (q.until == null || createdAt <= q.until) &&
             (q.expiresBefore == null || (expiresAt()?.let { it < q.expiresBefore } == true)) &&
             (q.notExpiredAt == null || (expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
-            (q.search.isNullOrBlank() || searchText?.contains(q.search.trim(), ignoreCase = true) == true) &&
-            (q.scope == null || scope == q.scope)
+            (q.search.isNullOrBlank() || searchText?.contains(q.search.trim(), ignoreCase = true) == true)
     }
 
     private companion object {

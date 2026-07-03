@@ -54,7 +54,6 @@ class VespaEventIndexTest {
         content: String = "",
         owner: String = pubkey,
         searchText: String? = null,
-        scope: String = "",
     ) = EventDoc(
         id = (++seq).toString(16).padStart(64, '0'),
         pubkey = pubkey,
@@ -63,7 +62,6 @@ class VespaEventIndexTest {
         tags = tags,
         content = content,
         sig = "e".repeat(128),
-        scope = scope,
         owner = owner,
         searchText = searchText,
     )
@@ -108,7 +106,6 @@ class VespaEventIndexTest {
             doc(kind = 1, pubkey = bob, at = 5000),
             doc(kind = 30382, pubkey = bob, tags = listOf(listOf("d", "x"), listOf("t", "nostr"), listOf("t", "search"))),
             doc(kind = 1, owner = bob, tags = listOf(listOf("expiration", "2000"))),
-            doc(kind = 1, scope = "wss://source.example.com|k1"),
             // Escaping round-trip: the tag value must survive YQL quoting + parsing.
             doc(kind = 1, tags = listOf(listOf("t", "quo\"te\\and\nnewline"))),
         )
@@ -124,7 +121,6 @@ class VespaEventIndexTest {
         check(EventQuery(kinds = listOf(1), limit = 2))
         check(EventQuery(notExpiredAt = 3000))
         check(EventQuery(expiresBefore = 3000))
-        check(EventQuery(scope = "wss://source.example.com|k1"))
         check(EventQuery(search = "vitor"))
         check(EventQuery(kinds = listOf(0, 1), tags = mapOf("p" to listOf(bob)), until = 9000))
     }

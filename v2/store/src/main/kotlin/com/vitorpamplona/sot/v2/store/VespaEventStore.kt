@@ -387,7 +387,6 @@ internal fun Event.toDoc(): EventDoc =
         tags = tags.map { it.toList() },
         content = content,
         sig = sig,
-        scope = "",
         owner = owner(),
         searchText = (this as? SearchableEvent)?.indexableContent(),
     )
