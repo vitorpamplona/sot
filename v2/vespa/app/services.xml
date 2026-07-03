@@ -14,6 +14,9 @@
 
     <documents>
       <document type="event" mode="index" />
+      <!-- Ranking state per pubkey; GLOBAL so event docs can reference it and
+           import the trust tensors into their own ranking (parent/child). -->
+      <document type="profile" mode="index" global="true" />
     </documents>
 
     <nodes>
