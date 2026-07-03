@@ -269,6 +269,13 @@ open class VespaEventStoreTest {
             assertEquals(setOf(bob), store.query<Event>(Filter(kinds = listOf(1))).map { it.pubKey }.toSet())
         }
 
+    /** NIP-01 standardized tags: a replaceable coordinate is "kind:pubkey:" — "(note: include the trailing colon)". */
+    @Test
+    fun `replaceable addresses keep the trailing colon`() {
+        assertEquals("0:$alice:", metadata().addressOrNull())
+        assertEquals("${ContactCardEvent.KIND}:$alice:$bob", card(subject = bob).addressOrNull())
+    }
+
     /** FullTextSearchModule: only SearchableEvent kinds are searchable, via indexableContent(). */
     @Test
     fun `search matches searchable kinds only`() =
