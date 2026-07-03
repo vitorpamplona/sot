@@ -30,6 +30,8 @@ import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.v2.vespa.EventDoc
+import com.vitorpamplona.sot.v2.vespa.EventIndex
+import com.vitorpamplona.sot.v2.vespa.EventQuery
 import com.vitorpamplona.sot.v2.vespa.InMemoryEventIndex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -42,7 +44,7 @@ import kotlin.test.assertTrue
  * each test names the sqlite ...Module.kt rule it mirrors. Events are unsigned
  * fixtures: like the SQLite store, verification is the ingest path's job.
  */
-class VespaEventStoreTest {
+open class VespaEventStoreTest {
     private val alice = "a1".repeat(32)
     private val bob = "b2".repeat(32)
 
@@ -54,8 +56,13 @@ class VespaEventStoreTest {
 
     private fun id() = (++seq).toString(16).padStart(64, '0')
 
-    private val index = InMemoryEventIndex()
-    private val store = VespaEventStore(index, relay = "wss://sot.test/".normalizeRelayUrl())
+    /** Override to run the WHOLE semantics suite against another engine (see VespaEventStoreWireTest). */
+    protected open fun newIndex(): EventIndex = InMemoryEventIndex()
+
+    protected val index: EventIndex by lazy { newIndex() }
+    private val store by lazy { VespaEventStore(index, relay = "wss://sot.test/".normalizeRelayUrl()) }
+
+    private fun storedDocs() = runBlocking { index.count(EventQuery()) }
 
     private fun note(
         author: String = alice,
@@ -190,7 +197,7 @@ class VespaEventStoreTest {
         runBlocking {
             val outcomes = store.batchInsert(listOf(Event(id(), alice, next(), 20_001, emptyArray(), "", "")))
             assertEquals(listOf<IEventStore.InsertOutcome>(IEventStore.InsertOutcome.Accepted), outcomes)
-            assertEquals(0, index.size())
+            assertEquals(0, storedDocs())
         }
 
     /** ExpirationModule: expired inserts rejected; due expirations swept. */
@@ -325,7 +332,7 @@ class VespaEventStoreTest {
             assertEquals(setOf(keeper.id), lateStore.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
             assertEquals(1, lateStore.count(Filter(kinds = listOf(1))))
             // The doc is still stored (the sweep hasn't run) — only serving is guarded.
-            assertEquals(2, index.size())
+            assertEquals(2, storedDocs())
         }
 
     /** NIP-09/NIP-62: a deletion request against a kind 5 or a kind 62 has no effect. */

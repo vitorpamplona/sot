@@ -92,8 +92,8 @@ packages under `com.vitorpamplona.sot.v2`.
 
 | module | status | contents |
 | --- | --- | --- |
-| `:v2:vespa` | **started** | `app/` (the `event` schema), `EventDoc` (field mapping + complete-event reconstruction), `EventQuery` → YQL, the `EventIndex` port + in-memory reference (testFixtures). Next: the real `EventIndex` over Vespa (feed client + `/search/` + document API) against MockVespa. |
-| `:v2:store` | **started** | `VespaEventStore : IEventStore` — the SQLite store's semantics on Vespa, `Filter` → `EventQuery` mapping, negentropy snapshots. Wrap in `ObservableEventStore` for the change feed. Next: run against the real `EventIndex`; integration test: Quartz event → doc → reconstructed JSON → Quartz parse → `verify()`. |
+| `:v2:vespa` | **started** | `app/` (the `event` schema + query profile), `EventDoc` (field mapping + complete-event reconstruction), `EventQuery` → YQL, the `EventIndex` port, and `VespaEventIndex` — the real client (h2c feed writes, document-API gets, `/search/` queries). testFixtures: the in-memory reference + `MockVespaEngine`, which parses the emitted YQL back into an `EventQuery` and must agree with the reference. Next: a visit-based full-corpus walk; validate the YQL against a real deployed Vespa. |
+| `:v2:store` | **started** | `VespaEventStore : IEventStore` — the SQLite store's semantics on Vespa, `Filter` → `EventQuery` mapping, negentropy snapshots. The whole semantics suite runs twice: in-memory AND over the wire through `VespaEventIndex` + `MockVespaEngine`. Next: `ObservableEventStore` wiring; integration test: Quartz event → doc → reconstructed JSON → Quartz parse → `verify()`. |
 | `:v2:sync` | planned | Multi-relay ingest through the store (verify → `batchInsert`), NIP-77 delta sync seeded from `snapshotIdsForNegentropy`, optional per-source reconcile diffs for silent removals. |
 | `:v2:relay` | planned | NIP-50 relay serving complete events reconstructed from Vespa; full filter REQs; NIP-42 picks the observer. |
 | `:v2:profile` | planned | The ranked `profile` document type (pubkey-keyed, `quality_scores` tensor — port of v1's `doc.sd` ranking math) and the kind-0/30382/10040 mapping rules. |
