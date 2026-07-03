@@ -9,19 +9,21 @@
 # can address) and is NOT lossless. Do not reconstruct events from tag_index.
 #
 # SEARCH is per-kind: the store's extractors populate kind-specific fields
-# (kind 0 fills the profile group below, ported from Brainstorm; other kinds
-# fill the generic tiers), and ONE `search` rank profile dispatches on
-# attribute(kind) — so a single query ranks whatever the REQ's kinds filter
-# recalled, each kind by its own equations, all weighted by the observer's
-# web of trust imported from the `profile` parent document.
+# (kind 0 fills the Brainstorm profile group; other kinds fill the generic
+# tiers). Because the groups are DISJOINT per kind, every scoring function
+# zeroes out on docs of the other kinds — so one rank profile serves a mixed
+# kinds filter with a plain SUM, no kind dispatch, and each doc is ranked by
+# its own kind's equations weighted by the observer's web of trust imported
+# from the `profile` parent document.
 #
-# Profile equations ported from Brainstorm (github.com/NosFabrica):
-#   brainstorm_server @ main: app/core/vespa.py + app/core/vespa_query.py
-#   brainstorm_one_click_deployment @ main: vespa-app/schemas/doc.sd
-# The brainstorm-k8s chart's schema is private to this session — DIFF the
-# profile group + rank profiles against charts/brainstorm/vespa-app before
-# first deploy; anything reconstructed from vespa.py's docstrings rather than
-# read from that schema is marked "(reconstructed)".
+# Profile fields + equations ported VERBATIM from Brainstorm's
+# brainstorm-k8s charts/brainstorm/vespa-app doc.sd (2026-07; operator-
+# provided) — the §12 multiplicative-trust default and all sort alternates —
+# with two mechanical changes: the trust tensors are IMPORTED from the
+# profile parent (author_quality_scores / author_follower_counts) instead of
+# living on the doc, and the generic tier group extends each composite so
+# non-profile kinds ride the same profiles. Query side:
+# brainstorm_server app/core/vespa.py + vespa_query.py.
 schema event {
 
     document event {
@@ -107,15 +109,20 @@ schema event {
 
         # kind 0 — the Brainstorm profile group. Field roles from
         # vespa_query.py: primary = name/display_name/nip05/lud16,
-        # affiliation = about/website.
+        # affiliation = about/website. Per NIP-24 the deprecated `username`
+        # folds into `name` at extraction.
         field name type string {
             indexing: index | summary
             index: enable-bm25
+            # Proper-noun field: disable stemming so "Daniels" isn't conflated
+            # with "daniel" (Brainstorm §10 typo deep-dive).
+            stemming: none
         }
 
         field display_name type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field about type string {
@@ -146,6 +153,7 @@ schema event {
         field search_primary type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field search_secondary type string {
@@ -217,40 +225,56 @@ schema event {
         fields: name_gram, display_name_gram, pubkey_gram
     }
 
-    # ---------------------------------------------------------------------
-    # Shared ranking functions. Every profile below reuses these; the split
-    # between kind-0 math (Brainstorm) and tier math (other kinds) happens in
-    # text_score()'s dispatch on attribute(kind).
-    # ---------------------------------------------------------------------
-    rank-profile shared_functions {
+    # -----------------------------------------------------------------------
+    # PURE-TEXT base profile — Brainstorm's text_relevance, verbatim, plus the
+    # tier extension for non-profile kinds. Trust is NOT blended into
+    # relevance(); the trust-sorted profiles below inherit everything here.
+    # -----------------------------------------------------------------------
+    rank-profile text_relevance {
 
         inputs {
-            # The observer: {<pubkey>: 1.0}. NIP-42-resolved by the relay.
             query(user_q) tensor<float>(user{})
-            # Trust gate: drop hits whose observer score is below this
-            # (Brainstorm's product default is 2; 0 = no gate).
-            query(min_rank) double: 0.0
-            # Trigram weight: 8.0 for very short queries, else 2.0 (set by the
-            # caller per vespa.py); gram_cap bounds each field's gram term so
-            # recall noise can't outscore a token match (reconstructed).
-            query(w_gram) double: 2.0
-            query(gram_cap) double: 4.0
-            # Profile-group weights (Brainstorm).
-            query(w_about) double: 0.5
-            query(w_identity) double: 1.0
-            # Tier weights (non-profile kinds). w_primary's matchCount term is
-            # scaled x100 like name_text, so an exact title match is the same
-            # order of magnitude as an exact name match — cross-kind results
-            # stay comparable in one list.
-            query(w_primary) double: 1.0
+            query(w_gram) double: 5.0
+            query(w_display_name) double: 0.2
+            query(w_about) double: 0.1
+            query(w_about_bonus) double: 0.0
+            # Cap on how much the trigram (gram) signal can contribute to a
+            # field's text score. Kept below the matchCount unit (100) so a
+            # trigram-only match can never outrank a single exact token match.
+            query(gram_cap) double: 80.0
+            # Per-observer rank floor for filter:rank:gte/gt. Defaults below
+            # every real score so the gate in the rank_* profiles below is a
+            # no-op unless a query sets it.
+            query(min_rank) double: -1000000000.0
+            # Match-quality ladder step (§10): spacing between the
+            # exact>prefix>1-typo>2-typo tiers within the token-match band.
+            query(w_match_step) double: 250.0
+            # Multi-word proximity bonus (fieldMatch). Tie-breaker WITHIN a
+            # match-quality tier; < w_match_step so it never reorders tiers.
+            query(w_proximity) double: 30.0
+            # Popularity/trust profiles: the exact>typo match tier sits ABOVE
+            # the trust sort so a genuine name match never loses to a
+            # more-popular typo/substring hit.
+            query(w_pop_token_tier) double: 1000000000.0
+            query(w_pop_match_step) double: 10000000.0
+            # Affiliation tier (§11): a genuine bio OR website-domain token
+            # match ranks above gram noise, below real name matches.
+            query(w_affil_tier) double: 10000000.0
+            query(w_affil_tier_text) double: 550.0
+            # Default (sort_followers) §12 rewrite: IDF-diluted text ×
+            # modest multiplicative trust.
+            query(w_name_tier) double: 2000.0
+            query(w_identity) double: 50.0
+            query(w_wot) double: 1.0
+            # Discard hits whose text_score is below this BEFORE the trust
+            # multiply — kills weak gram-only noise so trust can't float it.
+            query(text_score_cutoff) double: 50.0
+            # Tier-group weights (sot extension, non-profile kinds).
             query(w_secondary) double: 0.4
             query(w_content) double: 0.15
-            # Trust blend strength for the default `search` profile.
-            query(w_quality) double: 1.0
         }
 
-        # ---- web of trust (imported from the profile parent) ----
-
+        # The observer's trust in this doc's AUTHOR, via the profile parent.
         function user_score() {
             expression: sum(query(user_q) * attribute(author_quality_scores))
         }
@@ -259,30 +283,14 @@ schema event {
             expression: sum(query(user_q) * attribute(author_follower_counts))
         }
 
-        # Logistic sigmoid centered at 50, slope 0.073: sigma(20)~0.1, sigma(80)~0.9.
-        function quality_boost() {
-            expression: 1000 / (1 + exp(-0.073 * (user_score() - 50)))
-        }
-
-        # Fails the min_rank gate => the hit is dropped (see rank-score-drop-limit).
-        function passes_rank_gate() {
-            expression: if(user_score() >= query(min_rank), 1, 0)
-        }
-
-        # ---- kind 0: the Brainstorm profile equations ----
-
-        function capped_gram(g) {
-            expression: min(query(w_gram) * g, query(gram_cap))
-        }
-
-        # matchCount dominates (a token match beats any bm25 sum), bm25 is
-        # length-normalized so short exact names beat long name-mentions, and
-        # grams are a capped tie-breaker. Guard fieldLength=0 against NaN.
+        # Text relevance for the name field — the primary signal.
+        # Guard the bm25/fieldLength division against fieldLength=0 (empty
+        # field): 0/0 = NaN would propagate through max() in primary_text.
         function name_text() {
             expression {
                 matchCount(name) * 100
                 + if(fieldLength(name) > 0, bm25(name) / pow(fieldLength(name), 1.5), 0)
-                + capped_gram(bm25(name_gram))
+                + min(query(w_gram) * bm25(name_gram), query(gram_cap))
             }
         }
 
@@ -290,7 +298,17 @@ schema event {
             expression {
                 matchCount(display_name) * 100
                 + if(fieldLength(display_name) > 0, bm25(display_name) / pow(fieldLength(display_name), 1.5), 0)
-                + capped_gram(bm25(display_name_gram))
+                + min(query(w_gram) * bm25(display_name_gram), query(gram_cap))
+            }
+        }
+
+        # about: IDF-aware only (bm25), no flat matchCount term — rare bio
+        # terms find affiliated people, common words don't surface
+        # bio-mentioners over name-bearers.
+        function about_text() {
+            expression {
+                bm25(about)
+                + query(w_gram) * bm25(about_gram)
             }
         }
 
@@ -300,165 +318,219 @@ schema event {
             expression: max(name_text(), display_name_text())
         }
 
-        # Identity handles (nip05/lud16), IDF-scored: rare handles score high,
-        # a common @primal.net suffix scores low — the "primal dilution" fix.
-        function identity_text() {
-            expression: query(w_identity) * (bm25(nip05) + bm25(lud16))
+        # about contributes only when NOTHING primary matched (fallback).
+        function secondary_active() {
+            expression: if(has_token_match() > 0, 0, 1)
         }
 
-        # Affiliation: bio + website. IDF-aware only (no flat matchCount term):
-        # rare bio terms find affiliated people, common words don't surface
-        # bio-mentioners over name-bearers.
-        function affiliation_text() {
-            expression: bm25(about) + bm25(website) + capped_gram(bm25(about_gram))
+        # A "real" token match — exact/prefix/fuzzy in an INDEXED name or
+        # identity field; trigram-only recall doesn't feed matchCount.
+        function has_token_match() {
+            expression: if(matchCount(name) > 0 || matchCount(display_name) > 0 || matchCount(nip05) > 0 || matchCount(lud16) > 0, 1, 0)
         }
 
+        # Graded match quality from the labeled query clauses (vespa_query.py
+        # _field_clauses): 4=exact, 3=prefix, 2=1-typo, 1=2-typo, 0=gram-only.
+        # KNOWN-INERT: itemRawScore does not populate for plain text terms
+        # (Brainstorm staging, 2026-06-30) — degrades safely to 0; the coarse
+        # has_token_match tier still applies. Kept for the day Vespa populates
+        # term raw scores or the verbatim-field rework (§11.1) lands.
+        function match_quality() {
+            expression: if(itemRawScore(mtch_exact) > 0, 4, if(itemRawScore(mtch_prefix) > 0, 3, if(itemRawScore(mtch_fz1) > 0, 2, if(itemRawScore(mtch_fz2) > 0, 1, 0))))
+        }
+
+        # A bio/website affiliation match WITHOUT any name-field token match.
+        function affiliation_match() {
+            expression: if(has_token_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
+        }
+
+        # Multi-word proximity over the primary fields (0..1): Meilisearch's
+        # `proximity` rule. ~1 for single-word queries (harmless); rewards
+        # close-together terms on multi-word ones. Tier fields included so
+        # titles get the same treatment (sot extension).
+        function proximity() {
+            expression: max(max(fieldMatch(name).proximity, fieldMatch(display_name).proximity), fieldMatch(search_primary).proximity)
+        }
+
+        # Genuine NAME token match (name/display_name only) — nip05/lud16
+        # deliberately excluded; they score via identity_text (IDF) so a
+        # common domain like primal.net can't flood the name tier.
         function name_match() {
             expression: if(matchCount(name) > 0 || matchCount(display_name) > 0, 1, 0)
+        }
+
+        # IDF-aware identity handles: bm25 is tf*IDF, so a token shared by
+        # thousands of nip05s (primal, gmail, com) scores ~0 while a unique
+        # handle scores high — "the more a word is used, the smaller the score".
+        function identity_text() {
+            expression: bm25(nip05) + bm25(lud16)
         }
 
         function identity_match() {
             expression: if(matchCount(nip05) > 0 || matchCount(lud16) > 0, 1, 0)
         }
 
-        function affiliation_match() {
-            expression: if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0)
+        # ---- sot extension: the generic tier group (non-profile kinds). ----
+        # Same shape as the name math so magnitudes stay cross-kind
+        # comparable: an exact title/subject token match ~ an exact name match.
+        # All of these are 0 on kind-0 docs (their tier fields are empty),
+        # exactly as the profile functions are 0 on non-profile docs — which is
+        # why composition below is a plain sum, never an if(kind) dispatch.
+
+        function tier_token_match() {
+            expression: if(matchCount(search_primary) > 0, 1, 0)
         }
 
-        # Secondary signals only contribute when no primary field matched —
-        # a display_name match must not also collect the about bonus.
-        function profile_text() {
+        function tier_primary_text() {
             expression {
-                primary_text()
-                + if(name_match() == 0, identity_text(), 0)
-                + if(name_match() == 0 && identity_match() == 0, query(w_about) * affiliation_text(), 0)
-            }
-        }
-
-        # ---- every other kind: the generic tier equations ----
-
-        # Same shape as name_text so magnitudes are cross-kind comparable:
-        # an exact title/subject match ~ an exact name match.
-        function primary_tier_text() {
-            expression {
-                query(w_primary) * (
-                    matchCount(search_primary) * 100
-                    + if(fieldLength(search_primary) > 0, bm25(search_primary) / pow(fieldLength(search_primary), 1.5), 0)
-                    + capped_gram(bm25(search_primary_gram))
-                )
+                matchCount(search_primary) * 100
+                + if(fieldLength(search_primary) > 0, bm25(search_primary) / pow(fieldLength(search_primary), 1.5), 0)
+                + min(query(w_gram) * bm25(search_primary_gram), query(gram_cap))
             }
         }
 
         function tier_text() {
             expression {
-                primary_tier_text()
+                tier_token_match() * query(w_name_tier)
+                + tier_primary_text()
                 + query(w_secondary) * bm25(search_secondary)
                 + query(w_content) * bm25(search_text)
             }
         }
 
-        # ---- the per-kind dispatch: one query, each doc ranked by its kind's math ----
+        # ---- composites (profile group + tier group; disjoint per kind) ----
 
+        function any_token_match() {
+            expression: max(has_token_match(), tier_token_match())
+        }
+
+        # IDF-diluted TEXT score for the default profile — the thing that gets
+        # MULTIPLIED by trust. All terms are text; common tokens and gram-only
+        # noise stay low so trust can't float them. (Brainstorm text_score()
+        # + the tier group.)
         function text_score() {
-            expression: if(attribute(kind) == 0, profile_text(), tier_text())
-        }
-    }
-
-    # The sot default: text relevance blended with the observer's web of
-    # trust — text finds, trust orders among comparable matches, min_rank
-    # gates. This is the profile the NIP-50 relay uses unless the query picks
-    # a sort alternate below.
-    rank-profile search inherits shared_functions {
-        first-phase {
             expression {
-                if(passes_rank_gate() == 0, -1,
-                   text_score() * (1 + query(w_quality) * user_score() / 100)
-                   + min(text_score() / 100, 1.0) * quality_boost())
+                name_match() * query(w_name_tier)
+                + primary_text()
+                + query(w_identity) * identity_text()
+                + affiliation_match() * query(w_affil_tier_text)
+                + secondary_active() * query(w_about) * about_text()
+                + tier_text()
             }
-            rank-score-drop-limit: 0.0
         }
 
+        # MULTIPLICATIVE trust — NOT additive (additive WoT swamped exactness).
+        # 0 below the rank cutoff (server passes min_rank=2), then a modest
+        # CONCAVE (log, diminishing-returns) boost. w_wot=0 => pure text.
+        function wot_mult() {
+            expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * log(1.0 + max(0.0, user_score() - query(min_rank))))
+        }
+
+        # PURE-TEXT relevance (Brainstorm relevance() + the tier group):
+        # token-match band on top, match-quality ladder + proximity within,
+        # affiliation above gram noise, bm25 ordering inside each band.
+        function relevance() {
+            expression {
+                any_token_match() * 1100
+                + match_quality() * query(w_match_step)
+                + affiliation_match() * query(w_affil_tier_text)
+                + query(w_proximity) * proximity()
+                + primary_text()
+                + tier_primary_text()
+                + query(w_secondary) * bm25(search_secondary)
+                + query(w_content) * bm25(search_text)
+                + secondary_active() * query(w_about) * about_text()
+            }
+        }
+
+        first-phase {
+            expression: relevance()
+        }
+
+        match-features {
+            user_score
+            name_text
+            display_name_text
+            about_text
+            has_token_match
+            match_quality
+            affiliation_match
+            itemRawScore(mtch_exact)
+            itemRawScore(mtch_prefix)
+            itemRawScore(mtch_fz1)
+            itemRawScore(mtch_fz2)
+            itemRawScore(mtch_affil)
+        }
+    }
+
+    # -----------------------------------------------------------------------
+    # Trust-sorted profiles. All inherit text_relevance (functions, inputs,
+    # match-features carry over). Each gates on query(min_rank) by mapping a
+    # failing hit to the SENTINEL (-1e9) and letting rank-score-drop-limit
+    # (-1e6) drop it; real scores stay far above the sentinel.
+    # -----------------------------------------------------------------------
+
+    # filter:rank only (no sort): keep the pure-text order, drop low-trust.
+    rank-profile rank_filtered inherits text_relevance {
+        first-phase {
+            expression: if(user_score() >= query(min_rank), relevance(), -1000000000.0)
+            rank-score-drop-limit: -1000000.0
+        }
+    }
+
+    # sort:rank:desc (+ optional filter): trust-sorted WITHIN each match tier —
+    # token matches above gram noise, exact>typo bucketing above trust, trust
+    # ordering inside a tier (Meilisearch's `typo` over `sort`).
+    rank-profile rank_desc inherits text_relevance {
+        first-phase {
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + user_score(), -1000000000.0)
+            rank-score-drop-limit: -1000000.0
+        }
+    }
+
+    # sort:rank:asc: ascending trust WITHIN each (still-descending) match tier.
+    rank-profile rank_asc inherits text_relevance {
+        first-phase {
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) - user_score(), -1000000000.0)
+            rank-score-drop-limit: -1000000.0
+        }
+    }
+
+    # DEFAULT profile (Brainstorm §12, 2026-07-01): IDF-diluted text score
+    # MULTIPLIED by the modest concave trust curve. Weak text (below
+    # text_score_cutoff) and below-cutoff trust (wot_mult()=0) both map to 0
+    # and are dropped. Tune LIVE via query(w_wot)/query(w_identity)/
+    # query(min_rank)/query(w_name_tier) — rank-config, no redeploy.
+    rank-profile sort_followers inherits text_relevance {
+        first-phase {
+            expression: if(text_score() < query(text_score_cutoff), 0.0, text_score() * wot_mult())
+            rank-score-drop-limit: 0.5
+        }
+
+        # Surface the decisive signals so the API/inspector can show WHY a hit
+        # ranked where it did (text bands + the trust multiplier).
         match-features {
             user_score
             verified_followers
-            text_score
             name_match
             identity_match
+            identity_text
+            has_token_match
             affiliation_match
-        }
-    }
-
-    # Brainstorm's default: text qualifies, min_rank gates, verified-follower
-    # count orders (popular-first). vespa.py DEFAULT_RANK_PROFILE.
-    rank-profile sort_followers inherits shared_functions {
-        first-phase {
-            expression: if(text_score() <= 0 || passes_rank_gate() == 0, -1, verified_followers())
-            rank-score-drop-limit: 0.0
-        }
-
-        match-features {
-            user_score
-            verified_followers
             text_score
-            name_match
-            identity_match
-            affiliation_match
+            wot_mult
+            name_text
+            display_name_text
+            about_text
         }
     }
 
-    # Order by the observer's trust score, descending / ascending.
-    rank-profile rank_desc inherits shared_functions {
-        first-phase {
-            expression: if(text_score() <= 0 || passes_rank_gate() == 0, -1, user_score() + min(text_score() / 10000, 0.99))
-            rank-score-drop-limit: 0.0
-        }
-
-        match-features {
-            user_score
-            text_score
-        }
+    # sot's stable profile names: `search` is what the engine sends by default
+    # (currently Brainstorm's §12 default), `text` is the legacy alias the
+    # current EventYql uses for any search term. Both are pure renames.
+    rank-profile search inherits sort_followers {
     }
 
-    rank-profile rank_asc inherits shared_functions {
-        first-phase {
-            expression: if(text_score() <= 0 || passes_rank_gate() == 0, -1, 1000 - user_score() - min(text_score() / 10000, 0.99))
-            rank-score-drop-limit: 0.0
-        }
-
-        match-features {
-            user_score
-            text_score
-        }
-    }
-
-    # Text order with the min_rank trust gate (Brainstorm's rank_filtered).
-    rank-profile rank_filtered inherits shared_functions {
-        first-phase {
-            expression: if(passes_rank_gate() == 0, -1, text_score())
-            rank-score-drop-limit: 0.0
-        }
-
-        match-features {
-            user_score
-            text_score
-        }
-    }
-
-    # PURE text — trust is not blended and min_rank is ignored (Brainstorm's
-    # text_relevance). Also serves as the legacy `text` alias below.
-    rank-profile text_relevance inherits shared_functions {
-        first-phase {
-            expression: text_score()
-        }
-
-        match-features {
-            user_score
-            text_score
-        }
-    }
-
-    # Backwards-compatible name the engine currently sends (EventYql RANK_TEXT);
-    # retire once the query side speaks the profiles above.
     rank-profile text inherits text_relevance {
     }
 }
