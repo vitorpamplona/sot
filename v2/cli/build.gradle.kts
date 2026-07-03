@@ -16,11 +16,16 @@ dependencies {
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.websockets)
     testImplementation(kotlin("test"))
+    // UiDemoServer: the web UI over an in-memory relay (no Vespa) for UI development.
+    testImplementation(testFixtures(project(":v2:vespa")))
 }
 
 kotlin {
     jvmToolchain(21)
 }
+
+// Bundle the static web UI (v2/web/index.html) as a classpath resource for `sot serve`.
+sourceSets["main"].resources.srcDir(rootProject.file("v2/web"))
 
 application {
     applicationName = "sot"
@@ -29,4 +34,13 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// `gradle :v2:cli:uiDemo` — develop v2/web/index.html against the real relay
+// engine over an in-memory store: no Vespa, no docker, seeded demo events.
+tasks.register<JavaExec>("uiDemo") {
+    group = "application"
+    description = "Serve the web UI over an in-memory relay seeded with demo events"
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.sot.v2.cli.UiDemoServer")
 }

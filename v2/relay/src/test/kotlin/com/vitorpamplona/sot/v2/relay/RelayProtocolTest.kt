@@ -165,6 +165,37 @@ class RelayProtocolTest {
             }
         }
 
+    @Test
+    fun `an authenticated search enrolls the observer through the hook`() =
+        runBlocking {
+            val enrolled = Collections.synchronizedList(mutableListOf<String>())
+            val hooked = SotRelayServer(store, defaultObserver, relayUrl, onObserver = { enrolled.add(it) })
+            try {
+                val out = Collections.synchronizedList(mutableListOf<String>())
+                val session = hooked.connect { out.add(it) }
+                try {
+                    val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
+
+                    // Anonymous searches never enroll anyone.
+                    session.receive("""["REQ","s1",{"kinds":[0],"search":"ali","limit":10}]""")
+                    awaitMessage(out) { it.startsWith("""["EOSE","s1"]""") }
+                    assertEquals(emptyList(), enrolled.toList())
+
+                    val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
+                    session.receive("""["AUTH",${auth.toJson()}]""")
+                    awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
+
+                    session.receive("""["REQ","s2",{"kinds":[0],"search":"ali","limit":10}]""")
+                    awaitMessage(out) { it.startsWith("""["EOSE","s2"]""") }
+                    assertEquals(listOf(signer.pubKey), enrolled.distinct(), "the login becomes a sync observer")
+                } finally {
+                    session.close()
+                }
+            } finally {
+                hooked.close()
+            }
+        }
+
     private fun awaitMessage(
         out: List<String>,
         match: (String) -> Boolean,

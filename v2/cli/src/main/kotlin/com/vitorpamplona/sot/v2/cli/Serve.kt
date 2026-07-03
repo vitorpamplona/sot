@@ -43,12 +43,24 @@ import kotlin.time.Duration.Companion.minutes
  * `sot serve` — THE long-running process: one Ktor app on one port
  * ([Config.serverPort]) —
  *   WS   /  -> the NIP-50 relay (:v2:relay; full filters, search, COUNT, NIP-77)
- *   GET  /  -> NIP-11 (Accept: application/nostr+json), else a plain banner
+ *   GET  /  -> NIP-11 (Accept: application/nostr+json), else the web UI
  * plus, unless SYNC_INTERVAL=0, the background sync loop (:v2:sync). Relay and
  * sync share the ONE Vespa-backed store, and the trust projection sits under
  * it — so a user who NIP-42-authenticates gets enrolled as an observer, their
  * trust chain syncs on the next pass, and their searches rank by it.
+ *
+ * The web UI (bundled from `v2/web/index.html`) is itself a Nostr client: it
+ * talks NIP-50 to the SAME websocket endpoint, so there is no http search API
+ * to serve — the relay is the API.
  */
+private val WEB_UI: String? by lazy {
+    Thread
+        .currentThread()
+        .contextClassLoader
+        ?.getResource("index.html")
+        ?.readText()
+}
+
 internal fun serve(args: List<String>) {
     ensureVespaIsUp(args)
     val identity = serverIdentity()
@@ -100,7 +112,8 @@ internal fun serve(args: List<String>) {
                         ContentType.parse("application/nostr+json"),
                     )
                 } else {
-                    call.respondText("${Config.serverName} - a NIP-50 search relay; connect a WebSocket here (${Config.relayUrl}).")
+                    WEB_UI?.let { call.respondText(it, ContentType.Text.Html) }
+                        ?: call.respondText("${Config.serverName} - a NIP-50 search relay; connect a WebSocket here (${Config.relayUrl}).")
                 }
             }
         }

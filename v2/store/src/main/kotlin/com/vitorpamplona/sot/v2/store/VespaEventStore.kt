@@ -146,12 +146,14 @@ class VespaEventStore(
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
         val observer = coroutineContext[ObserverContext]?.pubkey
-        return filters
-            .mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer) }
-            .flatMap { index.search(it) }
-            .distinctBy { it.id }
-            .sortedWith(NEWEST_FIRST)
-            .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) } as List<T>
+        val queries = filters.mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer) }
+        val docs = queries.flatMap { index.search(it) }.distinctBy { it.id }
+        // NIP-50: a searching query's results stay in the engine's RELEVANCE
+        // order "instead of the usual created_at ordering" — re-sorting here
+        // would undo the rank profile. Plain filters keep NIP-01 recency.
+        val ranked = queries.any { it.search != null || it.ranking != null }
+        val ordered = if (ranked) docs else docs.sortedWith(NEWEST_FIRST)
+        return ordered.mapNotNull { Event.fromJsonOrNull(it.toEventJson()) } as List<T>
     }
 
     override suspend fun <T : Event> query(

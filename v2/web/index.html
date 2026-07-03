@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>sot — search over trust</title>
+<!--
+  The sot v2 search UI: one file, no build step, and NO http API — this page is
+  a tiny Nostr client. It opens a WebSocket to the very server that serves it,
+  searches with NIP-50 REQs (so the filter chips are literal `kinds` filters
+  and the sort menu appends NIP-50 `sort:`/`include:spam` extensions), logs in
+  with NIP-07 by signing the relay's NIP-42 AUTH challenge — which both ranks
+  every search by YOUR web of trust and enrolls you as a sync observer — and
+  renders every kind the index holds as a card: profiles, notes, articles,
+  media, code, listings, and a generic card for the rest.
+
+  To develop against a remote server, set RELAY_URL below to its ws:// url.
+-->
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --border: #ddd;
+    --accent: #2563eb;
+    --hover: #f0f4ff;
+    --card: #fff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  .page { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+  .hero { display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 6vh; }
+  .brand { font-size: 22px; font-weight: 700; letter-spacing: -.01em; margin-bottom: 2px; }
+  .brand span { color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .search-wrap { position: relative; width: 100%; max-width: 720px; }
+  #q {
+    width: 100%;
+    padding: 14px 18px;
+    font-size: 16px;
+    border: 1px solid var(--border);
+    border-radius: 28px;
+    outline: none;
+    background: var(--card);
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  #q:focus { border-color: var(--accent); box-shadow: 0 1px 6px rgba(37,99,235,.15); }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0 4px; width: 100%; max-width: 720px; }
+  .chip {
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--fg);
+    border-radius: 16px;
+    padding: 4px 12px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background .1s, border-color .1s;
+  }
+  .chip:hover { background: var(--hover); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bar .spacer { flex: 1; }
+  .bar select {
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 8px;
+    font-size: 12.5px;
+    padding: 4px 6px;
+    color: var(--fg);
+  }
+  .bar label.mini { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+
+  .whoami { font-size: 12px; color: var(--muted); margin-top: 6px; min-height: 18px; }
+  .whoami b { color: var(--accent); font-weight: 600; }
+  .whoami button { border: 0; background: none; color: var(--accent); font-size: 12px; cursor: pointer; padding: 0; text-decoration: underline; }
+
+  .popup {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; right: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.08);
+    z-index: 10;
+    display: none;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .popup.open { display: block; }
+  .popup-head { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 8px 14px; background: #fafafa; border-bottom: 1px solid #eee; position: sticky; top: 0; display: flex; justify-content: space-between; }
+  .popup-head .timing { font-variant-numeric: tabular-nums; }
+  .popup-item {
+    display: flex;
+    gap: 10px;
+    padding: 9px 12px;
+    border-bottom: 1px solid #f0f0f0;
+    align-items: center;
+    cursor: pointer;
+  }
+  .popup-item:last-child { border-bottom: 0; }
+  .popup-item:hover, .popup-item.active { background: var(--hover); }
+  .avatar {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: #eee;
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+  .row-main { flex: 1; min-width: 0; }
+  .row-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .row-about { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .kind-badge {
+    flex-shrink: 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--accent);
+    background: var(--hover);
+    border: 1px solid #dbe5ff;
+    border-radius: 10px;
+    padding: 1px 8px;
+    white-space: nowrap;
+  }
+
+  .results { padding: 16px 0 48px; }
+  .list-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 8px 4px;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .list-title { font-weight: 600; font-size: 15px; }
+  .list-stats { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .result {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+  .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
+  .result-header .avatar { width: 44px; height: 44px; }
+  .result-header .who { flex: 1; min-width: 0; }
+  .result-name { font-size: 16px; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-name a { color: inherit; text-decoration: none; }
+  .result-name a:hover { color: var(--accent); }
+  .result-display { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .byline { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .byline .avatar { width: 24px; height: 24px; }
+  .byline .by-name { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .byline .by-date { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
+  .byline .spacer { flex: 1; }
+  .result-title { font-size: 15.5px; font-weight: 600; margin: 0 0 4px; }
+  .result-title a { color: inherit; text-decoration: none; }
+  .result-title a:hover { color: var(--accent); }
+  .result-body { font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .result-body.muted { color: var(--muted); }
+  .thumb { float: right; width: 84px; height: 84px; object-fit: cover; border-radius: 8px; margin: 0 0 6px 10px; background: #eee; }
+  .props { display: grid; grid-template-columns: 90px 1fr; gap: 3px 10px; font-size: 12px; margin-top: 6px; }
+  .props dt { color: var(--muted); }
+  .props dd { margin: 0; word-break: break-all; }
+  .props a { color: var(--accent); text-decoration: none; }
+  .props a:hover { text-decoration: underline; }
+  .empty, .error { padding: 16px; text-align: center; color: var(--muted); font-size: 13px; }
+  .error { color: #c00; }
+
+  .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle-track { position: relative; width: 34px; height: 20px; border-radius: 10px; background: #ccc; flex-shrink: 0; transition: background .15s; }
+  .toggle-thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+  .toggle input:checked + .toggle-track { background: var(--accent); }
+  .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(14px); }
+  .toggle input:focus-visible + .toggle-track { box-shadow: 0 0 0 3px rgba(37,99,235,.3); }
+  .toggle-text { font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="hero">
+    <div class="brand">so<span>t</span></div>
+    <div class="tagline">Nostr search, ranked by your web of trust</div>
+    <div class="search-wrap">
+      <input id="q" type="text" autocomplete="off" spellcheck="false" placeholder="Type to search&hellip;" autofocus />
+      <div id="popup" class="popup" role="listbox"></div>
+    </div>
+    <div class="bar">
+      <span id="chips"></span>
+      <span class="spacer"></span>
+      <select id="sort" title="NIP-50 sort: extension">
+        <option value="">Best match</option>
+        <option value="rank">Most trusted</option>
+        <option value="rank:asc">Least trusted</option>
+        <option value="followers">Followers</option>
+        <option value="text">Text only</option>
+      </select>
+      <label class="mini" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
+        <input id="spam" type="checkbox" /> unranked too
+      </label>
+      <label class="toggle" title="Sign the relay's NIP-42 challenge with your NIP-07 extension: searches rank by YOUR web of trust, and the relay starts syncing it">
+        <input id="asme" type="checkbox" />
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-text">Search as me</span>
+      </label>
+    </div>
+    <div id="whoami" class="whoami"></div>
+  </div>
+  <div id="results" class="results" hidden></div>
+</div>
+
+<script>
+(() => {
+  // Same-origin by default: the page is served by the relay it talks to.
+  const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/";
+
+  const POPUP_LIMIT = 8;
+  const FULL_LIMIT = 40;
+  const DEBOUNCE_MS = 150;
+  const REQ_TIMEOUT_MS = 10000;
+
+  // ---- the filter chips are literal NIP-01 `kinds` filters ----------------
+  const KIND_TABS = [
+    { label: "Everything", kinds: null },
+    { label: "People", kinds: [0] },
+    { label: "Notes", kinds: [1, 11] },
+    { label: "Articles", kinds: [30023, 30024, 30818] },
+    { label: "Media", kinds: [20, 21, 22, 1063, 31922, 34235, 34236] },
+    { label: "Code & git", kinds: [1337, 1617, 1621, 30617] },
+    { label: "Live", kinds: [30311] },
+  ];
+
+  // Badge names for the kinds the index carries; anything else says "kind N".
+  const KIND_LABELS = {
+    0: "profile", 1: "note", 3: "follows", 11: "thread", 20: "picture", 21: "video",
+    22: "short video", 40: "channel", 41: "channel", 1063: "file", 1337: "code",
+    1617: "patch", 1621: "issue", 1986: "audio", 9041: "goal", 9802: "highlight",
+    30000: "follow set", 30002: "relay set", 30004: "curation", 30005: "video set",
+    30009: "badge", 30017: "stall", 30018: "product", 30023: "article", 30024: "draft",
+    30030: "emoji pack", 30063: "release", 30311: "live", 30402: "listing",
+    30617: "repository", 30818: "wiki", 31890: "feed", 31890: "feed",
+    31922: "date", 31923: "event", 31924: "calendar", 31989: "app", 31990: "app",
+    32267: "app", 34235: "video", 34236: "short video",
+  };
+  const kindLabel = (k) => KIND_LABELS[k] || `kind ${k}`;
+
+  // ---- a minimal Nostr relay client (REQ/EOSE/CLOSE + NIP-42 AUTH) --------
+  class Relay {
+    constructor(url) {
+      this.url = url;
+      this.ws = null;
+      this.subs = new Map();       // subId -> { onEvent, finish }
+      this.okWaiters = new Map();  // event id -> resolver for its OK
+      this.nextId = 1;
+      this.challenge = null;       // the connection's NIP-42 challenge
+      this.opening = null;
+      this.onclose = null;
+    }
+
+    connect() {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve();
+      if (this.opening) return this.opening;
+      this.opening = new Promise((resolve, reject) => {
+        let settled = false;
+        const ws = new WebSocket(this.url);
+        this.ws = ws;
+        const fail = (e) => { if (!settled) { settled = true; this.opening = null; reject(e); } };
+        setTimeout(() => fail(new Error("relay connect timeout")), 8000);
+        ws.onopen = () => { if (!settled) { settled = true; this.opening = null; resolve(); } };
+        ws.onerror = () => fail(new Error("relay connection failed"));
+        ws.onclose = () => {
+          fail(new Error("relay connection closed"));
+          this.ws = null;
+          this.challenge = null;
+          for (const s of this.subs.values()) s.finish(new Error("connection closed"));
+          this.subs.clear();
+          this.onclose && this.onclose();
+        };
+        ws.onmessage = (m) => { try { this.handle(JSON.parse(m.data)); } catch (e) {} };
+      });
+      return this.opening;
+    }
+
+    handle(msg) {
+      switch (msg[0]) {
+        case "EVENT": { const s = this.subs.get(msg[1]); if (s) s.onEvent(msg[2]); break; }
+        case "EOSE": { const s = this.subs.get(msg[1]); if (s) s.finish(null); break; }
+        case "CLOSED": { const s = this.subs.get(msg[1]); if (s) s.finish(new Error(msg[2] || "subscription closed")); break; }
+        case "AUTH": this.challenge = msg[1]; break;
+        case "OK": { const w = this.okWaiters.get(msg[1]); if (w) { this.okWaiters.delete(msg[1]); w(msg); } break; }
+      }
+    }
+
+    /** One REQ, collected until EOSE (or timeout: resolve with what arrived). */
+    async req(filter, timeoutMs = REQ_TIMEOUT_MS) {
+      await this.connect();
+      const id = "sot" + this.nextId++;
+      const events = [];
+      return await new Promise((resolve, reject) => {
+        const finish = (err) => {
+          if (!this.subs.delete(id)) return;
+          clearTimeout(timer);
+          try { this.ws && this.ws.send(JSON.stringify(["CLOSE", id])); } catch (e) {}
+          err ? reject(err) : resolve(events);
+        };
+        const timer = setTimeout(() => finish(null), timeoutMs);
+        this.subs.set(id, { onEvent: (ev) => events.push(ev), finish });
+        this.ws.send(JSON.stringify(["REQ", id, filter]));
+      });
+    }
+
+    /** NIP-42: send the signed kind-22242 and wait for its OK. */
+    async auth(signed, timeoutMs = 8000) {
+      await this.connect();
+      return await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { this.okWaiters.delete(signed.id); reject(new Error("auth timed out")); }, timeoutMs);
+        this.okWaiters.set(signed.id, (msg) => {
+          clearTimeout(timer);
+          msg[2] ? resolve() : reject(new Error(msg[3] || "auth rejected"));
+        });
+        this.ws.send(JSON.stringify(["AUTH", signed]));
+      });
+    }
+  }
+
+  const relay = new Relay(RELAY_URL);
+
+  // ---- NIP-07 login -> NIP-42 auth -----------------------------------------
+  // Signing the challenge switches the CONNECTION's ranking observer to you
+  // (and enrolls you: the relay starts syncing your trust chain).
+  let me = null; // authenticated hex pubkey
+
+  relay.onclose = () => { me = null; renderWhoami(); };
+
+  async function waitForChallenge(ms) {
+    const t0 = Date.now();
+    while (!relay.challenge && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 100));
+    return relay.challenge;
+  }
+
+  async function login() {
+    if (!(window.nostr && window.nostr.signEvent)) throw new Error("No Nostr extension found (window.nostr / NIP-07)");
+    await relay.connect();
+    const challenge = await waitForChallenge(3000);
+    if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
+    const signed = await window.nostr.signEvent({
+      kind: 22242,
+      created_at: Math.floor(Date.now() / 1000),
+      content: "",
+      tags: [["relay", RELAY_URL], ["challenge", challenge]],
+    });
+    await relay.auth(signed);
+    me = signed.pubkey;
+    renderWhoami();
+    // Show the observer's own profile name next to the toggle when we have it.
+    enrichProfiles([me]).then(renderWhoami).catch(() => {});
+  }
+
+  async function ensureLogin() {
+    if (!$asme.checked) return;
+    if (me) return;
+    await login(); // a reconnect dropped the auth: sign in again
+  }
+
+  // ---- search over NIP-50 ---------------------------------------------------
+  let tab = KIND_TABS[0];
+
+  function searchString(text) {
+    const sort = $sort.value;
+    let s = text;
+    if (sort) s += " sort:" + sort;
+    if ($spam.checked) s += " include:spam";
+    return s;
+  }
+
+  async function search(text, limit) {
+    await ensureLogin();
+    const filter = { search: searchString(text), limit };
+    if (tab.kinds) filter.kinds = tab.kinds;
+    const events = await relay.req(filter);
+    seedProfiles(events);
+    await enrichProfiles(events.filter(e => e.kind !== 0).map(e => e.pubkey));
+    return events;
+  }
+
+  // ---- author profiles (kind-0 cache + batched enrichment REQ) -------------
+  const profiles = new Map(); // pubkey -> {name, display_name, picture, nip05, about, website, lud16}
+
+  function parseProfile(ev) {
+    let c = {};
+    try { c = JSON.parse(ev.content) || {}; } catch (e) {}
+    return {
+      name: c.name || c.username || "",
+      display_name: c.display_name || c.displayName || "",
+      picture: c.picture || "",
+      nip05: c.nip05 || "",
+      about: c.about || "",
+      website: c.website || "",
+      lud16: c.lud16 || "",
+      created_at: ev.created_at,
+    };
+  }
+
+  function seedProfiles(events) {
+    for (const ev of events) {
+      if (ev.kind !== 0) continue;
+      const known = profiles.get(ev.pubkey);
+      if (!known || known.created_at <= ev.created_at) profiles.set(ev.pubkey, parseProfile(ev));
+    }
+  }
+
+  async function enrichProfiles(pubkeys) {
+    const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
+    if (!missing.length) return;
+    try {
+      const found = await relay.req({ kinds: [0], authors: missing, limit: missing.length }, 5000);
+      seedProfiles(found);
+    } catch (e) {}
+    for (const p of missing) if (!profiles.has(p)) profiles.set(p, null); // don't re-ask
+  }
+
+  // ---- rendering ------------------------------------------------------------
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+  const clip = (s, n) => { s = String(s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+  const when = (ev) => new Date(ev.created_at * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  const njump = (hex) => `https://njump.me/${esc(hex)}`;
+
+  const firstTag = (ev, ...names) => {
+    for (const name of names) for (const t of ev.tags) if (t[0] === name && t[1]) return t[1];
+    return null;
+  };
+  const titleOf = (ev) => firstTag(ev, "title", "name", "subject") || firstTag(ev, "d");
+  const summaryOf = (ev) => firstTag(ev, "summary", "description", "alt");
+  const imageOf = (ev) => firstTag(ev, "image", "thumb", "picture", "icon");
+
+  function authorOf(ev) {
+    const p = profiles.get(ev.pubkey);
+    const name = (p && (p.name || p.display_name)) || ev.pubkey.slice(0, 12) + "…";
+    return { name, picture: (p && p.picture) || "" };
+  }
+
+  function avatarHtml(pic) {
+    if (pic) return `<img class="avatar" src="${esc(pic)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'avatar'}))" />`;
+    return `<div class="avatar"></div>`;
+  }
+
+  /** The shared author line: avatar, name, date, kind badge. */
+  function bylineHtml(ev) {
+    const a = authorOf(ev);
+    return `
+      <div class="byline">
+        ${avatarHtml(a.picture)}
+        <span class="by-name">${esc(a.name)}</span>
+        <span class="by-date">${esc(when(ev))}</span>
+        <span class="spacer"></span>
+        <span class="kind-badge">${esc(kindLabel(ev.kind))}</span>
+      </div>`;
+  }
+
+  /** kind 0 — the profile card (v1's card, minus the server-side numbers). */
+  function profileCard(ev) {
+    const p = parseProfile(ev);
+    const name = p.name || p.display_name || ev.pubkey.slice(0, 12) + "…";
+    const props = [];
+    if (p.nip05) props.push(["nip05", esc(p.nip05)]);
+    if (p.website) props.push(["website", `<a href="${esc(p.website)}" target="_blank" rel="noopener noreferrer">${esc(p.website)}</a>`]);
+    if (p.lud16) props.push(["lightning", esc(p.lud16)]);
+    props.push(["pubkey", `<a href="${njump(ev.pubkey)}" target="_blank" rel="noopener noreferrer">${esc(ev.pubkey)}</a>`]);
+    return `
+      <article class="result">
+        <div class="result-header">
+          ${avatarHtml(p.picture)}
+          <div class="who">
+            <h2 class="result-name"><a href="${njump(ev.pubkey)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a></h2>
+            ${p.display_name && p.display_name !== p.name ? `<div class="result-display">${esc(p.display_name)}</div>` : ""}
+          </div>
+          <span class="kind-badge">profile</span>
+        </div>
+        ${p.about ? `<div class="result-body">${esc(clip(p.about, 400))}</div>` : ""}
+        <dl class="props">${props.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+      </article>`;
+  }
+
+  /** kinds 1/11 — the note card: author byline + the text itself. */
+  function noteCard(ev) {
+    return `
+      <article class="result">
+        ${bylineHtml(ev)}
+        <div class="result-body">${esc(clip(ev.content, 500))}</div>
+        <div class="props"><dt>note</dt><dd><a href="${njump(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(ev.id.slice(0, 24))}…</a></dd></div>
+      </article>`;
+  }
+
+  /**
+   * Everything else — the generic card that makes "all indexed kinds" render:
+   * byline, the event's title-ish tag, its summary-ish tag (else the content),
+   * and an image when the tags carry one. Exactly the fields the extractors
+   * index, so what matched is what shows.
+   */
+  function genericCard(ev) {
+    const title = titleOf(ev);
+    const summary = summaryOf(ev);
+    const body = summary || (ev.kind === 30023 || ev.kind === 30024 || ev.kind === 30818 ? clip(ev.content, 300) : clip(ev.content, 200));
+    const img = imageOf(ev);
+    return `
+      <article class="result">
+        ${bylineHtml(ev)}
+        ${img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+        ${title ? `<h2 class="result-title"><a href="${njump(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(clip(title, 120))}</a></h2>` : ""}
+        ${body ? `<div class="result-body${summary ? " muted" : ""}">${esc(clip(body, 400))}</div>` : ""}
+        ${!title ? `<div class="props"><dt>id</dt><dd><a href="${njump(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(ev.id.slice(0, 24))}…</a></dd></div>` : ""}
+      </article>`;
+  }
+
+  function card(ev) {
+    if (ev.kind === 0) return profileCard(ev);
+    if (ev.kind === 1 || ev.kind === 11) return noteCard(ev);
+    return genericCard(ev);
+  }
+
+  /** The type-ahead row: works for every kind (profiles show their own face). */
+  function popupRow(ev, idx) {
+    let pic, name, sub;
+    if (ev.kind === 0) {
+      const p = parseProfile(ev);
+      pic = p.picture; name = p.name || p.display_name || ev.pubkey.slice(0, 12) + "…"; sub = p.about;
+    } else {
+      const a = authorOf(ev);
+      pic = a.picture; name = titleOf(ev) || clip(ev.content, 60) || a.name; sub = titleOf(ev) ? (summaryOf(ev) || clip(ev.content, 60)) : a.name;
+    }
+    return `
+      <div class="popup-item" data-idx="${idx}" role="option">
+        ${avatarHtml(pic)}
+        <div class="row-main">
+          <div class="row-name">${esc(clip(name, 80))}</div>
+          <div class="row-about">${esc(clip(sub || "", 90))}</div>
+        </div>
+        <span class="kind-badge">${esc(kindLabel(ev.kind))}</span>
+      </div>`;
+  }
+
+  // ---- page state + wiring ---------------------------------------------------
+  const $q = document.getElementById("q");
+  const $popup = document.getElementById("popup");
+  const $results = document.getElementById("results");
+  const $chips = document.getElementById("chips");
+  const $sort = document.getElementById("sort");
+  const $spam = document.getElementById("spam");
+  const $asme = document.getElementById("asme");
+  const $whoami = document.getElementById("whoami");
+
+  const s = { requestId: 0, hits: [], lastMs: null, loading: false, error: null };
+  let debounceTimer = null;
+  let activeKey = null;
+
+  function renderWhoami() {
+    if (!$asme.checked) { $whoami.textContent = ""; return; }
+    if (!me) { $whoami.textContent = "signing in…"; return; }
+    const p = profiles.get(me);
+    const who = (p && (p.name || p.display_name)) || me.slice(0, 12) + "…";
+    $whoami.innerHTML = `ranking by <b>${esc(who)}</b>'s web of trust (the relay is now syncing it)`;
+  }
+
+  function renderChips() {
+    $chips.innerHTML = KIND_TABS.map((t, i) => `<button class="chip${t === tab ? " on" : ""}" data-tab="${i}">${esc(t.label)}</button>`).join(" ");
+  }
+
+  function statusBody(loadingText) {
+    if (s.error) return `<div class="error">${esc(s.error)}</div>`;
+    if (s.loading && !s.hits.length) return `<div class="empty">${loadingText}</div>`;
+    if (!s.hits.length) return `<div class="empty">No results</div>`;
+    return null;
+  }
+
+  function renderPopup() {
+    const meta = [s.error ? "" : `${s.hits.length}`, s.lastMs != null ? `${s.lastMs} ms` : ""].filter(Boolean).join(" · ");
+    const head = `<div class="popup-head"><span>Results</span><span class="timing">${meta}</span></div>`;
+    const body = statusBody("Loading…") ?? s.hits.slice(0, POPUP_LIMIT).map(popupRow).join("");
+    $popup.innerHTML = head + body;
+  }
+
+  function renderResults() {
+    const stats = s.error ? "" : `${s.hits.length} · ${s.lastMs ?? "?"} ms`;
+    const head = `<div class="list-head"><div class="list-title">${esc(tab.label)}</div><div class="list-stats">${stats}</div></div>`;
+    const body = statusBody("Searching…") ?? s.hits.map(card).join("");
+    $results.innerHTML = head + body;
+  }
+
+  async function run(text, mode, render) {
+    const myId = ++s.requestId;
+    s.loading = true; s.error = null;
+    if (mode === "full") s.hits = [];
+    render();
+    const t0 = performance.now();
+    try {
+      const hits = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
+      if (myId !== s.requestId) return;
+      s.hits = hits;
+    } catch (e) {
+      if (myId !== s.requestId) return;
+      s.error = e.message || String(e); s.hits = [];
+    }
+    s.lastMs = Math.round(performance.now() - t0); s.loading = false;
+    render();
+  }
+
+  function openPopup() { $popup.classList.add("open"); }
+  function closePopup() { $popup.classList.remove("open"); activeKey = null; }
+  const popupItems = () => Array.from($popup.querySelectorAll(".popup-item"));
+  function setActive(idx) {
+    const items = popupItems();
+    if (!items.length) return;
+    if (idx < 0) idx = items.length - 1;
+    if (idx >= items.length) idx = 0;
+    items.forEach(el => el.classList.remove("active"));
+    items[idx].classList.add("active");
+    items[idx].scrollIntoView({ block: "nearest" });
+    activeKey = idx;
+  }
+
+  function runPopup(text) { openPopup(); run(text, "popup", renderPopup); }
+  function runFull(text) { closePopup(); $results.hidden = false; run(text, "full", renderResults); }
+  function rerun() {
+    const text = $q.value.trim();
+    if (!text) return;
+    if (!$results.hidden) runFull(text);
+    else if ($popup.classList.contains("open")) runPopup(text);
+  }
+
+  $q.addEventListener("input", () => {
+    const text = $q.value.trim();
+    clearTimeout(debounceTimer);
+    if (!text) { closePopup(); return; }
+    debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
+  });
+
+  $q.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const text = $q.value.trim();
+      if (text) runFull(text);
+    } else if (e.key === "ArrowDown") {
+      if ($popup.classList.contains("open")) { e.preventDefault(); setActive((activeKey ?? -1) + 1); }
+    } else if (e.key === "ArrowUp") {
+      if ($popup.classList.contains("open")) { e.preventDefault(); setActive((activeKey ?? popupItems().length) - 1); }
+    } else if (e.key === "Escape") {
+      closePopup();
+    }
+  });
+
+  $popup.addEventListener("mousedown", (e) => {
+    const item = e.target.closest(".popup-item");
+    if (!item) return;
+    e.preventDefault();
+    runFull($q.value.trim());
+  });
+
+  document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
+  $q.addEventListener("focus", () => { if (s.hits.length && $q.value.trim() && $results.hidden) openPopup(); });
+
+  $chips.addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip");
+    if (!chip) return;
+    tab = KIND_TABS[Number(chip.dataset.tab)];
+    renderChips();
+    rerun();
+  });
+
+  $sort.addEventListener("change", rerun);
+  $spam.addEventListener("change", rerun);
+
+  $asme.addEventListener("change", async () => {
+    if ($asme.checked) {
+      renderWhoami();
+      try {
+        await login();
+      } catch (e) {
+        $asme.checked = false;
+        me = null;
+        $whoami.innerHTML = `<span class="error" style="padding:0">${esc(e.message || String(e))}</span>`;
+        return;
+      }
+      rerun();
+    } else {
+      // NIP-42 auth is per-connection: dropping it means a fresh connection.
+      me = null;
+      if (relay.ws) relay.ws.close();
+      renderWhoami();
+      rerun();
+    }
+  });
+
+  renderChips();
+})();
+</script>
+</body>
+</html>
