@@ -1,5 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    // Publishes InMemoryEventIndex (src/testFixtures) to downstream module tests.
+    `java-test-fixtures`
 }
 
 dependencies {

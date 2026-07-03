@@ -68,6 +68,9 @@ data class EventDoc(
             if (name.length == 1 && (name[0] in 'a'..'z' || name[0] in 'A'..'Z')) "$name:$value" else null
         }
 
+    /** The NIP-40 expiration timestamp, derived from the exact tags; null = never expires. */
+    fun expiresAt(): Long? = tags.firstOrNull { it.size >= 2 && it[0] == "expiration" }?.get(1)?.toLongOrNull()
+
     /** The document's field map — one shape for both feeding and summary parsing ([fromSummary]). */
     fun indexFields(): JsonObject =
         buildJsonObject {
@@ -80,6 +83,7 @@ data class EventDoc(
             put("content", JsonPrimitive(content))
             put("sig", JsonPrimitive(sig))
             put("scope", JsonPrimitive(scope))
+            expiresAt()?.let { put("expires_at", JsonPrimitive(it)) }
         }
 
     /** The complete NIP-01 event JSON, rebuilt from the exact stored values. */

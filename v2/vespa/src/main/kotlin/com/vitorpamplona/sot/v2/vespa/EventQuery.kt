@@ -34,8 +34,12 @@ data class EventQuery(
     val authors: List<String> = emptyList(),
     /** Single-letter tag name -> values. OR within a name, AND across names. */
     val tags: Map<String, List<String>> = emptyMap(),
+    /** Like [tags], but EVERY value must be present (Quartz's `tagsAll`). */
+    val tagsAll: Map<String, List<String>> = emptyMap(),
     val since: Long? = null,
     val until: Long? = null,
+    /** Match docs whose NIP-40 expiration is strictly before this — the expiry sweep. */
+    val expiresBefore: Long? = null,
     val limit: Int? = null,
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
@@ -74,13 +78,14 @@ object EventYql {
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
         for ((name, values) in q.tags) {
-            // tag_index only holds single-letter names; anything else can't match.
-            if (name.length != 1 || (name[0] !in 'a'..'z' && name[0] !in 'A'..'Z')) return null
-            if (values.isEmpty()) return null
-            clauses += values.joinToString(" or ", prefix = "(", postfix = ")") { v -> "tag_index contains ${quote("$name:$v")}" }
+            clauses += tagClause(name, values, "or") ?: return null
+        }
+        for ((name, values) in q.tagsAll) {
+            clauses += tagClause(name, values, "and") ?: return null
         }
         q.since?.let { clauses += "created_at >= $it" }
         q.until?.let { clauses += "created_at <= $it" }
+        q.expiresBefore?.let { clauses += "expires_at < $it" }
         q.scope?.let { clauses += "scope contains ${quote(it)}" }
 
         val term = q.search?.trim().orEmpty()
@@ -99,6 +104,21 @@ object EventYql {
             params = params,
             ranking = if (term.isEmpty()) RANK_UNRANKED else RANK_TEXT,
         )
+    }
+
+    /**
+     * One tag constraint: values joined with [op] ("or" = NIP-01 tags, "and" =
+     * tagsAll). Null when it can't match: tag_index only holds single-letter
+     * names, and a present-but-empty value list matches nothing.
+     */
+    private fun tagClause(
+        name: String,
+        values: List<String>,
+        op: String,
+    ): String? {
+        if (name.length != 1 || (name[0] !in 'a'..'z' && name[0] !in 'A'..'Z')) return null
+        if (values.isEmpty()) return null
+        return values.joinToString(" $op ", prefix = "(", postfix = ")") { v -> "tag_index contains ${quote("$name:$v")}" }
     }
 
     /**

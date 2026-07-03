@@ -1,0 +1,262 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.vitorpamplona.sot.v2.store
+
+import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.v2.vespa.InMemoryEventIndex
+import kotlinx.coroutines.runBlocking
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+/**
+ * The store must enforce the same Nostr semantics as Quartz's SQLite modules —
+ * each test names the sqlite ...Module.kt rule it mirrors. Events are unsigned
+ * fixtures: like the SQLite store, verification is the ingest path's job.
+ */
+class VespaEventStoreTest {
+    private val alice = "a1".repeat(32)
+    private val bob = "b2".repeat(32)
+
+    private var t = 1_000_000L
+
+    private fun next() = t++
+
+    private var seq = 0
+
+    private fun id() = (++seq).toString(16).padStart(64, '0')
+
+    private val index = InMemoryEventIndex()
+    private val store = VespaEventStore(index, relay = "wss://sot.test/".normalizeRelayUrl())
+
+    private fun note(
+        author: String = alice,
+        at: Long = next(),
+        content: String = "hello",
+        tags: Array<Array<String>> = emptyArray(),
+        eventId: String = id(),
+    ) = Event(eventId, author, at, 1, tags, content, "")
+
+    private fun metadata(
+        at: Long = next(),
+        name: String = "alice",
+        eventId: String = id(),
+    ) = MetadataEvent(eventId, alice, at, emptyArray(), """{"name":"$name"}""", "")
+
+    private fun card(
+        subject: String,
+        at: Long = next(),
+        eventId: String = id(),
+    ) = ContactCardEvent(eventId, alice, at, arrayOf(arrayOf("d", subject), arrayOf("rank", "50")), "", "")
+
+    @Test
+    fun `stores and answers nip01 filters`() =
+        runBlocking {
+            val tagged = note(tags = arrayOf(arrayOf("p", bob)), content = "for bob")
+            val plain = note(author = bob)
+            store.insert(tagged)
+            store.insert(plain)
+
+            assertEquals(listOf(tagged.id), store.query<Event>(Filter(tags = mapOf("p" to listOf(bob)))).map { it.id })
+            assertEquals(listOf(plain.id), store.query<Event>(Filter(authors = listOf(bob))).map { it.id })
+            assertEquals(2, store.count(Filter(kinds = listOf(1))))
+            // Newest first, and limit applies.
+            assertEquals(listOf(plain.id), store.query<Event>(Filter(kinds = listOf(1), limit = 1)).map { it.id })
+            // Present-but-empty list matches nothing (NIP-01).
+            assertEquals(0, store.count(Filter(kinds = emptyList())))
+        }
+
+    @Test
+    fun `queries return typed events`() =
+        runBlocking {
+            store.insert(metadata(name = "alice"))
+            val back = store.query<MetadataEvent>(Filter(kinds = listOf(MetadataEvent.KIND)))
+            assertEquals("alice", back.single().contactMetaData()?.name)
+        }
+
+    @Test
+    fun `duplicates are rejected`() =
+        runBlocking {
+            val ev = note()
+            val outcomes = store.batchInsert(listOf(ev, ev))
+            assertEquals(IEventStore.InsertOutcome.Accepted, outcomes[0])
+            assertTrue((outcomes[1] as IEventStore.InsertOutcome.Rejected).reason.startsWith("duplicate:"))
+        }
+
+    /** ReplaceableModule: newer version deletes older; older arrivals are rejected. */
+    @Test
+    fun `replaceables keep only the newest version`() =
+        runBlocking {
+            val old = metadata(at = 100, name = "v1")
+            val new = metadata(at = 200, name = "v2")
+            store.insert(old)
+            store.insert(new)
+            assertEquals(listOf(new.id), store.query<Event>(Filter(kinds = listOf(0))).map { it.id })
+
+            val stale = metadata(at = 150, name = "late")
+            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(stale) }
+            assertTrue(rejected.message!!.startsWith("replaced:"))
+        }
+
+    /** ReplaceableModule tie-break: equal created_at, LOWEST id wins. */
+    @Test
+    fun `replaceable ties keep the lowest id`() =
+        runBlocking {
+            val high = MetadataEvent("f".repeat(64), alice, 100, emptyArray(), "{}", "")
+            val low = MetadataEvent("0".repeat(64), alice, 100, emptyArray(), "{}", "")
+            store.insert(high)
+            store.insert(low)
+            assertEquals(listOf(low.id), store.query<Event>(Filter(kinds = listOf(0))).map { it.id })
+            assertFailsWith<VespaEventStore.RejectedException> { store.insert(MetadataEvent("e".repeat(64), alice, 100, emptyArray(), "{}", "")) }
+        }
+
+    /** AddressableModule: supersession is per d-tag address. */
+    @Test
+    fun `addressables replace per d tag`() =
+        runBlocking {
+            val forBob = card(subject = bob, at = 100)
+            val forBobNewer = card(subject = bob, at = 200)
+            val forOther = card(subject = "c3".repeat(32), at = 150)
+            store.insert(forBob)
+            store.insert(forOther)
+            store.insert(forBobNewer)
+            assertEquals(setOf(forBobNewer.id, forOther.id), store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.id }.toSet())
+        }
+
+    /** DeletionRequestModule: e-tag targets erased, tombstone kept, re-inserts blocked — same author only. */
+    @Test
+    fun `deletion by event id erases and blocks the target`() =
+        runBlocking {
+            val target = note()
+            val bobs = note(author = bob, eventId = id())
+            store.insert(target)
+            store.insert(bobs)
+
+            store.insert(DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", target.id), arrayOf("e", bobs.id)), "", ""))
+
+            // Alice's target is gone; bob's event survives (NIP-09 same-author rule).
+            assertEquals(setOf(bobs.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            // The tombstone blocks a re-insert.
+            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(target) }
+            assertTrue(rejected.message!!.startsWith("blocked:"))
+        }
+
+    /** DeletionRequestModule: a-tag targets erased up to the deletion's created_at; newer versions still insert. */
+    @Test
+    fun `deletion by address erases versions up to its time`() =
+        runBlocking {
+            store.insert(card(subject = bob, at = 100))
+            store.insert(DeletionEvent(id(), alice, 200, arrayOf(arrayOf("a", "${ContactCardEvent.KIND}:$alice:$bob")), "", ""))
+            assertEquals(0, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))))
+
+            // Older than the deletion: blocked.
+            assertFailsWith<VespaEventStore.RejectedException> { store.insert(card(subject = bob, at = 150)) }
+            // Newer than the deletion: accepted.
+            store.insert(card(subject = bob, at = 300))
+            assertEquals(1, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))))
+        }
+
+    /** EphemeralModule: never stored. */
+    @Test
+    fun `ephemeral kinds are rejected`() =
+        runBlocking {
+            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(Event(id(), alice, next(), 20_001, emptyArray(), "", "")) }
+            assertTrue(rejected.message!!.startsWith("blocked:"))
+            assertEquals(0, index.size())
+        }
+
+    /** ExpirationModule: expired inserts rejected; due expirations swept. */
+    @Test
+    fun `expiration is enforced`() =
+        runBlocking {
+            val realNow = System.currentTimeMillis() / 1000
+            assertFailsWith<VespaEventStore.RejectedException> {
+                store.insert(note(tags = arrayOf(arrayOf("expiration", "${realNow - 10}"))))
+            }
+
+            val lateStore = VespaEventStore(index, nowSecs = { realNow + 100_000 })
+            val expiring = note(tags = arrayOf(arrayOf("expiration", "${realNow + 50_000}")))
+            val keeper = note()
+            store.insert(expiring)
+            store.insert(keeper)
+            lateStore.deleteExpiredEvents()
+            assertEquals(setOf(keeper.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+        }
+
+    /** RightToVanishModule: a covering kind 62 erases the author's history and blocks older inserts. */
+    @Test
+    fun `request to vanish erases and blocks the author`() =
+        runBlocking {
+            val hers = note(at = 100)
+            val his = note(author = bob, at = 110)
+            store.insert(hers)
+            store.insert(his)
+
+            store.insert(RequestToVanishEvent(id(), alice, 200, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
+
+            // Alice's history is gone, the request itself and bob's event survive.
+            assertEquals(setOf(his.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            assertEquals(1, store.count(Filter(kinds = listOf(RequestToVanishEvent.KIND))))
+
+            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(note(at = 150)) }
+            assertTrue(rejected.message!!.startsWith("blocked:"))
+            // Newer than the request: accepted.
+            store.insert(note(at = 300))
+        }
+
+    @Test
+    fun `transaction buffers and applies in order`() =
+        runBlocking {
+            val a = note()
+            val b = note()
+            store.transaction {
+                insert(a)
+                insert(b)
+            }
+            assertEquals(2, store.count(Filter(kinds = listOf(1))))
+        }
+
+    @Test
+    fun `negentropy snapshot returns id and time pairs`() =
+        runBlocking {
+            val ev = note(at = 42)
+            store.insert(ev)
+            val snapshot = store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(1))), maxEntries = null)
+            assertEquals(listOf(42L to ev.id), snapshot.map { it.createdAt to it.id })
+        }
+
+    @Test
+    fun `delete by filter`() =
+        runBlocking {
+            store.insert(note())
+            store.insert(note(author = bob))
+            store.delete(Filter(authors = listOf(alice)))
+            assertEquals(setOf(bob), store.query<Event>(Filter(kinds = listOf(1))).map { it.pubKey }.toSet())
+        }
+}

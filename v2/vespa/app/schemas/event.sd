@@ -52,9 +52,16 @@ schema event {
             indexing: summary
         }
 
-        # The (relay, filter) mirror that owns this doc. Reconciliation deletes
-        # only within its own scope — see v2/README.md decision 4.
+        # Optional provenance: where this doc was first synced from. Never part
+        # of store semantics — see v2/README.md decision 4.
         field scope type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        # NIP-40: derived from the expiration tag at feed time, so the expiry
+        # sweep finds due docs with one range query. Absent = never expires.
+        field expires_at type long {
             indexing: attribute | summary
             attribute: fast-search
         }
