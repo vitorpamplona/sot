@@ -53,11 +53,51 @@ seen. 10002 itself escapes the circularity by design: NIP-65 tells clients to
 broadcast relay lists widely, which is exactly what the index relays
 (purplepag.es-style) exist to hold.
 
-Observers enter three ways: the operator's config (`DEFAULT_OBSERVER` +
-extras), seed-relay 10040 hints, and — the product loop — **NIP-42
-authentication on our own relay enrolls the authenticated pubkey as an
-observer**, so the first person to search through their own web of trust is
-also the trigger that starts syncing it.
+Observers enter three ways: the **house account** (below), seed-relay 10040
+hints, and — the product loop — **NIP-42 authentication on our own relay
+enrolls the authenticated pubkey as an observer**, so the first person to
+search through their own web of trust is also the trigger that starts
+syncing it.
+
+## Identity: the house account and the relay's own key
+
+**The house account** (`HOUSE_NPUB` + `HOUSE_RELAY`) is the observer behind
+every unauthenticated search — a real user whose web of trust defines the
+relay's default ranking. The home relay solves its bootstrap: the house
+account's first 10002 is synced from `HOUSE_RELAY` directly, with no
+dependence on indexer coverage; from there the standard chain runs (outbox →
+authoritative 10040 → provider → scores). This replaces the bare
+`DEFAULT_OBSERVER` pubkey.
+
+**The relay identity** is an nsec generated on first run (v1's `SERVER_NSEC`
+/ `sot init` behavior, carried forward) and used two ways:
+
+- **as a NIP-42 client**: outbox and provider relays may require AUTH; the
+  sync side authenticates with this key on first contact (v1's
+  `RelayAuthenticator` pattern). It is also NIP-11 `self`.
+- **as an author**: on first run the identity signs and inserts into its OWN
+  store — where the operator, or anyone, can read them, and the operator can
+  supersede them any time from a normal Nostr client (the store keeps the
+  newest; no config redeploy):
+  - **kind 0** — service name/description/icon, seeded from config defaults;
+  - **kind 10002** — pointing at this relay's own URL;
+  - **kind 10086** (`IndexerRelayListEvent`) — the indexer relay list,
+    seeded with: `wss://purplepag.es`, `wss://indexer.coracle.social`,
+    `wss://user.kindpag.es`, `wss://directory.yabu.me`,
+    `wss://profiles.nostr1.com`.
+
+**The 10086 IS the indexer configuration.** The sync service reads the
+identity's newest 10086 from the store wherever this proposal says "index
+relays" — the relays used to find 10002s for pubkeys we don't hold yet, and
+the fallback for authors with no relay list. Changing indexers is publishing
+a new 10086 as the identity; the change feed re-plans, like every other
+NIP disruption. The self-published kind 0 + 10002 are also broadcast to the
+indexer relays so the service itself is discoverable.
+
+**10002 freshness after bootstrap**: once an author's 10002 is stored,
+updates arrive from two directions and the store's supersession merges them —
+their own outbox (it carries their 10002 like any other kind) and the indexer
+relays, which stay a standing reconcile scope for the whole roster's 10002s.
 
 A new score's subject automatically gets their 10002 looked up; a new 10002
 reassigns that author to the right relay work-sets; a fresher 10040
@@ -270,11 +310,14 @@ versus optional.
 | `OutboxDirectory` | stateless query facade over the store's 10002 docs (via the derived `write_relays` attribute): relay→authors recall, grouping for the relay list, staleness checks, INDEX_RELAYS fallback |
 | `ScopePlanner` | roster × directory × providers → (relay, filter) work units, author-batched |
 | `LiveSubs` | the rotating subscription pool, trust-prioritized |
+| `Identity` | first-run keygen; signs + inserts the relay's own kind 0 / 10002 / 10086 (operator-supersedable); NIP-42 client auth on upstream relays |
 | `SyncService` | bootstrap ordering, the change-feed reaction loop, the reconcile ticker — v1's `SyncService` shape |
 
-Config: `SEED_RELAYS` (10040 bootstrap), `INDEX_RELAYS` (10002/profile
-aggregators + fallback), `SYNC_KINDS`, `SYNC_INTERVAL`, `LIVE_SUBS` (pool
-size, 0 = reconcile-only), `MAX_AUTHORS_PER_FILTER`.
+Config: `HOUSE_NPUB` + `HOUSE_RELAY` (the default observer and where to find
+their first 10002), `SERVER_NSEC` (generated on first run), `SEED_RELAYS`
+(10040 discovery hints), first-run seeds for the identity's kind 0/10086
+(after that, the stored events rule), `SYNC_KINDS`, `SYNC_INTERVAL`,
+`LIVE_SUBS` (pool size, 0 = reconcile-only), `MAX_AUTHORS_PER_FILTER`.
 
 ## Phasing (each lands green on its own; no v1 data migration — v2 starts fresh)
 
