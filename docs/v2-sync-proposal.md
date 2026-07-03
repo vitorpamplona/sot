@@ -47,20 +47,42 @@ loop from empty in dependency order (10040 → 30382 → roster → 10002 →
 outboxes); steady state is the same loop driven by change events plus a slow
 reconcile cadence.
 
-### Requirement 4 — the 10002 directory
+### Requirement 4 — the 10002 directory is a Vespa query, not a database
 
-Kind 10002 is synced *into the store* like any other kind (it's replaceable —
-the store keeps exactly the latest per author; a hand-rolled side-database
-would just re-implement that). The **OutboxDirectory** component is a cached
-view over `store.query(kinds=[10002], authors=roster-chunk)` exposing:
+Kind 10002 is synced *into the store* like any other kind, and the store IS
+the directory: replaceable supersession keeps exactly the newest per author,
+and kind-5 / vanish / expiry disruptions apply automatically because a 10002
+is just an event — every NIP rule is enforced once, in the store, instead of
+mirrored into a side structure that can drift.
 
-- `writeRelaysOf(pubkey)` — parsed via Quartz's `AdvertisedRelayListEvent`
-- the **inverted map**: relay → roster authors who write there (the sync
-  work-sets), with authors batched ~500 per filter like v1's
-  `AUTHORS_PER_FILTER`
-- staleness: refresh a roster member's 10002 when it's older than N days,
-  from the index relays + their last-known outbox (10002s live in outboxes
-  too)
+The one thing today's schema can't answer directly is "who writes to relay
+X": the queryable `tag_index` keeps only `"r:<url>"` and drops the r-tag's
+third element, so read-only relays are indistinguishable from write relays.
+Fix it the same way as `owner`/`expires_at`/`search_text` — one **derived
+attribute**, computed at feed time by the store (which has Quartz to parse
+NIP-65 markers and normalize URLs):
+
+```
+field write_relays type array<string> {   # kind-10002 docs only
+    indexing: attribute | summary          # normalized write/both r-tags
+    attribute: fast-search
+}
+```
+
+Then the "directory" is two stateless queries:
+
+- **relay → authors** (the sync work-sets):
+  `where kind = 10002 and write_relays contains "<url>"`, paging `pubkey`s
+  out in `AUTHORS_PER_FILTER`-sized batches;
+- **the distinct relay list + author counts** (what to plan over): one Vespa
+  **grouping** query — `… | all(group(write_relays) each(output(count())))`
+  — array attributes group per element, so this is a single round trip.
+
+`OutboxDirectory` shrinks to a query facade with zero state of its own;
+rebuild-on-restart and cache-invalidation problems disappear by construction.
+Staleness stays a sync concern, also answerable from the store: refresh a
+roster member's 10002 when the stored doc's `created_at` is older than N
+days, from the index relays + their last-known outbox.
 
 Where do 10002s come from initially? `INDEX_RELAYS` — a small configured list
 of aggregators that specialize in 0/3/10002 (purplepag.es-style) — plus the
@@ -161,7 +183,7 @@ search_tertiary    kind 0: about                      30023: content
 | --- | --- |
 | `RelaySyncer` + `SyncState` + `SyncProgress` | ported from v1 (`:indexer`) nearly verbatim — the negentropy-or-pages transport |
 | `Roster` | derives the pubkey set from store queries; grows via the change feed |
-| `OutboxDirectory` | 10002 tracking: per-author write relays, the inverted relay→authors map, staleness refresh, INDEX_RELAYS fallback |
+| `OutboxDirectory` | stateless query facade over the store's 10002 docs (via the derived `write_relays` attribute): relay→authors recall, grouping for the relay list, staleness checks, INDEX_RELAYS fallback |
 | `ScopePlanner` | roster × directory × providers → (relay, filter) work units, author-batched |
 | `LiveSubs` | the rotating subscription pool, trust-prioritized |
 | `SyncService` | bootstrap ordering, the change-feed reaction loop, the reconcile ticker — v1's `SyncService` shape |
@@ -170,19 +192,15 @@ Config: `SEED_RELAYS` (10040 bootstrap), `INDEX_RELAYS` (10002/profile
 aggregators + fallback), `SYNC_KINDS`, `SYNC_INTERVAL`, `LIVE_SUBS` (pool
 size, 0 = reconcile-only), `MAX_AUTHORS_PER_FILTER`.
 
-## Phasing (each lands green on its own)
+## Phasing (each lands green on its own; no v1 data migration — v2 starts fresh)
 
-0. **Bridge the existing dataset**: `sot2 import --from events.db` — open
-   v1's SQLite store read-only, stream every event through
-   `VespaEventStore.batchInsert`. The v1 indexer's years of data becomes the
-   v2 bootstrap in one offline pass; no network, ~30 lines, and it exercises
-   the store at real scale for the first time.
 1. **Scores plane**: port RelaySyncer/SyncState; 10040 → provider → 30382
    pipeline writing to the Vespa store (v1 phases 1–3 minus Discovery).
    This alone reaches feature parity with `sot index` for trust data.
 2. **Search tiers + extractor registry** (requirement 5) — independent of
    sync; can even land first. Includes the kind-0 Brainstorm port and the
-   30023 extractor as the second proof.
+   30023 extractor as the second proof. The `write_relays` derived attribute
+   lands here too (same extractor mechanism, same reindex-not-resync story).
 3. **Roster + OutboxDirectory + ScopePlanner** (requirements 1, 4): the
    records plane, reconcile-cadence only.
 4. **LiveSubs** (the "constant" in constant sync).
