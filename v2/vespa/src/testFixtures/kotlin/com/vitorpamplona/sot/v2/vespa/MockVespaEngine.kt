@@ -214,19 +214,38 @@ object MockYql {
             q =
                 when {
                     clause.startsWith("id in (") -> q.copy(ids = strings(clause))
+
                     clause.startsWith("pubkey in (") -> q.copy(authors = strings(clause))
+
                     clause.startsWith("owner in (") -> q.copy(owners = strings(clause))
+
                     clause.startsWith("kind in (") -> q.copy(kinds = ints(clause))
+
                     clause.startsWith("created_at >= ") -> q.copy(since = clause.substringAfterLast(' ').toLong())
+
                     clause.startsWith("created_at <= ") -> q.copy(until = clause.substringAfterLast(' ').toLong())
+
                     clause.startsWith("expires_at < ") -> q.copy(expiresBefore = clause.substringAfterLast(' ').toLong())
+
                     clause.startsWith("expires_at > ") -> q.copy(notExpiredAt = clause.substringAfterLast(' ').toLong())
-                    clause == "({defaultIndex:\"default\"}userInput(@search))" -> q.copy(search = params.getValue("search"))
+
+                    // The word-group search clause (its first sub-clause is always a
+                    // field-annotated userInput): reconstruct the term from the
+                    // per-word parameters (@w0..@w5 — @wj/@wp* are derived variants).
+                    clause.startsWith("((({defaultIndex:") -> q.copy(search = searchWords(params))
+
                     clause.startsWith("(tag_index contains ") -> tagGroup(q, clause)
+
                     else -> error("unparseable clause: $clause")
                 }
         }
         return q
+    }
+
+    private fun searchWords(params: Map<String, String>): String {
+        val words = (0 until EventYql.MAX_QUERY_WORDS).mapNotNull { params["w$it"] }
+        require(words.isNotEmpty()) { "search clause without w0.. parameters" }
+        return words.joinToString(" ")
     }
 
     /** One parenthesized tag group: `or`-joined -> tags, `and`-joined -> tagsAll (identical when single). */

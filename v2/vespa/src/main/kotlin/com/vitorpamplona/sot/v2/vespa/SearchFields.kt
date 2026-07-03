@@ -60,11 +60,25 @@ data class SearchFields(
             text?.let { put("search_text", it) }
         }
 
-    /** Naive recall check for the in-memory reference index: any field contains [term]. */
-    fun matches(term: String): Boolean = fields().values.any { it.contains(term, ignoreCase = true) }
+    /**
+     * Naive recall check for the in-memory reference index, mirroring the
+     * word-group YQL's OR shape: ANY query word (capped like the YQL)
+     * substring-matching ANY field recalls the doc — ranking, not recall,
+     * decides what floats. Fuzzy/gram recall is deliberately not modeled.
+     */
+    fun matches(term: String): Boolean {
+        val values = fields().values
+        return term
+            .split(WHITESPACE)
+            .filter { it.isNotEmpty() }
+            .take(EventYql.MAX_QUERY_WORDS)
+            .any { word -> values.any { it.contains(word, ignoreCase = true) } }
+    }
 
     companion object {
         val NONE = SearchFields()
+
+        private val WHITESPACE = Regex("\\s+")
 
         /** Rebuild from a doc field map (the [fields] shape). */
         fun fromFields(get: (String) -> String?): SearchFields =

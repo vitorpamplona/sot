@@ -78,8 +78,10 @@ packages under `com.vitorpamplona.sot.v2`.
    request's `created_at` (Quartz: strict `<`); NIP-40 expired events are
    never served, even stored-but-unswept (Quartz serves them until a sweep);
    kind 5 has no effect against a kind 5 or a kind 62 (Quartz deletes them);
-   and NIP-50 `key:value` extension tokens are stripped from the search term
-   instead of matched as text (Quartz feeds them to FTS). One deliberate
+   and NIP-50 `key:value` extension tokens are split off the search term
+   instead of matched as text (Quartz feeds them to FTS) — with `sort:`,
+   `filter:rank:…`, and `include:spam` HONORED (see decision 8); unknown
+   extensions are ignored per the NIP. One deliberate
    extension kept from Quartz beyond NIP-09's letter: gift-wraps are
    deletable by their p-tag recipient (NIP-62 explicitly wants this for
    vanish; applying it to kind 5 is the consistent reading).
@@ -89,8 +91,18 @@ packages under `com.vitorpamplona.sot.v2`.
    default) and wraps each REQ/COUNT in `withContext(ObserverContext(...))`;
    the store reads it back and stamps `EventQuery.observer` — ranking
    context only, never recall. `EventYql` emits it as the `user_q` query
-   feature; the `text` rank profile declares the input today and starts
-   weighing it when the profile document type lands.
+   feature, which the imported profile tensors resolve into per-author trust.
+   The query side is Brainstorm's, ported from `vespa_query.py`: per-word OR
+   groups (exact / prefix / length-gated fuzzy per field, trigram safety
+   nets, joined + adjacent-pair variants, words out-of-band as `@w0..@w5`),
+   default profile `search`. NIP-50 extensions map onto Brainstorm's API:
+   `sort:rank[:asc]`/`sort:followers`/`sort:text` pick the rank profile (with
+   no terms: a trust-ordered match-all), `filter:rank:gte:N`/`gt:N` set the
+   `min_rank` floor, and every search is trust-gated at `DEFAULT_MIN_RANK`
+   by default — Brainstorm's `onlyRanked`, whose NIP-50 inverse is
+   `include:spam` (presence switches the default floor off; an explicit
+   `filter:rank` floor always survives). Plain no-search REQs are never
+   gated: that recall is NIP-01's, not search's.
 9. **Single-writer, read-your-writes.** All store writes serialize behind one
    mutex, and the `EventIndex` contract requires an acked put to be visible
    to search (Vespa's proton updates the memory index on the write path).
@@ -106,5 +118,5 @@ packages under `com.vitorpamplona.sot.v2`.
 | `:v2:store` | **started** | `VespaEventStore : IEventStore` — the SQLite store's semantics on Vespa, `Filter` → `EventQuery` mapping, negentropy snapshots. The whole semantics suite runs twice: in-memory AND over the wire through `VespaEventIndex` + `MockVespaEngine`. Next: `ObservableEventStore` wiring; integration test: Quartz event → doc → reconstructed JSON → Quartz parse → `verify()`. |
 | `:v2:sync` | planned | Multi-relay ingest through the store (verify → `batchInsert`), NIP-77 delta sync seeded from `snapshotIdsForNegentropy`, optional per-source reconcile diffs for silent removals. |
 | `:v2:relay` | **started** | `SotRelayServer` — Quartz's protocol engine (`RelayServerBase` + `LiveEventStore`) over the Vespa store: full-filter REQs + live subscriptions, VerifyPolicy-gated EVENT publishes, NIP-45 COUNT, server-side NIP-77, NIP-11 doc, Ktor mount. NIP-42 auth switches the ranking observer per connection (`ObserverRoutingBackend`). Next: Quartz `verify()` round-trip integration test; wire into a composition root. |
-| `:v2:profile` | **schema landed** | `app/schemas/profile.sd`: the GLOBAL parent doc (pubkey-keyed `quality_scores` + `follower_counts` tensors, Brainstorm shapes) that every event references (`author_ref`) and imports for ranking. `event.sd` carries the per-kind search fields (Brainstorm profile group for kind 0; generic tiers otherwise) and ONE kind-dispatched `search` rank profile plus Brainstorm's sort alternates (`sort_followers`, `rank_desc/asc`, `rank_filtered`, `text_relevance`) — a single query ranks every recalled kind by its own equations × the observer's trust. Projection LANDED as `:v2:profile`: `TrustProjection` decorates the store's `EventIndex` and recomputes each subject's `ProfileDoc` (both tensors, observer-keyed per NIP-85) whenever a 30382/10040 doc is put or removed — so supersession, kind-5, vanish, and sweeps all update ranking with zero deletion-specific code; `rebuildAll()` bootstraps from an existing corpus, `author_ref` is stamped on every event doc at feed time. Extractors also LANDED: `:v2:store`'s `SearchExtractors` decomposes every Quartz `SearchableEvent` (~80 kinds) into the per-kind fields — kind 0 into the Brainstorm profile group, titled kinds into primary/secondary/tertiary tiers, everything else via the `indexableContent()` fallback into the tertiary tier — applied at insert and re-derivable via `reindexFullTextSearch`. Next: the projection that feeds profile docs from 30382s + stamps `author_ref`, and the EventYql upgrade to the new profiles. Equations are now VERBATIM from the operator-provided brainstorm-k8s doc.sd (2026-07, the §12 multiplicative-trust rewrite): concave `wot_mult` multiply (not the old additive sigmoid), `text_score_cutoff` pre-multiply discard, sentinel + drop-limit gating, proximity rule, and the known-inert `match_quality` itemRawScore ladder kept for parity. |
+| `:v2:profile` | **schema landed** | `app/schemas/profile.sd`: the GLOBAL parent doc (pubkey-keyed `quality_scores` + `follower_counts` tensors, Brainstorm shapes) that every event references (`author_ref`) and imports for ranking. `event.sd` carries the per-kind search fields (Brainstorm profile group for kind 0; generic tiers otherwise) and ONE kind-dispatched `search` rank profile plus Brainstorm's sort alternates (`sort_followers`, `rank_desc/asc`, `rank_filtered`, `text_relevance`) — a single query ranks every recalled kind by its own equations × the observer's trust. Projection LANDED as `:v2:profile`: `TrustProjection` decorates the store's `EventIndex` and recomputes each subject's `ProfileDoc` (both tensors, observer-keyed per NIP-85) whenever a 30382/10040 doc is put or removed — so supersession, kind-5, vanish, and sweeps all update ranking with zero deletion-specific code; `rebuildAll()` bootstraps from an existing corpus, `author_ref` is stamped on every event doc at feed time. Extractors also LANDED: `:v2:store`'s `SearchExtractors` decomposes every Quartz `SearchableEvent` (~80 kinds) into the per-kind fields — kind 0 into the Brainstorm profile group, titled kinds into primary/secondary/tertiary tiers, everything else via the `indexableContent()` fallback into the tertiary tier — applied at insert and re-derivable via `reindexFullTextSearch`. The query side also LANDED (decision 8): `EventYql` emits Brainstorm's per-word fuzzy word groups and the NIP-50 `sort:`/`filter:rank:`/`include:spam` extensions select profile and trust floor. Equations are VERBATIM from the operator-provided brainstorm-k8s doc.sd (2026-07, the §12 multiplicative-trust rewrite): concave `wot_mult` multiply (not the old additive sigmoid), `text_score_cutoff` pre-multiply discard, sentinel + drop-limit gating, proximity rule, and the known-inert `match_quality` itemRawScore ladder kept for parity. |
 | `:v2:cli` | planned | Composition root: `serve` / `sync` / `status`. |

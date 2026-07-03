@@ -40,6 +40,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.sot.v2.vespa.EventDoc
 import com.vitorpamplona.sot.v2.vespa.EventIndex
 import com.vitorpamplona.sot.v2.vespa.EventQuery
+import com.vitorpamplona.sot.v2.vespa.EventYql
 import com.vitorpamplona.sot.v2.vespa.SearchFields
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -355,10 +356,31 @@ class VespaEventStore(
  * never match: NIP-01 semantics for a present-but-EMPTY list ("the event's
  * value must be in the list" — of nothing). Absent (null) lists mean no
  * constraint, which is EventQuery's empty default.
+ *
+ * NIP-50 extensions are relay hints, not text — Quartz's parser splits them
+ * off (and, unlike a naive key:value regex, keeps `scheme://…` tokens as
+ * terms). The honored set maps onto Brainstorm's search API:
+ *
+ *  - `sort:rank[:desc]` / `sort:rank:asc` / `sort:followers` / `sort:text`
+ *    pick the rank profile; with no terms that's a trust-ordered match-all.
+ *  - `filter:rank:gte:N` / `filter:rank:gt:N` set the observer trust floor
+ *    (rank_filtered when no sort chose a profile — text order, gated).
+ *  - `include:spam` switches OFF the default trust floor: every ranked query
+ *    is otherwise gated at [DEFAULT_MIN_RANK] (Brainstorm's onlyRanked
+ *    default — include:spam is its NIP-50 inverse). Plain filter REQs (no
+ *    terms, no sort) are never gated: that recall is NIP-01's, not search's.
+ *
+ * Unknown extensions stay ignored; an all-extensions query becomes
+ * unconstrained (null terms), not match-nothing.
  */
 internal fun Filter.toEventQuery(): EventQuery? {
     if (ids?.isEmpty() == true || authors?.isEmpty() == true || kinds?.isEmpty() == true) return null
     if (tags?.values?.any { it.isEmpty() } == true || tagsAll?.values?.any { it.isEmpty() } == true) return null
+    val parsed = SearchQuery.parse(search)
+    val terms = parsed.terms.ifEmpty { null }
+    val sort = parsed.extensions["sort"]?.let(::rankProfileOf)
+    val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
+    val ranked = terms != null || sort != null
     return EventQuery(
         ids = ids.orEmpty(),
         kinds = kinds.orEmpty(),
@@ -368,13 +390,42 @@ internal fun Filter.toEventQuery(): EventQuery? {
         since = since,
         until = until,
         limit = limit,
-        // NIP-50: extensions are relay hints, not text ("relays SHOULD ignore
-        // extensions they don't support"). Quartz's parser splits them off —
-        // and, unlike a naive key:value regex, keeps `scheme://…` tokens as
-        // terms. None are honored yet; an all-extensions query becomes
-        // unconstrained (null), not match-nothing.
-        search = SearchQuery.parse(search).terms.ifEmpty { null },
+        search = terms,
+        ranking = sort ?: floor?.let { EventYql.RANK_FILTERED },
+        minRank = floor ?: if (ranked && !parsed.includeSpam) DEFAULT_MIN_RANK else null,
     )
+}
+
+/**
+ * The default observer trust floor for search (Brainstorm passes min_rank=2
+ * on the 0..100 rank scale): hits whose author the observer's provider
+ * doesn't rank are spam-filtered out unless the query says `include:spam`.
+ */
+internal const val DEFAULT_MIN_RANK = 2.0
+
+/** `sort:` value -> rank profile; null (ignored) for values we don't recognize. */
+private fun rankProfileOf(value: String): String? =
+    when (value) {
+        "rank", "rank:desc" -> EventYql.RANK_DESC
+        "rank:asc" -> EventYql.RANK_ASC
+        "followers" -> EventYql.RANK_FOLLOWERS
+        "text" -> EventYql.RANK_TEXT
+        else -> null
+    }
+
+/** `filter:` value (`rank:gte:N` / `rank:gt:N`) -> the min_rank floor; null when unrecognized. */
+private fun rankFloorOf(value: String): Double? {
+    val parts = value.split(':')
+    if (parts.size != 3 || parts[0] != "rank") return null
+    val n = parts[2].toDoubleOrNull() ?: return null
+    return when (parts[1]) {
+        "gte" -> n
+
+        // Scores are integers (0..100): strictly-greater = the next rank up.
+        "gt" -> n + 1.0
+
+        else -> null
+    }
 }
 
 /**

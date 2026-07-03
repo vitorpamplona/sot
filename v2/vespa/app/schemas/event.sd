@@ -525,9 +525,9 @@ schema event {
         }
     }
 
-    # sot's stable profile names: `search` is what the engine sends by default
-    # (currently Brainstorm's §12 default), `text` is the legacy alias the
-    # current EventYql uses for any search term. Both are pure renames.
+    # sot's stable profile names: `search` is what EventYql sends by default
+    # for any search term (currently Brainstorm's §12 default), `text` is the
+    # pure-text profile NIP-50 `sort:text` selects. Both are pure renames.
     rank-profile search inherits sort_followers {
     }
 

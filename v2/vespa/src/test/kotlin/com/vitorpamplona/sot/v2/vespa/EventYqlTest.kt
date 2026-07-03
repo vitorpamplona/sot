@@ -60,12 +60,79 @@ class EventYqlTest {
     }
 
     @Test
-    fun `search term goes out-of-band and switches ranking on`() {
+    fun `search words go out-of-band and switch the default ranking on`() {
         val q = EventYql.build(EventQuery(kinds = listOf(0), search = "vitor pamplona"))!!
-        assertEquals("select * from event where kind in (0) and ({defaultIndex:\"default\"}userInput(@search))", q.yql)
-        assertEquals(mapOf("search" to "vitor pamplona"), q.params)
-        assertEquals(EventYql.RANK_TEXT, q.ranking)
+        assertTrue(q.yql.startsWith("select * from event where kind in (0) and ((("), q.yql)
+        assertEquals("vitor", q.params["w0"])
+        assertEquals("pamplona", q.params["w1"])
+        assertEquals("vitorpamplona", q.params["wj"], "two words get the joined-CamelCase variant")
+        assertFalse("wp0" in q.params, "adjacent pairs only appear from three words up")
+        assertEquals("2.0", q.params["ranking.features.query(w_gram)"], "no short word: normal gram weight")
+        assertEquals(EventYql.RANK_SEARCH, q.ranking)
         assertFalse("order by" in q.yql, "ranked queries must not force recency order")
+    }
+
+    @Test
+    fun `word groups carry the per-field clauses, labels, and gram nets`() {
+        val q = EventYql.build(EventQuery(search = "pamplona"))!!
+        // Primary-role fields: labeled exact/prefix clauses.
+        assertTrue("({defaultIndex:\"name\",label:\"mtch_exact\"}userInput(@w0))" in q.yql, q.yql)
+        assertTrue("({defaultIndex:\"name\",prefix:true,label:\"mtch_prefix\"}userInput(@w0))" in q.yql)
+        assertTrue("({defaultIndex:\"search_primary\",label:\"mtch_exact\"}userInput(@w0))" in q.yql)
+        // Affiliation role: only the exact clause is labeled.
+        assertTrue("({defaultIndex:\"about\",label:\"mtch_affil\"}userInput(@w0))" in q.yql)
+        assertTrue("({defaultIndex:\"about\",prefix:true}userInput(@w0))" in q.yql)
+        // Recall role: unlabeled.
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in q.yql)
+        // 8 chars: one edit of fuzz, not two.
+        assertTrue("({defaultIndex:\"name\",fuzzy:{maxEditDistance:1,prefixLength:2},label:\"mtch_fz1\"}userInput(@w0))" in q.yql)
+        assertFalse("maxEditDistance:2" in q.yql)
+        // Trigram safety nets: OR against the name grams, AND against about_gram.
+        assertTrue("name_gram contains \"pam\"" in q.yql)
+        assertTrue("display_name_gram contains \"pam\"" in q.yql)
+        assertTrue("search_primary_gram contains \"pam\"" in q.yql)
+        assertTrue("(about_gram contains \"pam\" and about_gram contains \"amp\"" in q.yql)
+    }
+
+    @Test
+    fun `fuzzy budget is length-gated`() {
+        val short = EventYql.build(EventQuery(search = "bob"))!!
+        assertFalse("fuzzy" in short.yql, "under 4 chars: exact and prefix only")
+        assertEquals("8.0", short.params["ranking.features.query(w_gram)"], "short word leans on the gram net")
+        assertFalse("wj" in short.params, "a single word has no joined variant")
+
+        val long = EventYql.build(EventQuery(search = "decentralization"))!!
+        assertTrue("fuzzy:{maxEditDistance:2,prefixLength:2}" in long.yql, "9+ chars: two edits")
+    }
+
+    @Test
+    fun `three or more words add adjacent-pair variants and cap at six`() {
+        val q = EventYql.build(EventQuery(search = "john carvalho dev one two three seven eight"))!!
+        assertEquals("johncarvalho", q.params["wp0"])
+        assertEquals("carvalhodev", q.params["wp1"])
+        assertEquals("johncarvalhodevonetwothree", q.params["wj"], "variants are built from the capped words")
+        assertEquals("three", q.params["w5"])
+        assertFalse("w6" in q.params, "words beyond ${EventYql.MAX_QUERY_WORDS} are dropped")
+    }
+
+    @Test
+    fun `ranking override without a term is a trust-ordered match-all`() {
+        val q = EventYql.build(EventQuery(ranking = EventYql.RANK_DESC, minRank = 2.0, observer = hexA))!!
+        assertEquals("select * from event where true", q.yql)
+        assertEquals(EventYql.RANK_DESC, q.ranking)
+        assertEquals("{$hexA:1.0}", q.params["ranking.features.query(user_q)"])
+        assertEquals("2.0", q.params["ranking.features.query(min_rank)"])
+        assertFalse("order by" in q.yql, "a rank profile owns the order")
+    }
+
+    @Test
+    fun `observer is ranking context only — never emitted for unranked recall`() {
+        val unranked = EventYql.build(EventQuery(kinds = listOf(1), observer = hexA))!!
+        assertTrue(unranked.params.isEmpty(), "no term, no profile: pure NIP-01 recall")
+        assertEquals(EventYql.RANK_UNRANKED, unranked.ranking)
+
+        val ranked = EventYql.build(EventQuery(search = "vitor", observer = hexA))!!
+        assertEquals("{$hexA:1.0}", ranked.params["ranking.features.query(user_q)"])
     }
 
     @Test
