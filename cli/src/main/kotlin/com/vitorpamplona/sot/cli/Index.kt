@@ -20,77 +20,25 @@
  */
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.sot.config.Config
-import com.vitorpamplona.sot.indexer.SyncOptions
-import com.vitorpamplona.sot.indexer.SyncService
-import com.vitorpamplona.sot.store.openObservableStore
 import kotlinx.coroutines.runBlocking
-import kotlin.system.exitProcess
-import kotlin.time.Duration.Companion.seconds
 
-/*
- * `sot index [flags]` — one full incremental sync pass, then exit: profiles +
- * NIP-85 trust scores from relays into the local EventStore (source of truth),
- * projected into Vespa. `sot serve` runs the same pass on a loop; use this for
- * the initial backfill or bounded experiments. Defaults come from Config/.env;
- * flags override.
+/**
+ * `sot index` — ONE pass of the trust-sync chain (seed hints -> observer
+ * 10002s -> outboxes -> providers -> orphan sweep) into Vespa, then exit.
+ * The first run also self-publishes the identity's kind 0/10002/10086.
+ * Don't run it while `sot serve` is mid-pass against the same Vespa — two
+ * writers double-download; semantics stay correct but bandwidth doesn't.
  */
-
-/** A multi-value flag: values after `--name` up to the next `--flag` (e.g. `--seeds a b c`). */
-private fun argList(
-    args: List<String>,
-    name: String,
-    default: List<String>,
-): List<String> {
-    val i = args.indexOf(name)
-    if (i < 0) return default
-    val out = mutableListOf<String>()
-    var j = i + 1
-    while (j < args.size && !args[j].startsWith("--")) {
-        out.add(args[j])
-        j++
-    }
-    return out.ifEmpty { default }
-}
-
 internal fun index(args: List<String>) {
-    // The whole point of a pass is feeding Vespa - and the feed client won't
-    // even construct against a down engine. Same gate as `sot serve`.
     ensureVespaIsUp(args)
-    val dbPath = flag(args, "--db", Config.eventsDb)
-    val opts =
-        SyncOptions(
-            maxEvents = flag(args, "--max-events", "0").toInt(),
-            fetchTimeoutMs = flag(args, "--fetch-timeout", "10").toLong() * 1000,
-            maxProviders = flag(args, "--max-providers", "0").toInt(),
-            discover = flag(args, "--discover", "true").toBooleanStrict(),
-            maxRounds = flag(args, "--max-rounds", "3").toInt(),
-            maxRelays = flag(args, "--max-relays", "200").toInt(),
-            concurrency = flag(args, "--concurrency", "64").toInt(),
-            reconcileScores = flag(args, "--reconcile", "false").toBooleanStrict(),
-        )
-
-    // Shared event store (see :event-store): observable so the projection follows its feed.
-    val store = openObservableStore(dbPath)
-    val service =
-        SyncService(
-            store = store,
-            vespaUrl = flag(args, "--vespa", Config.vespaUrl),
-            seedRelays = argList(args, "--seeds", Config.seedRelays),
-            statePath = flag(args, "--state", "$dbPath.state.json"),
-            opts = opts,
-            log = ::logLine,
-            signer = serverSigner(),
-        )
-
-    runBlocking {
-        service.runOnce()
-        logLine("draining projection + Vespa writes ...")
-        service.drain(120.seconds)
+    val identity = serverIdentity()
+    val store = openStore()
+    val sync = syncService(store, identity)
+    try {
+        runBlocking { sync.runOnce() }
+        ok("pass complete.")
+    } finally {
+        sync.close()
+        store.close()
     }
-    logLine("DONE - ${service.summary()}")
-    service.close()
-    store.close()
-    System.out.flush()
-    exitProcess(0)
 }

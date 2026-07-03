@@ -16,19 +16,21 @@ dependencyResolutionManagement {
 
 rootProject.name = "sot"
 
-include(":config")
-include(":event-store")
+// The product: Vespa IS the event store, NIP-50 is the API (see README.md).
 include(":vespa")
-include(":indexer")
-include(":http")
+include(":store")
 include(":relay")
+include(":profile")
+include(":sync")
 include(":cli")
 
-// v2 — the negentropy-first rewrite (see v2/README.md). Shares this build's
-// version catalog, wrapper, and formatting; replaces the modules above when done.
-include(":v2:vespa")
-include(":v2:store")
-include(":v2:relay")
-include(":v2:profile")
-include(":v2:sync")
-include(":v2:cli")
+// v1 — the frozen SQLite-store implementation, kept as the working reference
+// until the root modules are validated against a real Vespa deployment and
+// real relays. No new work lands here; delete the folder when v2 is proven.
+include(":v1:config")
+include(":v1:event-store")
+include(":v1:vespa")
+include(":v1:indexer")
+include(":v1:http")
+include(":v1:relay")
+include(":v1:cli")

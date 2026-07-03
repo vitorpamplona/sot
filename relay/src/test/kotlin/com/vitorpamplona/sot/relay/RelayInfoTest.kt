@@ -21,7 +21,6 @@
 package com.vitorpamplona.sot.relay
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -30,21 +29,16 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** The NIP-11 wire contract: what a client learns before connecting. */
 class RelayInfoTest {
     @Test
-    fun `the NIP-11 document advertises search, optional auth, no writes, and the relay's own key`() {
-        val self = "a".repeat(64)
-        val info = Json.parseToJsonElement(relayInfoJson(selfPubkey = self)).jsonObject
-
-        assertEquals("sot", info["name"]?.jsonPrimitive?.content)
-        assertEquals(self, info["self"]?.jsonPrimitive?.content, "the relay's OWN pubkey (SERVER_NSEC)")
-        val nips = info["supported_nips"]!!.jsonArray.map { it.jsonPrimitive.int }
-        assertTrue(nips.containsAll(listOf(1, 11, 42, 50)), "NIP-01/11/42/50 are the contract: $nips")
-
-        val limitation = info["limitation"]!!.jsonObject
-        assertEquals(false, limitation["auth_required"]?.jsonPrimitive?.boolean, "NIP-42 is optional")
-        assertEquals(true, limitation["restricted_writes"]?.jsonPrimitive?.boolean, "search-only: no event writes")
-        assertEquals(400, limitation["max_limit"]?.jsonPrimitive?.int)
+    fun `advertises the implemented nips and identity`() {
+        val doc = Json.parseToJsonElement(relayInfoJson(name = "sot v2", selfPubkey = "f".repeat(64))).jsonObject
+        assertEquals("sot v2", doc.getValue("name").jsonPrimitive.content)
+        assertEquals("f".repeat(64), doc.getValue("self").jsonPrimitive.content)
+        val nips = doc.getValue("supported_nips").jsonArray.map { it.jsonPrimitive.int }
+        assertEquals(listOf(1, 9, 11, 40, 42, 45, 50, 62, 77), nips)
+        val limitation = doc.getValue("limitation").jsonObject
+        assertEquals("false", limitation.getValue("auth_required").jsonPrimitive.content)
+        assertTrue("restricted_writes" in limitation)
     }
 }

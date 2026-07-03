@@ -1,0 +1,364 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.vitorpamplona.sot.vespa
+
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import org.eclipse.jetty.http.HttpHeader
+import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory
+import org.eclipse.jetty.io.Content
+import org.eclipse.jetty.server.Handler
+import org.eclipse.jetty.server.HttpConfiguration
+import org.eclipse.jetty.server.HttpConnectionFactory
+import org.eclipse.jetty.server.Request
+import org.eclipse.jetty.server.Response
+import org.eclipse.jetty.server.Server
+import org.eclipse.jetty.server.ServerConnector
+import org.eclipse.jetty.util.Callback
+import java.net.URLDecoder
+import java.util.zip.GZIPInputStream
+
+/**
+ * The slice of Vespa [VespaEventIndex] talks to, backed by an
+ * [InMemoryEventIndex]: document-API put/get/remove on `/document/v1` plus
+ * `/search/` — whose YQL is PARSED back into an [EventQuery] and evaluated by
+ * the reference index. That closes the loop: a query only works over the wire
+ * if [EventYql]'s output round-trips through a grammar-faithful parser, and
+ * the results must agree with the in-memory spec. (It is still a mock: real
+ * Vespa acceptance of the YQL is the deploy-time integration test's job.)
+ *
+ * Runs on Jetty with HTTP/1.1 AND clear-text HTTP/2 on the same port: the
+ * feed client writes over h2c (it refuses HTTP/1.1) while the query side and
+ * the feed client's `?dryRun=true` handshake stay plain.
+ */
+class MockVespaEngine {
+    val inner = InMemoryEventIndex()
+
+    val url: String get() = "http://127.0.0.1:$port"
+
+    private class Reply(
+        val status: Int,
+        val body: String,
+    )
+
+    private val server =
+        Server().apply {
+            val config = HttpConfiguration()
+            addConnector(
+                ServerConnector(this, HttpConnectionFactory(config), HTTP2CServerConnectionFactory(config)).apply {
+                    host = "127.0.0.1"
+                    port = 0
+                },
+            )
+            handler =
+                object : Handler.Abstract() {
+                    override fun handle(
+                        request: Request,
+                        response: Response,
+                        callback: Callback,
+                    ): Boolean {
+                        val reply =
+                            try {
+                                // The feed client gzips its request bodies; real Vespa inflates them.
+                                val raw = Content.Source.asInputStream(request).readBytes()
+                                val body =
+                                    if (request.headers.get(HttpHeader.CONTENT_ENCODING) == "gzip") {
+                                        GZIPInputStream(raw.inputStream()).readBytes().decodeToString()
+                                    } else {
+                                        raw.decodeToString()
+                                    }
+                                handle(request.method, request.httpURI.path, request.httpURI.query, body)
+                            } catch (e: Exception) {
+                                Reply(500, buildJsonObject { put("message", e.toString()) }.toString())
+                            }
+                        response.status = reply.status
+                        response.headers.put(HttpHeader.CONTENT_TYPE, "application/json")
+                        Content.Sink.write(response, true, reply.body, callback)
+                        return true
+                    }
+                }
+            start()
+        }
+
+    val port: Int get() = (server.connectors[0] as ServerConnector).localPort
+
+    fun stop() = server.stop()
+
+    private fun handle(
+        method: String,
+        path: String,
+        rawQuery: String?,
+        body: String,
+    ): Reply {
+        // The feed client opens with a no-op handshake request (?dryRun=true).
+        if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
+        val docPrefix = "/document/v1/event/event/docid/"
+        return when {
+            method == "POST" && path.startsWith(docPrefix) -> {
+                val fields =
+                    Json
+                        .parseToJsonElement(body)
+                        .jsonObject
+                        .getValue("fields")
+                        .jsonObject
+                runBlocking { inner.put(EventDoc.fromSummary(fields)) }
+                Reply(200, """{"id":"$path"}""")
+            }
+
+            method == "DELETE" && path.startsWith(docPrefix) -> {
+                runBlocking { inner.remove(path.removePrefix(docPrefix)) }
+                Reply(200, """{"id":"$path"}""")
+            }
+
+            method == "GET" && path.startsWith(docPrefix) -> {
+                val doc = runBlocking { inner.get(path.removePrefix(docPrefix)) }
+                if (doc == null) {
+                    Reply(404, """{"message":"not found"}""")
+                } else {
+                    Reply(
+                        200,
+                        buildJsonObject {
+                            put("id", path)
+                            put("fields", doc.indexFields())
+                        }.toString(),
+                    )
+                }
+            }
+
+            method == "GET" && path == "/search/" -> {
+                search(params(rawQuery.orEmpty()))
+            }
+
+            else -> {
+                Reply(400, """{"message":"unexpected request: $method $path"}""")
+            }
+        }
+    }
+
+    private fun search(params: Map<String, String>): Reply {
+        val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
+        val hits = params["hits"]?.toIntOrNull() ?: 10
+        val query = MockYql.parse(yql, params)
+        val matches = runBlocking { inner.search(query) }
+        val children = JsonArray(matches.take(hits).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
+        val root =
+            buildJsonObject {
+                put(
+                    "root",
+                    buildJsonObject {
+                        put("fields", buildJsonObject { put("totalCount", JsonPrimitive(matches.size)) })
+                        put("children", children)
+                    },
+                )
+            }
+        return Reply(200, root.toString())
+    }
+
+    private fun params(rawQuery: String): Map<String, String> =
+        rawQuery
+            .split("&")
+            .filter { it.isNotEmpty() }
+            .associate { part ->
+                val k = part.substringBefore("=")
+                val v = URLDecoder.decode(part.substringAfter("=", ""), "UTF-8")
+                k to v
+            }
+}
+
+/**
+ * Parses exactly the YQL grammar [EventYql] emits back into an [EventQuery].
+ * Throws on anything else — an unparseable query means the builder and this
+ * spec drifted apart, which is precisely what the wire tests must catch.
+ */
+object MockYql {
+    fun parse(
+        yql: String,
+        params: Map<String, String>,
+    ): EventQuery {
+        var rest = yql.removePrefix("select * from event where ").trim()
+        require(rest != yql) { "not an event query: $yql" }
+
+        var limit: Int? = null
+        Regex(""" limit (\d+)$""").find(rest)?.let {
+            limit = it.groupValues[1].toInt()
+            rest = rest.removeRange(it.range)
+        }
+        rest = rest.removeSuffix(" order by created_at desc")
+
+        var q = EventQuery(limit = limit)
+        if (rest == "true") return q
+        for (clause in splitTopLevel(rest, " and ")) {
+            q =
+                when {
+                    clause.startsWith("id in (") -> q.copy(ids = strings(clause))
+
+                    clause.startsWith("pubkey in (") -> q.copy(authors = strings(clause))
+
+                    clause.startsWith("owner in (") -> q.copy(owners = strings(clause))
+
+                    clause.startsWith("kind in (") -> q.copy(kinds = ints(clause))
+
+                    clause.startsWith("created_at >= ") -> q.copy(since = clause.substringAfterLast(' ').toLong())
+
+                    clause.startsWith("created_at <= ") -> q.copy(until = clause.substringAfterLast(' ').toLong())
+
+                    clause.startsWith("expires_at < ") -> q.copy(expiresBefore = clause.substringAfterLast(' ').toLong())
+
+                    clause.startsWith("expires_at > ") -> q.copy(notExpiredAt = clause.substringAfterLast(' ').toLong())
+
+                    // The word-group search clause (its first sub-clause is always a
+                    // field-annotated userInput): reconstruct the term from the
+                    // per-word parameters (@w0..@w5 — @wj/@wp* are derived variants).
+                    clause.startsWith("((({defaultIndex:") -> q.copy(search = searchWords(params))
+
+                    clause.startsWith("(tag_index contains ") -> tagGroup(q, clause)
+
+                    else -> error("unparseable clause: $clause")
+                }
+        }
+        return q
+    }
+
+    private fun searchWords(params: Map<String, String>): String {
+        val words = (0 until EventYql.MAX_QUERY_WORDS).mapNotNull { params["w$it"] }
+        require(words.isNotEmpty()) { "search clause without w0.. parameters" }
+        return words.joinToString(" ")
+    }
+
+    /** One parenthesized tag group: `or`-joined -> tags, `and`-joined -> tagsAll (identical when single). */
+    private fun tagGroup(
+        q: EventQuery,
+        clause: String,
+    ): EventQuery {
+        val body = clause.removePrefix("(").removeSuffix(")")
+        val all = " and " in splitMarker(body)
+        val pairs =
+            splitTopLevel(body, if (all) " and " else " or ").map { term ->
+                val value = unquote(term.removePrefix("tag_index contains "))
+                value.substringBefore(":") to value.substringAfter(":")
+            }
+        val name = pairs.first().first
+        require(pairs.all { it.first == name }) { "mixed tag names in one group: $clause" }
+        val values = pairs.map { it.second }
+        return if (all) q.copy(tagsAll = q.tagsAll + (name to values)) else q.copy(tags = q.tags + (name to values))
+    }
+
+    /** Which joiner a group uses, looking only OUTSIDE string literals. */
+    private fun splitMarker(body: String): String {
+        var inQuote = false
+        var i = 0
+        while (i < body.length) {
+            when {
+                inQuote && body[i] == '\\' -> i++
+                body[i] == '"' -> inQuote = !inQuote
+                !inQuote && body.startsWith(" and ", i) -> return " and "
+            }
+            i++
+        }
+        return " or "
+    }
+
+    /** Split on [sep] at paren-depth 0, outside string literals. */
+    private fun splitTopLevel(
+        s: String,
+        sep: String,
+    ): List<String> {
+        val parts = ArrayList<String>()
+        var depth = 0
+        var inQuote = false
+        var start = 0
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            when {
+                inQuote && c == '\\' -> {
+                    i++
+                }
+
+                c == '"' -> {
+                    inQuote = !inQuote
+                }
+
+                !inQuote && c == '(' -> {
+                    depth++
+                }
+
+                !inQuote && c == ')' -> {
+                    depth--
+                }
+
+                !inQuote && depth == 0 && s.startsWith(sep, i) -> {
+                    parts += s.substring(start, i)
+                    i += sep.length - 1
+                    start = i + 1
+                }
+            }
+            i++
+        }
+        parts += s.substring(start)
+        return parts
+    }
+
+    private fun strings(clause: String): List<String> =
+        clause
+            .substringAfter('(')
+            .substringBeforeLast(')')
+            .split(", ")
+            .map { it.removeSurrounding("\"") }
+
+    private fun ints(clause: String): List<Int> =
+        clause
+            .substringAfter('(')
+            .substringBeforeLast(')')
+            .split(", ")
+            .map { it.toInt() }
+
+    /** Reverse of EventYql.quote: strip the quotes and undo its escapes. */
+    private fun unquote(literal: String): String {
+        require(literal.length >= 2 && literal.startsWith('"') && literal.endsWith('"')) { "not a string literal: $literal" }
+        val s = literal.substring(1, literal.length - 1)
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < s.length) {
+                i++
+                out.append(
+                    when (s[i]) {
+                        'n' -> '\n'
+                        'r' -> '\r'
+                        't' -> '\t'
+                        else -> s[i]
+                    },
+                )
+            } else {
+                out.append(c)
+            }
+            i++
+        }
+        return out.toString()
+    }
+}

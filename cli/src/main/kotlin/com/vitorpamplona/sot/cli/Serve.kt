@@ -21,24 +21,13 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.sot.config.Config
-import com.vitorpamplona.sot.http.searchApi
-import com.vitorpamplona.sot.indexer.SyncOptions
-import com.vitorpamplona.sot.indexer.SyncService
-import com.vitorpamplona.sot.relay.buildRelayServer
+import com.vitorpamplona.sot.relay.SotRelayServer
 import com.vitorpamplona.sot.relay.nostrRelay
 import com.vitorpamplona.sot.relay.relayInfoJson
-import com.vitorpamplona.sot.store.openObservableStore
-import com.vitorpamplona.sot.store.relayIdentity
-import com.vitorpamplona.sot.vespa.VespaSearch
 import io.ktor.http.ContentType
-import io.ktor.http.HttpMethod
-import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
@@ -48,22 +37,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
 
 /*
  * `sot serve` — THE long-running process: one Ktor app on one port
- * ([Config.serverPort]) serving everything but Vespa —
- *   WS   /        -> NIP-50 relay        (from :relay)
- *   GET  /        -> NIP-11 (Accept: application/nostr+json) or the web UI
- *   GET  /search  -> JSON search API     (from :http)
- * plus, unless SYNC_INTERVAL=0, a background [SyncService] loop that keeps the
- * index fresh with incremental passes. Both sides share ONE event store, so
- * everything the sync inserts flows to Vespa through the same change feed.
+ * ([Config.serverPort]) —
+ *   WS   /  -> the NIP-50 relay (:relay; full filters, search, COUNT, NIP-77)
+ *   GET  /  -> NIP-11 (Accept: application/nostr+json), else the web UI
+ * plus, unless SYNC_INTERVAL=0, the background sync loop (:sync). Relay and
+ * sync share the ONE Vespa-backed store, and the trust projection sits under
+ * it — so a user who NIP-42-authenticates gets enrolled as an observer, their
+ * trust chain syncs on the next pass, and their searches rank by it.
  *
- * The web UI is bundled from `web/index.html`; because it's same-origin with the
- * API, no CORS is needed for it (CORS stays only for other-origin/file:// callers).
+ * The web UI (bundled from `web/index.html`) is itself a Nostr client: it
+ * talks NIP-50 to the SAME websocket endpoint, so there is no http search API
+ * to serve — the relay is the API.
  */
 private val WEB_UI: String? by lazy {
     Thread
@@ -75,56 +63,62 @@ private val WEB_UI: String? by lazy {
 
 internal fun serve(args: List<String>) {
     ensureVespaIsUp(args)
-    val identity = serverSigner()
-    logLine("relay identity (NIP-11 self): ${identity.keyPair.pubKey.toNpub()}")
-    val vespa = VespaSearch(Config.vespaUrl)
-    // One shared event store (see :event-store): relay identity from env for NIP-62, no SQLite FTS.
-    val relayUrl = relayIdentity()
-    val store = openObservableStore()
-    val relaySrv = buildRelayServer(vespa, store, Config.defaultObserver, relayUrl)
+    val identity = serverIdentity()
+    logLine("relay identity (NIP-11 self): ${identity.signer.keyPair.pubKey.toNpub()}")
+
+    val store = openStore()
+    val sync = syncService(store, identity)
+    val relaySrv =
+        SotRelayServer(
+            store = store,
+            defaultObserver = housePubkey(),
+            relayUrl = publicRelayUrl(),
+            onObserver = sync::enroll,
+        )
 
     val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     val syncMinutes = Config.syncIntervalMinutes
-    val sync =
-        if (syncMinutes > 0) {
-            logLine("background sync: every ${syncMinutes}m (SYNC_INTERVAL=0 to disable)")
-            SyncService(store, Config.vespaUrl, Config.seedRelays, "${Config.eventsDb}.state.json", SyncOptions(), ::logLine, signer = identity)
-                .also { s -> syncScope.launch { s.runForever(syncMinutes.minutes) } }
-        } else {
-            logLine("background sync: disabled (SYNC_INTERVAL=0)")
-            null
-        }
+    if (syncMinutes > 0) {
+        logLine("background sync: every ${syncMinutes}m (SYNC_INTERVAL=0 to disable)")
+        syncScope.launch { sync.runForever(syncMinutes.minutes) }
+    } else {
+        logLine("background sync: disabled (SYNC_INTERVAL=0)")
+    }
 
-    // Ctrl-C / SIGTERM: stop syncing, give in-flight Vespa writes a short window
-    // (whatever misses heals on the next start's pass), release everything.
     Runtime.getRuntime().addShutdownHook(
         Thread {
             syncScope.cancel()
-            runBlocking { sync?.drain(10.seconds) }
-            sync?.close()
+            sync.close()
+            relaySrv.close()
             store.close()
         },
     )
 
     embeddedServer(Netty, port = Config.serverPort) {
         install(WebSockets)
-        install(ContentNegotiation) { json() }
-        install(CORS) {
-            anyHost()
-            allowMethod(HttpMethod.Get)
-        }
         routing {
-            searchApi(vespa, Config.defaultObserver)
             nostrRelay(relaySrv)
             get("/") {
                 val accept = call.request.headers["Accept"] ?: ""
                 if (accept.contains("application/nostr+json")) {
-                    call.respondText(relayInfoJson(selfPubkey = identity.pubKey), ContentType.parse("application/nostr+json"))
+                    call.respondText(
+                        relayInfoJson(
+                            name = Config.serverName,
+                            description = Config.serverDescription,
+                            icon = Config.serverIcon,
+                            contactPubkey = Config.serverPubkey,
+                            selfPubkey = identity.pubkey,
+                        ),
+                        ContentType.parse("application/nostr+json"),
+                    )
                 } else {
                     WEB_UI?.let { call.respondText(it, ContentType.Text.Html) }
-                        ?: call.respondText("sot server - open a WebSocket for NIP-50, or GET /search")
+                        ?: call.respondText("${Config.serverName} - a NIP-50 search relay; connect a WebSocket here (${Config.relayUrl}).")
                 }
             }
         }
     }.start(wait = true)
 }
+
+/** Timestamped, styled log line for the long-running commands. */
+internal fun logLine(msg: String) = println(styleLogLine(msg))
