@@ -26,8 +26,10 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.v2.vespa.EventDoc
 import com.vitorpamplona.sot.v2.vespa.InMemoryEventIndex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -182,12 +184,12 @@ class VespaEventStoreTest {
             assertEquals(1, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))))
         }
 
-    /** EphemeralModule: never stored. */
+    /** SQLiteEventStore.insertEvent: ephemeral kinds are ACCEPTED but never persisted (NIP-01). */
     @Test
-    fun `ephemeral kinds are rejected`() =
+    fun `ephemeral kinds are accepted without storing`() =
         runBlocking {
-            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(Event(id(), alice, next(), 20_001, emptyArray(), "", "")) }
-            assertTrue(rejected.message!!.startsWith("blocked:"))
+            val outcomes = store.batchInsert(listOf(Event(id(), alice, next(), 20_001, emptyArray(), "", "")))
+            assertEquals(listOf<IEventStore.InsertOutcome>(IEventStore.InsertOutcome.Accepted), outcomes)
             assertEquals(0, index.size())
         }
 
@@ -258,5 +260,69 @@ class VespaEventStoreTest {
             store.insert(note(author = bob))
             store.delete(Filter(authors = listOf(alice)))
             assertEquals(setOf(bob), store.query<Event>(Filter(kinds = listOf(1))).map { it.pubKey }.toSet())
+        }
+
+    /** FullTextSearchModule: only SearchableEvent kinds are searchable, via indexableContent(). */
+    @Test
+    fun `search matches searchable kinds only`() =
+        runBlocking {
+            store.insert(metadata(name = "satoshi"))
+            // A base Event never implements SearchableEvent — its content is invisible to search.
+            store.insert(note(content = "satoshi wrote this"))
+            val hits = store.query<Event>(Filter(search = "satoshi"))
+            assertEquals(listOf(MetadataEvent.KIND), hits.map { it.kind })
+        }
+
+    /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */
+    @Test
+    fun `gift wraps obey their recipient not their signer`() =
+        runBlocking {
+            val throwaway = "c3".repeat(32)
+            val wrap = GiftWrapEvent(id(), throwaway, next(), arrayOf(arrayOf("p", alice)), "sealed", "")
+            store.insert(wrap)
+
+            // The recipient's deletion erases it — even though she never signed it.
+            store.insert(DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", wrap.id)), "", ""))
+            assertEquals(0, store.count(Filter(kinds = listOf(GiftWrapEvent.KIND))))
+            // And the tombstone blocks its return.
+            assertFailsWith<VespaEventStore.RejectedException> { store.insert(wrap) }
+        }
+
+    /** RightToVanishModule uses the owner too: vanishing erases wraps addressed to the author. */
+    @Test
+    fun `vanish erases gift wraps addressed to the author`() =
+        runBlocking {
+            val wrap = GiftWrapEvent(id(), "c3".repeat(32), 100, arrayOf(arrayOf("p", alice)), "sealed", "")
+            store.insert(wrap)
+            store.insert(RequestToVanishEvent(id(), alice, 200, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
+            assertEquals(0, store.count(Filter(kinds = listOf(GiftWrapEvent.KIND))))
+        }
+
+    /** RightToVanishModule deletes strictly-older only: an event AT the vanish's created_at survives. */
+    @Test
+    fun `vanish keeps events at its exact timestamp`() =
+        runBlocking {
+            val atBoundary = note(at = 200)
+            store.insert(atBoundary)
+            store.insert(RequestToVanishEvent(id(), alice, 200, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
+            assertEquals(setOf(atBoundary.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+        }
+
+    /** reindexFullTextSearch: docs indexed without search_text become searchable after the rebuild. */
+    @Test
+    fun `reindex re-derives search text`() =
+        runBlocking {
+            // Simulate a doc fed under old code: correct fields, no derived search_text.
+            index.put(EventDoc.fromEventJson(metadata(name = "satoshi").toJson(), scope = ""))
+            store.insert(note())
+            assertEquals(0, store.count(Filter(search = "satoshi")))
+
+            // The resumable path pages by id cursor; batchSize 1 forces multiple rounds.
+            var cursor: String? = null
+            do {
+                val progress = store.reindexFullTextSearch(cursor, batchSize = 1)
+                cursor = progress.cursor
+            } while (!progress.done)
+            assertEquals(1, store.count(Filter(search = "satoshi")))
         }
 }

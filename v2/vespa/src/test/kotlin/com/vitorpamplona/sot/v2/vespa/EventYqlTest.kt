@@ -64,10 +64,26 @@ class EventYqlTest {
     @Test
     fun `search term goes out-of-band and switches ranking on`() {
         val q = EventYql.build(EventQuery(kinds = listOf(0), search = "vitor pamplona"))!!
-        assertEquals("select * from event where kind in (0) and ({defaultIndex:\"content\"}userInput(@search))", q.yql)
+        assertEquals("select * from event where kind in (0) and ({defaultIndex:\"search_text\"}userInput(@search))", q.yql)
         assertEquals(mapOf("search" to "vitor pamplona"), q.params)
         assertEquals(EventYql.RANK_TEXT, q.ranking)
         assertFalse("order by" in q.yql, "ranked queries must not force recency order")
+    }
+
+    @Test
+    fun `owners and expiry map to their attributes`() {
+        val q = EventYql.build(EventQuery(owners = listOf(hexA), expiresBefore = 500))!!
+        assertEquals("select * from event where owner in (\"$hexA\") and expires_at < 500 order by created_at desc", q.yql)
+        assertNull(EventYql.build(EventQuery(owners = listOf("not-hex"))), "no valid owner")
+    }
+
+    @Test
+    fun `tagsAll requires every value`() {
+        val q = EventYql.build(EventQuery(tagsAll = mapOf("t" to listOf("a", "b"))))!!
+        assertEquals(
+            "select * from event where (tag_index contains \"t:a\" and tag_index contains \"t:b\") order by created_at desc",
+            q.yql,
+        )
     }
 
     @Test

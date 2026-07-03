@@ -61,7 +61,17 @@ packages under `com.vitorpamplona.sot.v2`.
    `search` term → pure attribute recall ordered by `created_at desc`, like a
    plain relay REQ. With `search` → the filter becomes the recall constraint
    and ranking takes over.
-7. **Single-writer, read-your-writes.** All store writes serialize behind one
+7. **Full SQLite-store feature parity, from the sources.** Every rule in
+   Quartz's `sqlite/*Module.kt` set is reimplemented and tested one-to-one:
+   supersession (lowest-id tie-break), owner-keyed deletion + tombstones and
+   vanish (owner = **gift-wrap recipient** for kind 1059, else the author —
+   SQLite's `pubkey_owner_hash`, as an `owner` attribute), vanish deleting
+   strictly-older history only, ephemeral kinds **accepted without storing**
+   (NIP-01 — not rejected), expired-insert rejection + NIP-40 sweeps, and
+   NIP-50 search over `SearchableEvent.indexableContent()` only (the
+   `search_text` field = SQLite's FTS table; raw `content` is never searched),
+   with a working one-shot + resumable `reindexFullTextSearch`.
+8. **Single-writer, read-your-writes.** All store writes serialize behind one
    mutex, and the `EventIndex` contract requires an acked put to be visible
    to search (Vespa's proton updates the memory index on the write path).
    That pair is what makes query-then-write semantics sound without SQL

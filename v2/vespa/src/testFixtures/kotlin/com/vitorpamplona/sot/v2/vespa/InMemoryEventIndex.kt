@@ -26,8 +26,9 @@ package com.vitorpamplona.sot.v2.vespa
  * spec the real Vespa client must agree with (same fields [EventYql] queries),
  * and what store/relay tests run against without a Vespa container.
  *
- * Search-term matching is a naive case-insensitive substring over content —
- * recall-equivalent for tests; real ranking is Vespa's job.
+ * Search-term matching is a naive case-insensitive substring over searchText —
+ * recall-equivalent for tests (docs without searchText are invisible to
+ * search, like SQLite's FTS table); real ranking is Vespa's job.
  */
 class InMemoryEventIndex : EventIndex {
     private val docs = LinkedHashMap<String, EventDoc>()
@@ -58,12 +59,13 @@ class InMemoryEventIndex : EventIndex {
         return (q.ids.isEmpty() || id in q.ids) &&
             (q.kinds.isEmpty() || kind in q.kinds) &&
             (q.authors.isEmpty() || pubkey in q.authors) &&
+            (q.owners.isEmpty() || owner in q.owners) &&
             q.tags.all { (name, values) -> values.any { v -> "$name:$v" in pairs } } &&
             q.tagsAll.all { (name, values) -> values.all { v -> "$name:$v" in pairs } } &&
             (q.since == null || createdAt >= q.since) &&
             (q.until == null || createdAt <= q.until) &&
             (q.expiresBefore == null || (expiresAt()?.let { it < q.expiresBefore } == true)) &&
-            (q.search.isNullOrBlank() || content.contains(q.search.trim(), ignoreCase = true)) &&
+            (q.search.isNullOrBlank() || searchText?.contains(q.search.trim(), ignoreCase = true) == true) &&
             (q.scope == null || scope == q.scope)
     }
 

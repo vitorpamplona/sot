@@ -43,13 +43,31 @@ schema event {
             attribute: fast-search
         }
 
+        # Exact event content — reconstruction only. NIP-50 search runs against
+        # search_text, never against raw content (a kind-0's content is a JSON
+        # blob; searchable kinds contribute curated text instead).
         field content type string {
-            indexing: index | summary
-            index: enable-bm25
+            indexing: summary
         }
 
         field sig type string {
             indexing: summary
+        }
+
+        # The pubkey Nostr semantics key off: the gift-wrap recipient for kind
+        # 1059, else the author. Deletion and vanish enforcement match on this
+        # (SQLite's pubkey_owner_hash).
+        field owner type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        # Kind-specific indexable text of searchable kinds (SQLite's event_fts
+        # table): absent = invisible to NIP-50 search. Derived at feed time;
+        # re-derivable via the store's reindexFullTextSearch.
+        field search_text type string {
+            indexing: index | summary
+            index: enable-bm25
         }
 
         # Optional provenance: where this doc was first synced from. Never part
@@ -68,7 +86,7 @@ schema event {
     }
 
     fieldset default {
-        fields: content
+        fields: search_text
     }
 
     # Filters WITHOUT a search term run unranked (Vespa's built-in profile) with
@@ -78,7 +96,7 @@ schema event {
     # import their author's trust tensor, text relevance is what we have.
     rank-profile text {
         first-phase {
-            expression: bm25(content)
+            expression: bm25(search_text)
         }
     }
 }

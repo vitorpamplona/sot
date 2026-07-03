@@ -66,6 +66,15 @@ class EventDocTest {
     }
 
     @Test
+    fun `derived owner and search text round-trip too`() {
+        val derived = doc.copy(owner = "9".repeat(64), searchText = "alice about")
+        assertEquals(derived, EventDoc.fromSummary(derived.indexFields()))
+        // Defaults: owner falls back to the author, searchText to unsearchable.
+        assertEquals(doc.pubkey, doc.owner)
+        assertEquals(null, doc.searchText)
+    }
+
+    @Test
     fun `reconstructed event carries the exact nip01 fields`() {
         val o = Json.parseToJsonElement(doc.toEventJson()).jsonObject
         assertEquals(doc.id, o.getValue("id").jsonPrimitive.content)

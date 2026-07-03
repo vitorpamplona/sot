@@ -31,6 +31,8 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
+import com.vitorpamplona.quartz.nip50Search.SearchableEvent
+import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.sot.v2.vespa.EventDoc
 import com.vitorpamplona.sot.v2.vespa.EventIndex
@@ -51,13 +53,21 @@ import kotlinx.coroutines.sync.withLock
  *  - replaceables/addressables: strictly-older versions (created_at, then
  *    LOWEST id wins ties) are deleted on insert, and an insert that lost that
  *    comparison is rejected ("replaced:");
- *  - kind 5: targets erased (e-tags by id, a-tags up to the deletion's
- *    created_at, same-author only per NIP-09), the kind 5 kept as a tombstone,
- *    and later inserts of deleted events rejected ("blocked:");
- *  - kind 62 covering [relay]: the author's prior events erased, the request
- *    kept, older inserts by them rejected ("blocked:");
- *  - ephemeral kinds and already-expired events rejected; [deleteExpiredEvents]
- *    sweeps due NIP-40 expirations via the derived `expires_at` attribute.
+ *  - kind 5: targets erased (e-tags by id, a-tags — including replaceable
+ *    addresses — up to the deletion's created_at, same-owner only per NIP-09),
+ *    the kind 5 kept as a tombstone, and covered inserts rejected ("blocked:");
+ *  - kind 62 covering [relay]: the owner's strictly-older events erased, the
+ *    request kept, covered inserts rejected ("blocked:");
+ *  - deletion/vanish enforcement keys on the event's OWNER (SQLite's
+ *    pubkey_owner_hash): the gift-wrap recipient for kind 1059, else the
+ *    author — recipients control the wraps addressed to them;
+ *  - ephemeral kinds are accepted WITHOUT storing (persistence is a no-op per
+ *    NIP-01; an observable wrapper still broadcasts them live); already-expired
+ *    events rejected; [deleteExpiredEvents] sweeps due NIP-40 expirations via
+ *    the derived `expires_at` attribute;
+ *  - NIP-50: only kinds implementing [SearchableEvent] are searchable, via
+ *    their `indexableContent()` (the `search_text` field = SQLite's FTS
+ *    table); [reindexFullTextSearch] re-derives it after Quartz upgrades.
  *
  * Correctness rests on two properties: all writes serialize behind one [Mutex]
  * (query-then-write is atomic against other writers in this process — mirror
@@ -106,7 +116,9 @@ class VespaEventStore(
     }
 
     private suspend fun insertLocked(event: Event) {
-        if (event.kind.isEphemeral()) throw RejectedException("blocked: cannot store ephemeral events")
+        // Accepted but never persisted (NIP-01): an ObservableEventStore wrapper
+        // still broadcasts the insert to live subscribers.
+        if (event.kind.isEphemeral()) return
         if (event.isExpired()) throw RejectedException("blocked: Cannot insert an expired event")
         if (index.get(event.id) != null) throw RejectedException("duplicate: already have this event")
         rejectIfDeleted(event)
@@ -188,18 +200,23 @@ class VespaEventStore(
 
     // ---- Nostr semantics (the sqlite ...Module.kt rules) -----------------------
 
-    /** NIP-09: a stored same-author kind 5 covering this event blocks it forever (by id) or up to the deletion's time (by address). */
+    /**
+     * NIP-09: a kind 5 authored by this event's OWNER, e/a-tagging it, with
+     * created_at >= the event's, blocks the insert (SQLite's
+     * reject_deleted_events trigger, both target styles time-guarded).
+     */
     private suspend fun rejectIfDeleted(event: Event) {
-        val byId = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(event.pubKey), tags = mapOf("e" to listOf(event.id)), limit = 1))
+        val owner = event.owner()
+        val byId = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner), tags = mapOf("e" to listOf(event.id)), since = event.createdAt, limit = 1))
         if (byId.isNotEmpty()) throw RejectedException("blocked: a deletion event exists")
         val address = event.addressOrNull() ?: return
-        val byAddress = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(event.pubKey), tags = mapOf("a" to listOf(address))))
-        if (byAddress.any { it.createdAt >= event.createdAt }) throw RejectedException("blocked: a deletion event exists")
+        val byAddress = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner), tags = mapOf("a" to listOf(address)), since = event.createdAt, limit = 1))
+        if (byAddress.isNotEmpty()) throw RejectedException("blocked: a deletion event exists")
     }
 
-    /** NIP-62: a stored vanish request covering [relay] blocks the author's events up to its time. */
+    /** NIP-62: a stored vanish request by this event's OWNER covering [relay] blocks their events up to its time. */
     private suspend fun rejectIfVanished(event: Event) {
-        val vanishes = index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(event.pubKey), since = event.createdAt))
+        val vanishes = index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(event.owner()), since = event.createdAt))
         val blocked =
             vanishes.any { doc ->
                 (Event.fromJsonOrNull(doc.toEventJson()) as? RequestToVanishEvent)?.shouldVanishFrom(relay) == true
@@ -236,40 +253,78 @@ class VespaEventStore(
         return sameKindAuthor.filter { doc -> dTagOf(doc.tags) == d }
     }
 
-    /** NIP-09 enforcement: erase this kind 5's same-author targets; the event itself is stored after as the tombstone. */
+    /**
+     * NIP-09 enforcement: erase this kind 5's targets — by id when the doc's
+     * OWNER is the deletion author (a recipient deletes gift-wraps sent to
+     * them), by address (addressable AND replaceable kinds) up to the
+     * deletion's created_at, same author only. The event itself is stored
+     * after, as the tombstone.
+     */
     private suspend fun applyDeletion(ev: DeletionEvent) {
         for (id in ev.deleteEventIds()) {
             val doc = index.get(id) ?: continue
-            if (doc.pubkey == ev.pubKey) index.remove(id)
+            if (doc.owner == ev.pubKey) index.remove(id)
         }
         for (address in ev.deleteAddressIds()) {
             val parts = address.split(":", limit = 3)
             val kind = parts.getOrNull(0)?.toIntOrNull() ?: continue
             val author = parts.getOrNull(1) ?: continue
             if (author != ev.pubKey) continue
+            if (!kind.isAddressable() && !kind.isReplaceable()) continue
             val d = parts.getOrNull(2) ?: ""
             index
                 .search(EventQuery(kinds = listOf(kind), authors = listOf(author), until = ev.createdAt))
-                .filter { dTagOf(it.tags) == d }
+                // Replaceable kinds have ONE address regardless of the a-tag's d part.
+                .filter { !kind.isAddressable() || dTagOf(it.tags) == d }
                 .forEach { index.remove(it.id) }
         }
     }
 
-    /** NIP-62 enforcement: when the request covers [relay], erase everything the author published up to it. */
+    /** NIP-62 enforcement: when the request covers [relay], erase the owner's STRICTLY-older history (the request itself survives). */
     private suspend fun applyVanish(ev: RequestToVanishEvent) {
         if (!ev.shouldVanishFrom(relay)) return
-        sweep(EventQuery(authors = listOf(ev.pubKey), until = ev.createdAt))
+        sweep(EventQuery(owners = listOf(ev.pubKey), until = ev.createdAt - 1))
     }
 
-    // ---- no-ops / plumbing ---------------------------------------------------
+    // ---- full-text reindex ----------------------------------------------------
 
-    /** Vespa derives its text index at feed time; there is nothing to rebuild. */
-    override suspend fun reindexFullTextSearch() {}
+    /**
+     * Re-derive `search_text` for every stored event. Which kinds implement
+     * [SearchableEvent] — and what text they contribute — is baked into the
+     * Quartz build, so docs indexed under old code can be stale (or missing
+     * from search) until this runs; it also clears text for kinds that LOST
+     * searchability, mirroring the one-shot SQLite rebuild.
+     */
+    override suspend fun reindexFullTextSearch() {
+        var cursor: String? = null
+        do {
+            val progress = reindexFullTextSearch(cursor)
+            cursor = progress.cursor
+        } while (!progress.done)
+    }
 
+    /**
+     * Resumable batch: docs are walked in id order from [resumeFrom]
+     * (exclusive). Reference-grade paging — each call re-lists the ids through
+     * [EventIndex.search]; the real Vespa client will page with a visit.
+     */
     override suspend fun reindexFullTextSearch(
         resumeFrom: String?,
         batchSize: Int,
-    ) = FtsReindexProgress(cursor = null, processedThisBatch = 0, done = true)
+    ): FtsReindexProgress =
+        writes.withLock {
+            val batch =
+                index
+                    .search(EventQuery())
+                    .sortedBy { it.id }
+                    .filter { resumeFrom == null || it.id > resumeFrom }
+                    .take(batchSize)
+            for (doc in batch) {
+                val text = (Event.fromJsonOrNull(doc.toEventJson()) as? SearchableEvent)?.indexableContent()
+                if (text != doc.searchText) index.put(doc.copy(searchText = text))
+            }
+            FtsReindexProgress(cursor = batch.lastOrNull()?.id, processedThisBatch = batch.size, done = batch.size < batchSize)
+        }
 
     override fun close() = index.close()
 
@@ -303,7 +358,12 @@ internal fun Filter.toEventQuery(): EventQuery? {
     )
 }
 
-/** The event's exact stored form. Scope stays empty: provenance is the syncer's concern, never semantics. */
+/**
+ * The event's exact stored form plus the two derived fields: [EventDoc.owner]
+ * (gift-wrap recipient or author) and [EventDoc.searchText] (searchable kinds'
+ * indexable text — SQLite's FTS row). Scope stays empty: provenance is the
+ * syncer's concern, never semantics.
+ */
 internal fun Event.toDoc(): EventDoc =
     EventDoc(
         id = id,
@@ -314,7 +374,12 @@ internal fun Event.toDoc(): EventDoc =
         content = content,
         sig = sig,
         scope = "",
+        owner = owner(),
+        searchText = (this as? SearchableEvent)?.indexableContent(),
     )
+
+/** The pubkey Nostr semantics key off (SQLite's pubkey_owner_hash): the gift-wrap recipient, else the author. */
+internal fun Event.owner(): String = (this as? GiftWrapEvent)?.recipientPubKey() ?: pubKey
 
 /** The NIP-01 address ("kind:pubkey:dtag") for replaceable/addressable kinds; null for regular events. */
 internal fun Event.addressOrNull(): String? =

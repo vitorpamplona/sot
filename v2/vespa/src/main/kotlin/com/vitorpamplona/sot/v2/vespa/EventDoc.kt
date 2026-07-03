@@ -41,9 +41,15 @@ import kotlinx.serialization.json.long
  * is a derived, lossy view (single-letter tag names only, first value only)
  * used for `#x` filter recall and never for reconstruction.
  *
- * Plain data, no Nostr library types: the mirror module maps its events into
- * this, and verifies signatures BEFORE constructing one — everything in the
- * index is assumed already verified.
+ * Plain data, no Nostr library types: the store maps its events into this,
+ * and verifies signatures BEFORE constructing one — everything in the index
+ * is assumed already verified.
+ *
+ * [owner] and [searchText] are DERIVED fields the store computes with Nostr
+ * knowledge this module doesn't have: the owner is the pubkey Nostr semantics
+ * key off (the gift-wrap recipient for kind 1059, else the author), and
+ * searchText is the kind-specific indexable text of searchable kinds (null =
+ * invisible to NIP-50 search, like SQLite's FTS table).
  */
 data class EventDoc(
     val id: String,
@@ -53,8 +59,10 @@ data class EventDoc(
     val tags: List<List<String>>,
     val content: String,
     val sig: String,
-    /** The (relay, filter) mirror scope that owns this doc. */
+    /** Optional provenance (where this doc was first synced from); never semantics. */
     val scope: String,
+    val owner: String = pubkey,
+    val searchText: String? = null,
 ) {
     /**
      * The queryable `"<letter>:<value>"` pairs: one per tag whose name is a
@@ -83,6 +91,8 @@ data class EventDoc(
             put("content", JsonPrimitive(content))
             put("sig", JsonPrimitive(sig))
             put("scope", JsonPrimitive(scope))
+            put("owner", JsonPrimitive(owner))
+            searchText?.let { put("search_text", JsonPrimitive(it)) }
             expiresAt()?.let { put("expires_at", JsonPrimitive(it)) }
         }
 
@@ -120,10 +130,11 @@ data class EventDoc(
         }
 
         /** Parse a Vespa summary/visit `fields` object (the [indexFields] shape) back into a doc. */
-        fun fromSummary(fields: JsonObject): EventDoc =
-            EventDoc(
+        fun fromSummary(fields: JsonObject): EventDoc {
+            val pubkey = fields.getValue("pubkey").jsonPrimitive.content
+            return EventDoc(
                 id = fields.getValue("id").jsonPrimitive.content,
-                pubkey = fields.getValue("pubkey").jsonPrimitive.content,
+                pubkey = pubkey,
                 createdAt = fields.getValue("created_at").jsonPrimitive.long,
                 kind = fields.getValue("kind").jsonPrimitive.int,
                 tags =
@@ -134,6 +145,9 @@ data class EventDoc(
                 content = fields["content"]?.jsonPrimitive?.content ?: "",
                 sig = fields.getValue("sig").jsonPrimitive.content,
                 scope = fields["scope"]?.jsonPrimitive?.content ?: "",
+                owner = fields["owner"]?.jsonPrimitive?.content ?: pubkey,
+                searchText = fields["search_text"]?.jsonPrimitive?.content,
             )
+        }
     }
 }

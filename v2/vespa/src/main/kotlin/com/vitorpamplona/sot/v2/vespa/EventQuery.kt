@@ -32,6 +32,8 @@ data class EventQuery(
     val kinds: List<Int> = emptyList(),
     /** 64-hex pubkeys. */
     val authors: List<String> = emptyList(),
+    /** 64-hex owner pubkeys (the semantic owner: gift-wrap recipient or author). */
+    val owners: List<String> = emptyList(),
     /** Single-letter tag name -> values. OR within a name, AND across names. */
     val tags: Map<String, List<String>> = emptyMap(),
     /** Like [tags], but EVERY value must be present (Quartz's `tagsAll`). */
@@ -77,6 +79,7 @@ object EventYql {
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
+        if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
         for ((name, values) in q.tags) {
             clauses += tagClause(name, values, "or") ?: return null
         }
@@ -91,7 +94,7 @@ object EventYql {
         val term = q.search?.trim().orEmpty()
         val params = LinkedHashMap<String, String>()
         if (term.isNotEmpty()) {
-            clauses += "({defaultIndex:\"content\"}userInput(@search))"
+            clauses += "({defaultIndex:\"search_text\"}userInput(@search))"
             params["search"] = term
         }
 
