@@ -34,18 +34,36 @@ wrapping `VespaEventStore` gives us the reactions for free, the same feed
 v1's projection consumed:
 
 ```
-seed relays ──10040──▶ store ──change──▶ provider (service key, relay hint) known
+observer enters (config │ NIP-42 auth │ seed-relay 10040 hints)
+        │
+index relays ──their 10002──▶ store ──change──▶ observer's OUTBOX known
+observer's outbox ──10040 (authoritative) + 10002 refresh──▶ store ──change──▶ provider known
 provider relay ──30382──▶ store ──change──▶ subject joins the ROSTER
-index relays + outboxes ──10002──▶ store ──change──▶ OUTBOX DIRECTORY updated
-author's outbox relays ──searchable kinds + 5 + 62 + 10002──▶ store
+index relays ──subject's 10002──▶ store ──change──▶ subject's outbox known
+subject's outbox ──SYNC_KINDS + 5 + 62 + 10002──▶ store
 ```
 
+**The universal rule: 10002 resolution precedes every per-author sync —
+observers included.** The freshest 10040 lives on the observer's own outbox
+relay, so 10040 can never come first; seed relays' 10040s are *discovery
+hints* (who the observers are), never the authority. Authority needs no
+special code: whatever source a 10040 arrives from, replaceable supersession
+keeps the newest — the outbox pass just makes sure the newest is actually
+seen. 10002 itself escapes the circularity by design: NIP-65 tells clients to
+broadcast relay lists widely, which is exactly what the index relays
+(purplepag.es-style) exist to hold.
+
+Observers enter three ways: the operator's config (`DEFAULT_OBSERVER` +
+extras), seed-relay 10040 hints, and — the product loop — **NIP-42
+authentication on our own relay enrolls the authenticated pubkey as an
+observer**, so the first person to search through their own web of trust is
+also the trigger that starts syncing it.
+
 A new score's subject automatically gets their 10002 looked up; a new 10002
-automatically reassigns that author to the right relay work-sets; a changed
-10040 automatically schedules the new provider. Bootstrap is just running the
-loop from empty in dependency order (10040 → 30382 → roster → 10002 →
-outboxes); steady state is the same loop driven by change events plus a slow
-reconcile cadence.
+reassigns that author to the right relay work-sets; a fresher 10040
+supersedes in the store and re-plans the provider scope. Bootstrap is running
+the loop from empty in that dependency order; steady state is the same loop
+driven by change events plus a slow reconcile cadence.
 
 ### Requirement 4 — the 10002 directory is a Vespa query, not a database
 
@@ -235,9 +253,10 @@ size, 0 = reconcile-only), `MAX_AUTHORS_PER_FILTER`.
 
 ## Phasing (each lands green on its own; no v1 data migration — v2 starts fresh)
 
-1. **Scores plane**: port RelaySyncer/SyncState; 10040 → provider → 30382
-   pipeline writing to the Vespa store (v1 phases 1–3 minus Discovery).
-   This alone reaches feature parity with `sot index` for trust data.
+1. **Scores plane**: port RelaySyncer/SyncState; observer → 10002 →
+   outbox → authoritative 10040 → provider → 30382, writing to the Vespa
+   store. Reaches feature parity with `sot index` for trust data — with
+   better 10040 freshness than v1, which never read the observer's outbox.
    Includes the kind-1 scale prerequisites: the visit-based negentropy
    snapshot and the store's bulk-ingest fast path.
 2. **Search tiers + extractor registry** (requirement 5) — independent of
