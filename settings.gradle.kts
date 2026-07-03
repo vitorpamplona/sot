@@ -23,3 +23,7 @@ include(":indexer")
 include(":http")
 include(":relay")
 include(":cli")
+
+// v2 — the negentropy-first rewrite (see v2/README.md). Shares this build's
+// version catalog, wrapper, and formatting; replaces the modules above when done.
+include(":v2:vespa")

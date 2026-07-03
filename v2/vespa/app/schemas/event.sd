@@ -1,0 +1,77 @@
+# One live Nostr event per document (docid = event id) — the unit of the
+# relay mirror and the recall surface for NIP-50 filters.
+#
+# The NIP-01 fields are stored LOSSLESSLY so the complete signed event can be
+# reconstructed and served back on a REQ: the signature is over the canonical
+# serialization of these exact values, so clients can re-verify what we serve.
+# `tags` keeps the exact JSON array; `tag_index` is the derived, queryable form
+# ("<letter>:<value>", single-letter tag names only — the space NIP-01 filters
+# can address) and is NOT lossless. Do not reconstruct events from tag_index.
+schema event {
+
+    document event {
+
+        field id type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field pubkey type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field created_at type long {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field kind type int {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        # The event's exact tag array as JSON text. Summary-only: reconstruction,
+        # never matching.
+        field tags type string {
+            indexing: summary
+        }
+
+        # Derived "<letter>:<value>" pairs for #x filter recall.
+        field tag_index type array<string> {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field content type string {
+            indexing: index | summary
+            index: enable-bm25
+        }
+
+        field sig type string {
+            indexing: summary
+        }
+
+        # The (relay, filter) mirror that owns this doc. Reconciliation deletes
+        # only within its own scope — see v2/README.md decision 4.
+        field scope type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+    }
+
+    fieldset default {
+        fields: content
+    }
+
+    # Filters WITHOUT a search term run unranked (Vespa's built-in profile) with
+    # YQL `order by created_at desc` — plain relay REQ semantics. This profile
+    # serves the search-term case. Observer-weighted WoT ranking belongs to the
+    # profile document type (see v2/README.md module plan); until events can
+    # import their author's trust tensor, text relevance is what we have.
+    rank-profile text {
+        first-phase {
+            expression: bm25(content)
+        }
+    }
+}
