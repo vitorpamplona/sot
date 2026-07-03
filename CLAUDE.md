@@ -177,10 +177,18 @@ any Nostr client; the sync reads the newest back).
 
 ## Gotchas
 
-- **Not yet validated against a real Vespa.** Everything runs against
-  `MockVespaEngine`/`InMemoryEventIndex` (grammar-faithful, but not Vespa). The
-  first `sot up` + `sot serve` against the deployed `vespa/app` is the remaining
-  acceptance test — expect schema/YQL nits there, nowhere else.
+- **Validated against a real Vespa** (2026-07): `sot up` deploys `vespa/app`
+  clean, and the full protocol path passed an acceptance run against the
+  deployed engine — feed, recall, reconstruction, COUNT, the trust gate,
+  NIP-42-ranked search through the imported tensors, `sort:rank` ordering,
+  the NIP-50 extensions, and kind-5 deletion. Still unvalidated: the sync
+  side against real public relays. Two operational notes from that run:
+  `services.xml` raises Vespa's feed-block resource limits (dev disks trip
+  the 80% default), and **Quartz's `LiveEventStore` strips NIP-50 extensions
+  before the store** — the relay backend carries the pre-strip filters in
+  `OriginalFilters` (a coroutine-context element, like the observer) and the
+  store restores them; the session-level test in `RelayProtocolTest` is the
+  net for future Quartz bumps.
 - Event **signature verification happens at ingest** (RelaySyncer drops forged
   events; the relay's VerifyPolicy gates publishes). The store itself NEVER
   verifies — don't insert unverified network input directly.

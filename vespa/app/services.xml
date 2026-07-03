@@ -22,6 +22,18 @@
     <nodes>
       <node distribution-key="0" hostalias="node1" />
     </nodes>
+
+    <!-- Single-node dev tuning: Vespa blocks feeds at 80% disk / 85% memory
+         by default, which thin-provisioned or small dev disks trip
+         immediately (statvfs reports the host, not the workload). Raised for
+         the local engine; a real multi-node deployment should size disks
+         instead of leaning on this. -->
+    <tuning>
+      <resource-limits>
+        <disk>0.96</disk>
+        <memory>0.92</memory>
+      </resource-limits>
+    </tuning>
   </content>
 
 </services>

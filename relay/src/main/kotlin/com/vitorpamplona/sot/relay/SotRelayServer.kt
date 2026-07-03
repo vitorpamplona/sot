@@ -38,6 +38,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.sot.store.ObserverContext
+import com.vitorpamplona.sot.store.OriginalFilters
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
@@ -106,17 +107,17 @@ internal class ObserverRoutingBackend(
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.query(ctx, filters, onEach, onEose) }
+    ) = ranked(ctx, filters) { inner.query(ctx, filters, onEach, onEose) }
 
     override suspend fun count(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): Int = ranked(ctx) { inner.count(ctx, filters) }
+    ): Int = ranked(ctx, filters) { inner.count(ctx, filters) }
 
     override suspend fun countResult(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): CountResult = ranked(ctx) { inner.countResult(ctx, filters) }
+    ): CountResult = ranked(ctx, filters) { inner.countResult(ctx, filters) }
 
     override suspend fun submit(
         event: Event,
@@ -130,11 +131,18 @@ internal class ObserverRoutingBackend(
 
     private suspend fun <T> ranked(
         ctx: RequestContext,
+        filters: List<Filter>,
         block: suspend () -> T,
     ): T {
         val authenticated = ctx.authenticatedUsers.firstOrNull()
         authenticated?.let { onObserver?.invoke(it) }
         val observer = authenticated ?: defaultObserver
-        return if (observer == null) block() else withContext(ObserverContext(observer)) { block() }
+        // Both elements cross IEventStore's caller-agnostic seam through the
+        // coroutine context: OriginalFilters preserves the NIP-50 extensions
+        // Quartz's engine strips before the store (this store honors them);
+        // ObserverContext carries the ranking observer.
+        var context: CoroutineContext = OriginalFilters(filters)
+        if (observer != null) context += ObserverContext(observer)
+        return withContext(context) { block() }
     }
 }

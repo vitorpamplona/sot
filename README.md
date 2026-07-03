@@ -15,9 +15,13 @@ search interface. There is no SQLite and no http search API: the relay is the
 API, and even the bundled web UI is just another Nostr client speaking NIP-50
 to it.
 
-The previous implementation (SQLite store + Vespa projection) is frozen under
-[`v1/`](v1/) as the working reference until these modules are validated
-against a real Vespa deployment and real relays; delete it after.
+The stack is **validated against a real Vespa deployment** (2026-07): the
+schemas deploy clean and a full protocol acceptance run passed against the
+live engine — feed, recall, reconstruction, the trust gate, NIP-42-ranked
+search through the imported tensors, the NIP-50 extensions, and deletion.
+The previous implementation (SQLite store + Vespa projection) stays frozen
+under [`v1/`](v1/) as a reference until the sync side has also run against
+real public relays; delete it after.
 
 ```bash
 ./gradlew build                 # everything: compile + tests + formatting
@@ -124,7 +128,7 @@ cli/build/install/sot/bin/sot serve    # relay + web UI + background sync
 
 | module | status | contents |
 | --- | --- | --- |
-| `:vespa` | **started** | `app/` (the `event` schema + query profile), `EventDoc` (field mapping + complete-event reconstruction), `EventQuery` → YQL, the `EventIndex` port, and `VespaEventIndex` — the real client (h2c feed writes, document-API gets, `/search/` queries). testFixtures: the in-memory reference + `MockVespaEngine`, which parses the emitted YQL back into an `EventQuery` and must agree with the reference. Next: a visit-based full-corpus walk; validate the YQL against a real deployed Vespa. |
+| `:vespa` | **started** | `app/` (the `event` schema + query profile), `EventDoc` (field mapping + complete-event reconstruction), `EventQuery` → YQL, the `EventIndex` port, and `VespaEventIndex` — the real client (h2c feed writes, document-API gets, `/search/` queries). testFixtures: the in-memory reference + `MockVespaEngine`, which parses the emitted YQL back into an `EventQuery` and must agree with the reference. Next: a visit-based full-corpus walk. (YQL + schemas VALIDATED against a real deployed Vespa, 2026-07.) |
 | `:store` | **started** | `VespaEventStore : IEventStore` — the SQLite store's semantics on Vespa, `Filter` → `EventQuery` mapping, negentropy snapshots. The whole semantics suite runs twice: in-memory AND over the wire through `VespaEventIndex` + `MockVespaEngine`. Next: `ObservableEventStore` wiring; integration test: Quartz event → doc → reconstructed JSON → Quartz parse → `verify()`. |
 | `:sync` | **started** | The SCORES plane of `docs/v2-sync-proposal.md`, phase 1. `RelaySyncer`/`SyncState`/`SyncProgress` ported from v1 (negentropy-or-pages transport, per-scope cursors, streamed verify → `batchInsert`, capability memory). `Identity` — the relay's own key (v1's `SERVER_NSEC`): NIP-42 client auth upstream, and first-run self-publish of its kind 0 / 10002 (this relay's URL) / **10086** into its OWN store — the stored 10086 IS the indexer configuration (operator supersedes it from any Nostr client; `indexRelays()` reads it back). `TrustSync` — the author-first chain in the one order that keeps 10040s authoritative: seed-relay 10040 *hints* → observer 10002s from the index relays (+ the **house account**'s home relay) → observer **outboxes** (0/10002/10040/5/62 — the authoritative 10040 lives there) → per-provider 30382+5 with the silent-removal reconcile diff → the **orphan sweep** (30382s whose service key no stored 10040 references anymore are deleted — provider switches need no invalidation code; the `:profile` projection re-derives ranking from what remains). `SyncService` composes client + authenticator + state, `runOnce`/`runForever`, and `enroll()` — NIP-42 logins on our relay become observers on the next pass. Tests run the whole chain over `InProcessNet`: real Quartz relays (REQ + NIP-77), each backed by `VespaEventStore` over the in-memory index, signed events, verification on. Next: the records plane (roster × outbox directory via `write_relays`), LiveSubs, the visit-based negentropy snapshot + bulk-ingest fast path (kind-1 scale), seeded negentropy when the Quartz API lands. |
 | `:relay` | **started** | `SotRelayServer` — Quartz's protocol engine (`RelayServerBase` + `LiveEventStore`) over the Vespa store: full-filter REQs + live subscriptions, VerifyPolicy-gated EVENT publishes, NIP-45 COUNT, server-side NIP-77, NIP-11 doc, Ktor mount. NIP-42 auth switches the ranking observer per connection (`ObserverRoutingBackend`). Next: Quartz `verify()` round-trip integration test; wire into a composition root. |

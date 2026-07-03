@@ -146,7 +146,7 @@ class VespaEventStore(
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
         val observer = coroutineContext[ObserverContext]?.pubkey
-        val queries = filters.mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer) }
+        val queries = restoreSearches(filters).mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer) }
         val docs = queries.flatMap { index.search(it) }.distinctBy { it.id }
         // NIP-50: a searching query's results stay in the engine's RELEVANCE
         // order "instead of the usual created_at ordering" — re-sorting here
@@ -166,9 +166,28 @@ class VespaEventStore(
         onEach: (T) -> Unit,
     ) = query<T>(filters).forEach(onEach)
 
-    override suspend fun count(filter: Filter): Int = filter.toEventQuery()?.let { index.count(it.copy(notExpiredAt = nowSecs())) } ?: 0
+    override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toEventQuery()?.let { index.count(it.copy(notExpiredAt = nowSecs())) } ?: 0
 
     override suspend fun count(filters: List<Filter>): Int = if (filters.size == 1) count(filters[0]) else query<Event>(filters).size
+
+    /**
+     * Undo Quartz's relay-side NIP-50 extension stripping: `LiveEventStore`
+     * strips `key:value` tokens from every REQ's search before the store sees
+     * it — the right default for stores that would match them as text, but
+     * THIS store honors `sort:`/`filter:rank:`/`include:spam`. The relay
+     * backend carries the pre-strip filters in [OriginalFilters] (same list,
+     * same order — only `search` differs), and each filter's original search
+     * string is restored before mapping. Direct callers (no context element)
+     * are untouched.
+     */
+    private suspend fun restoreSearches(filters: List<Filter>): List<Filter> {
+        val originals = coroutineContext[OriginalFilters]?.filters ?: return filters
+        if (originals.size != filters.size) return filters
+        return filters.mapIndexed { i, f ->
+            val original = originals[i].search
+            if (original != null && original != f.search) f.copy(search = original) else f
+        }
+    }
 
     /** (created_at, id) pairs straight off the docs — no Event materialization. */
     override suspend fun snapshotIdsForNegentropy(
@@ -403,7 +422,7 @@ internal fun Filter.toEventQuery(): EventQuery? {
  * on the 0..100 rank scale): hits whose author the observer's provider
  * doesn't rank are spam-filtered out unless the query says `include:spam`.
  */
-internal const val DEFAULT_MIN_RANK = 2.0
+const val DEFAULT_MIN_RANK = 2.0
 
 /** `sort:` value -> rank profile; null (ignored) for values we don't recognize. */
 private fun rankProfileOf(value: String): String? =

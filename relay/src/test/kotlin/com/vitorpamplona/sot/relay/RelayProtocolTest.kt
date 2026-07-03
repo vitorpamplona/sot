@@ -25,10 +25,12 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
+import com.vitorpamplona.sot.store.DEFAULT_MIN_RANK
 import com.vitorpamplona.sot.store.VespaEventStore
 import com.vitorpamplona.sot.vespa.EventDoc
 import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
+import com.vitorpamplona.sot.vespa.EventYql
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
@@ -48,10 +50,11 @@ class RelayProtocolTest {
     private val defaultObserver = "d".repeat(64)
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
-    /** Records which observer each SEARCH query was ranked for. */
+    /** Records each SEARCH query's ranking context (observer, profile, trust floor). */
     private class RecordingIndex : EventIndex {
         val inner = InMemoryEventIndex()
         val searchObservers = Collections.synchronizedList(mutableListOf<String?>())
+        val searchQueries = Collections.synchronizedList(mutableListOf<EventQuery>())
 
         override suspend fun get(id: String) = inner.get(id)
 
@@ -60,7 +63,10 @@ class RelayProtocolTest {
         override suspend fun remove(id: String) = inner.remove(id)
 
         override suspend fun search(query: EventQuery): List<EventDoc> {
-            if (query.search != null) searchObservers += query.observer
+            if (query.search != null || query.ranking != null) {
+                searchObservers += query.observer
+                searchQueries += query
+            }
             return inner.search(query)
         }
 
@@ -160,6 +166,38 @@ class RelayProtocolTest {
                 session.receive("""["REQ","s2",{"kinds":[0],"search":"ali","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","s2"]""") }
                 assertEquals(signer.pubKey, index.searchObservers.last(), "an authenticated user searches through their OWN web of trust")
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
+     * Quartz's engine STRIPS NIP-50 extensions from REQ filters before the
+     * store ([OriginalFilters] carries the originals past it) — this store
+     * honors them, so they must survive the whole websocket path. This is the
+     * session-level net for future Quartz bumps: it fails if the extensions
+     * stop reaching the Vespa query.
+     */
+    @Test
+    fun `NIP-50 extensions survive the session to the engine query`() =
+        runBlocking {
+            store.insert(MetadataEvent("5".repeat(64), "a2".repeat(32), 1_700_000_000L, emptyArray(), """{"name":"alice"}""", ""))
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                session.receive("""["REQ","x1",{"search":"ali","limit":5}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","x1"]""") }
+                assertEquals(DEFAULT_MIN_RANK, index.searchQueries.last().minRank, "a plain search is trust-gated by default")
+
+                session.receive("""["REQ","x2",{"search":"ali include:spam","limit":5}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","x2"]""") }
+                assertEquals(null, index.searchQueries.last().minRank, "include:spam lifts the default floor")
+                assertEquals("ali", index.searchQueries.last().search, "the extension itself never becomes a term")
+
+                session.receive("""["REQ","x3",{"search":"ali sort:rank filter:rank:gte:7","limit":5}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","x3"]""") }
+                assertEquals(EventYql.RANK_DESC, index.searchQueries.last().ranking, "sort:rank picks the profile")
+                assertEquals(7.0, index.searchQueries.last().minRank, "filter:rank:gte sets the floor")
             } finally {
                 session.close()
             }

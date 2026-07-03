@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.store
 
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
@@ -38,4 +39,21 @@ class ObserverContext(
     val pubkey: String,
 ) : AbstractCoroutineContextElement(ObserverContext) {
     companion object Key : CoroutineContext.Key<ObserverContext>
+}
+
+/**
+ * Carries the ORIGINAL request filters past Quartz's extension stripping.
+ *
+ * Quartz's `LiveEventStore` runs `strippingSearchExtensions` on every REQ's
+ * filters before they reach the store — the right default for stores that
+ * would otherwise match `key:value` tokens as text, but this store HONORS
+ * the NIP-50 `sort:`/`filter:rank:`/`include:spam` extensions and must see
+ * them. The relay backend stashes the pre-strip filters here; the store
+ * restores each filter's `search` string positionally (same list, same
+ * order — only the search field differs) before mapping to [EventQuery].
+ */
+class OriginalFilters(
+    val filters: List<Filter>,
+) : AbstractCoroutineContextElement(OriginalFilters) {
+    companion object Key : CoroutineContext.Key<OriginalFilters>
 }
