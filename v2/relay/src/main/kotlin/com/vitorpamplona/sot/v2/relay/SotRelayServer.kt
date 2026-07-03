@@ -67,6 +67,10 @@ class SotRelayServer(
     parentContext: CoroutineContext = SupervisorJob(),
     listener: RelayServerListener = RelayServerListener.None,
     limits: RelayLimits? = null,
+    // The product loop's seam: fires with each authenticated pubkey observed
+    // on a ranked read, so the composition root can enroll NIP-42 logins as
+    // sync observers (SyncService.enroll dedups).
+    onObserver: ((String) -> Unit)? = null,
 ) : RelayServerBase(
         policyBuilder = { PolicyStack(VerifyPolicy, OptionalAuthPolicy(relayUrl)) },
         parentContext = parentContext,
@@ -76,7 +80,7 @@ class SotRelayServer(
     ) {
     private val ingest = IngestQueue(store = store, parentContext = parentContext)
 
-    override val backend: SessionBackend = ObserverRoutingBackend(LiveEventStore(store, ingest), defaultObserver)
+    override val backend: SessionBackend = ObserverRoutingBackend(LiveEventStore(store, ingest), defaultObserver, onObserver)
 
     override fun close() {
         closeConnections()
@@ -95,6 +99,7 @@ class SotRelayServer(
 internal class ObserverRoutingBackend(
     private val inner: LiveEventStore,
     private val defaultObserver: String?,
+    private val onObserver: ((String) -> Unit)? = null,
 ) : SessionBackend {
     override suspend fun query(
         ctx: RequestContext,
@@ -127,7 +132,9 @@ internal class ObserverRoutingBackend(
         ctx: RequestContext,
         block: suspend () -> T,
     ): T {
-        val observer = ctx.authenticatedUsers.firstOrNull() ?: defaultObserver
+        val authenticated = ctx.authenticatedUsers.firstOrNull()
+        authenticated?.let { onObserver?.invoke(it) }
+        val observer = authenticated ?: defaultObserver
         return if (observer == null) block() else withContext(ObserverContext(observer)) { block() }
     }
 }
