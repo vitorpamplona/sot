@@ -90,6 +90,10 @@ data class EventDoc(
             put("content", JsonPrimitive(content))
             put("sig", JsonPrimitive(sig))
             put("owner", JsonPrimitive(owner))
+            // The author's ranking state (the global profile parent) — how any
+            // kind ranks by the observer's trust in its author. Purely
+            // pubkey-derived, so it's stamped here, not by an extractor.
+            put("author_ref", JsonPrimitive("id:profile:profile::$pubkey"))
             for ((field, value) in search.fields()) put(field, JsonPrimitive(value))
             // Always written: an absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
