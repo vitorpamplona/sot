@@ -179,4 +179,69 @@ class TrustProjectionTest {
                 assertEquals(mapOf(observer to 10), profiles.docs.getValue(s).qualityScores, "subject ${'$'}s")
             }
         }
+
+    /**
+     * Two services (both mapped to the observer) scoring one subject in the
+     * SAME bulk batch: the observer cell holds the last-applied card's value —
+     * the zero-read [ProfileIndex.updateCells] path's documented
+     * "latest-arriving mapped card wins", matching what [derive] does with a
+     * LinkedHashMap (last write wins) on the sequential path.
+     */
+    @Test
+    fun `two services scoring one subject in a bulk batch attribute to the observer`() =
+        runBlocking {
+            store.insert(list10040(serviceKey = service))
+            store.insert(list10040(author = observer, serviceKey = service2))
+            val outcomes = store.batchInsert(listOf(card(signer = service, rank = 30), card(signer = service2, rank = 71)))
+            assertEquals(2, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
+            // Both cards attribute to the ONE observer cell; last applied wins.
+            assertEquals(mapOf(observer to 71), profiles.get(subject)?.qualityScores)
+        }
+
+    /** A retraction (rank tag gone) inside a bulk batch supersedes and empties the cell. */
+    @Test
+    fun `a retraction in a bulk batch empties the subject cell`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 87, at = 100))
+            // Newer version with no rank/followers, delivered through the bulk path.
+            val outcomes = store.batchInsert(listOf(card(rank = null, followers = null, at = 200)))
+            assertEquals(1, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
+            assertNull(profiles.get(subject), "the retraction is the newest version — no cell left")
+        }
+
+    /**
+     * The bulk fast path (zero-read cell updates) must land the SAME tensors as
+     * one-by-one inserts (full re-derivation), across supersession, multi-service
+     * attribution, and retraction in one batch. The parity net for the
+     * insert-path optimization.
+     */
+    @Test
+    fun `bulk projection equals sequential across supersession, multi-service and retraction`() =
+        runBlocking {
+            val subjectB = "cd".repeat(32)
+            val events =
+                listOf(
+                    list10040(serviceKey = service, at = 10),
+                    list10040(author = observer2, serviceKey = service2, at = 11),
+                    card(signer = service, about = subject, rank = 20, at = 20),
+                    card(signer = service, about = subject, rank = 55, at = 30), // supersedes -> 55
+                    card(signer = service2, about = subject, rank = 9, followers = 4, at = 40), // observer2 cell
+                    card(signer = service, about = subjectB, rank = 88, at = 50),
+                    card(signer = service, about = subjectB, rank = null, followers = null, at = 60), // retracts subjectB
+                )
+
+            val sequentialProfiles = InMemoryProfileIndex()
+            val sequential = VespaEventStore(TrustProjection(InMemoryEventIndex(), sequentialProfiles), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            events.forEach { sequential.insert(it) }
+
+            val bulkProfiles = InMemoryProfileIndex()
+            val bulk = VespaEventStore(TrustProjection(InMemoryEventIndex(), bulkProfiles), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            bulk.batchInsert(events)
+
+            assertEquals(sequentialProfiles.docs, bulkProfiles.docs, "bulk cell-updates must match sequential re-derivation")
+            // And the values are what we expect, not coincidentally-equal empties.
+            assertEquals(mapOf(observer to 55, observer2 to 9), bulkProfiles.docs.getValue(subject).qualityScores)
+            assertNull(bulkProfiles.docs[subjectB], "subjectB was retracted")
+        }
 }

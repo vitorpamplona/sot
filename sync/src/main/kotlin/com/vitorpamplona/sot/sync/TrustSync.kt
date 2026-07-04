@@ -177,7 +177,11 @@ class TrustSync(
         ) = coroutineScope {
             registerObservers(initialObservers + storedObservers())
             for (relay in seedRelays) submit { hintUnit(relay) }
-            if (pending.get() == 0) {
+            // No initial units doesn't mean no work: an observer with no
+            // discoverable 10002 lands in the no-list fallback, and stored
+            // 10040s feed the catch-up — both surface through onIdle. Only a
+            // pass that STILL finds nothing after that has nothing to sync.
+            if (pending.get() == 0 && !onIdle()) {
                 log("[sync] no observers (no house account, no config extras, no stored 10040s) and no seed relays - nothing to sync")
                 queue.close()
             }
