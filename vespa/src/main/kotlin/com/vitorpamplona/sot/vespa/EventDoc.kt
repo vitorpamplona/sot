@@ -78,6 +78,13 @@ data class EventDoc(
     /** The NIP-40 expiration timestamp, derived from the exact tags; null = never expires. */
     fun expiresAt(): Long? = tags.firstOrNull { it.size >= 2 && it[0] == "expiration" }?.get(1)?.toLongOrNull()
 
+    /** The first `d` tag's value — an addressable event's identity key; null/blank = none. */
+    fun dTag(): String? =
+        tags
+            .firstOrNull { it.size >= 2 && it[0] == "d" }
+            ?.get(1)
+            ?.takeIf { it.isNotEmpty() }
+
     /** The document's field map — one shape for both feeding and summary parsing ([fromSummary]). */
     fun indexFields(): JsonObject =
         buildJsonObject {

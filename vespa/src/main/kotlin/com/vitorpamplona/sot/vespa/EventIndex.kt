@@ -53,20 +53,24 @@ interface EventIndex : AutoCloseable {
      * negentropy snapshots and sync reconcile diffs. Unlike [search] there is
      * no result cap: the real client pages through Vespa's document-API visit
      * (a streaming scan, not a query), calling [onPage] per page; order across
-     * pages is engine-defined, and callers must not assume recency. This
+     * pages is engine-defined, and callers must not assume recency.
+     * [withDTag] additionally projects each doc's `d` tag — what an
+     * addressable-corpus walk (rebuilding the trust projection) keys on. This
      * default rides [search] and is only complete where search is uncapped
      * (the in-memory reference).
      */
     suspend fun visitIds(
         query: EventQuery,
+        withDTag: Boolean = false,
         onPage: suspend (List<DocRef>) -> Unit,
-    ) = onPage(search(query).map { DocRef(it.id, it.createdAt) })
+    ) = onPage(search(query).map { DocRef(it.id, it.createdAt, if (withDTag) it.dTag() else null) })
 
     suspend fun count(query: EventQuery): Int
 }
 
-/** The (id, created_at) projection [EventIndex.visitIds] streams — all a sync diff needs. */
+/** The (id, created_at[, d tag]) projection [EventIndex.visitIds] streams — all a sync diff or projection walk needs. */
 data class DocRef(
     val id: String,
     val createdAt: Long,
+    val dTag: String? = null,
 )

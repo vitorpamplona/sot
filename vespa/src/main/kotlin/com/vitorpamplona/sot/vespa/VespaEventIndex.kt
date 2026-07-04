@@ -24,6 +24,7 @@ import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.FeedClient
 import ai.vespa.feed.client.FeedClientBuilder
 import ai.vespa.feed.client.OperationParameters
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -147,13 +148,15 @@ class VespaEventIndex(
      */
     override suspend fun visitIds(
         query: EventQuery,
+        withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Unit,
     ) {
-        val selection = EventSelection.build(query) ?: return super.visitIds(query, onPage)
+        val selection = EventSelection.build(query) ?: return super.visitIds(query, withDTag, onPage)
+        val fieldSet = "$DOCTYPE:created_at" + if (withDTag) ",$DOCTYPE:tag_index" else ""
         val base =
             "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
-                "&wantedDocumentCount=$VISIT_PAGE&fieldSet=$DOCTYPE:created_at"
+                "&wantedDocumentCount=$VISIT_PAGE&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}"
         var continuation: String? = null
         while (true) {
             val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
@@ -163,13 +166,21 @@ class VespaEventIndex(
                 json["documents"]?.jsonArray?.mapNotNull { d ->
                     val obj = d.jsonObject
                     val id = obj["id"]?.jsonPrimitive?.content?.substringAfterLast(":") ?: return@mapNotNull null
-                    val at =
-                        obj["fields"]
-                            ?.jsonObject
-                            ?.get("created_at")
-                            ?.jsonPrimitive
-                            ?.long ?: return@mapNotNull null
-                    DocRef(id, at)
+                    val fields = obj["fields"]?.jsonObject
+                    val at = fields?.get("created_at")?.jsonPrimitive?.long ?: return@mapNotNull null
+                    val dTag =
+                        if (withDTag) {
+                            fields["tag_index"]
+                                ?.jsonArray
+                                ?.firstNotNullOfOrNull { t ->
+                                    t.jsonPrimitive.content
+                                        .takeIf { it.startsWith("d:") }
+                                        ?.substring(2)
+                                }
+                        } else {
+                            null
+                        }
+                    DocRef(id, at, dTag)
                 } ?: emptyList()
             if (page.isNotEmpty()) onPage(page)
             continuation = json["continuation"]?.jsonPrimitive?.content ?: return
@@ -209,7 +220,15 @@ class VespaEventIndex(
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build()
-        val resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+        // A busy engine sheds load transiently (504 "Summary data is
+        // incomplete" under heavy concurrent summary fills); one failed page
+        // must not kill a whole multi-hour sync, so 5xx gets brief retries.
+        var resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+        var attempt = 0
+        while (resp.statusCode() in 500..599 && attempt++ < QUERY_RETRIES) {
+            delay(500L * attempt)
+            resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+        }
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return Json.parseToJsonElement(resp.body()).jsonObject["root"]?.jsonObject
     }
@@ -254,5 +273,8 @@ class VespaEventIndex(
 
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
+
+        /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
+        const val QUERY_RETRIES = 3
     }
 }

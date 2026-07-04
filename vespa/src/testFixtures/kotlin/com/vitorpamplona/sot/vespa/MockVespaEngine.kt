@@ -198,6 +198,7 @@ class MockVespaEngine {
      */
     private fun visit(params: Map<String, String>): Reply {
         val selection = params["selection"] ?: return Reply(400, """{"message":"missing selection"}""")
+        val withTagIndex = params["fieldSet"].orEmpty().contains("tag_index")
         val query = MockSelection.parse(selection)
         val all = runBlocking { inner.search(query) }
         val offset = params["continuation"]?.toIntOrNull() ?: 0
@@ -212,7 +213,13 @@ class MockVespaEngine {
                         page.map { doc ->
                             buildJsonObject {
                                 put("id", JsonPrimitive("id:event:event::${doc.id}"))
-                                put("fields", buildJsonObject { put("created_at", JsonPrimitive(doc.createdAt)) })
+                                put(
+                                    "fields",
+                                    buildJsonObject {
+                                        put("created_at", JsonPrimitive(doc.createdAt))
+                                        if (withTagIndex) put("tag_index", JsonArray(doc.tagIndex().map(::JsonPrimitive)))
+                                    },
+                                )
                             }
                         },
                     ),

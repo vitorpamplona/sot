@@ -41,10 +41,9 @@ import com.vitorpamplona.sot.vespa.EventDoc
 import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.EventYql
+import com.vitorpamplona.sot.vespa.QUERY_FANOUT
 import com.vitorpamplona.sot.vespa.SearchFields
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import com.vitorpamplona.sot.vespa.mapBounded
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
@@ -202,34 +201,30 @@ class VespaEventStore(
         }
 
         // Stage B — ids already stored. The chunk queries are independent
-        // reads; they fan out concurrently (each costs an engine round trip,
-        // and serialized round trips were the measured bulk-path bottleneck).
+        // reads; they fan out with BOUNDED concurrency (serialized round trips
+        // starve the batch, but unbounded fan-out measurably 504s the engine's
+        // summary stage).
         val stored = HashSet<String>()
-        coroutineScope {
-            alive()
-                .map { events[it].id }
-                .chunked(CHECK_CHUNK)
-                .map { chunk -> async { index.search(EventQuery(ids = chunk)) } }
-                .awaitAll()
-        }.forEach { docs -> docs.forEach { stored += it.id } }
+        alive()
+            .map { events[it].id }
+            .chunked(CHECK_CHUNK)
+            .mapBounded(QUERY_FANOUT) { chunk -> index.search(EventQuery(ids = chunk)) }
+            .forEach { docs -> docs.forEach { stored += it.id } }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected("duplicate: already have this event") }
 
         // Stage C — tombstone + vanish guards, one pass per distinct owner;
-        // the two guard reads of every owner fan out together.
+        // the guard reads fan out (bounded) across owners.
         val owners = alive().groupBy { events[it].owner() }
         val guards =
-            coroutineScope {
-                owners.keys
-                    .map { owner ->
-                        async {
-                            owner to
-                                Pair(
-                                    index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner))),
-                                    index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner))),
-                                )
-                        }
-                    }.awaitAll()
-            }.toMap()
+            owners.keys
+                .toList()
+                .mapBounded(QUERY_FANOUT) { owner ->
+                    owner to
+                        Pair(
+                            index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner))),
+                            index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner))),
+                        )
+                }.toMap()
         for ((owner, idxs) in owners) {
             val (tombs, vanishes) = guards.getValue(owner)
             if (tombs.size >= GUARD_PAGE || vanishes.size >= GUARD_PAGE) {
@@ -301,14 +296,19 @@ class VespaEventStore(
                     }
                 }
                 for ((kind, keys) in addressable.groupBy { it.first }) {
-                    keys.chunked(CHECK_CHUNK).forEach { chunk ->
+                    // Small chunks on purpose: the (authors x d-tags) recall is a
+                    // cross product — a dense corpus (dozens of service keys
+                    // scoring the same subjects) at 500 pairs recalls tens of
+                    // thousands of docs, sailing past the search page cap and
+                    // SILENTLY missing existing versions.
+                    keys.chunked(ADDR_CHUNK).forEach { chunk ->
                         val authors = chunk.map { it.second }.distinct()
                         val ds = chunk.mapNotNull { it.third }.distinct()
                         add(EventQuery(kinds = listOf(kind), authors = authors, tags = mapOf("d" to ds)))
                     }
                 }
             }
-        coroutineScope { versionQueries.map { q -> async { index.search(q) } }.awaitAll() }.forEach { docs ->
+        versionQueries.mapBounded(QUERY_FANOUT) { q -> index.search(q) }.forEach { docs ->
             docs.forEach { doc ->
                 val d = if (doc.kind.isAddressable()) dTagOf(doc.tags) else null
                 existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
@@ -597,6 +597,11 @@ class VespaEventStore(
 
         // Ids/authors/d-tags per check query — well under the engine's page cap.
         const val CHECK_CHUNK = 500
+
+        // (author, d) pairs per addressable version-query: the recall is a
+        // cross product, and a dense corpus (~50 services scoring the same
+        // subjects) must stay under the engine's 10k search page.
+        const val ADDR_CHUNK = 100
 
         // A tombstone/vanish guard set this big may have been page-capped by
         // the engine; those owners fall back to the exact per-event probes.

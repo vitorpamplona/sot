@@ -30,9 +30,8 @@ import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.ProfileDoc
 import com.vitorpamplona.sot.vespa.ProfileIndex
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import com.vitorpamplona.sot.vespa.QUERY_FANOUT
+import com.vitorpamplona.sot.vespa.mapBounded
 
 /**
  * Maintains the `profile` parent documents — the per-pubkey trust tensors the
@@ -77,8 +76,9 @@ class TrustProjection(
 
     override suspend fun visitIds(
         query: EventQuery,
+        withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Unit,
-    ) = inner.visitIds(query, onPage)
+    ) = inner.visitIds(query, withDTag, onPage)
 
     override suspend fun count(query: EventQuery): Int = inner.count(query)
 
@@ -106,32 +106,49 @@ class TrustProjection(
         docs.filter { it.kind == TrustProviderListEvent.KIND }.forEach { recomputeSubjectsOf(it) }
         val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
         if (subjects.isEmpty()) return
-        val serviceToObserver = providerMap()
+        // No parent-doc REMOVE on the insert path: adding cards can only grow
+        // a derivation, so an empty one was empty before this batch too — the
+        // doc doesn't exist. (A corpus signed by unmapped providers would
+        // otherwise flood the engine with no-op deletes.) Removal flows
+        // through the single-doc react path (deletions).
+        recomputeBatch(subjects, providerMap(), removeEmpties = false)
+    }
+
+    /**
+     * The batched recompute behind [putAll], [recomputeSubjectsOf] and
+     * [rebuildAll]: the touched subjects' score docs fetched back in CHUNKED,
+     * concurrency-BOUNDED queries (hundreds of subjects per round trip, a few
+     * round trips in flight — unbounded fan-out measurably times the engine
+     * out), every parent derived locally, and the results written through one
+     * pipelined [ProfileIndex.putAll].
+     */
+    private suspend fun recomputeBatch(
+        subjects: List<String>,
+        serviceToObserver: Map<String, String>,
+        removeEmpties: Boolean,
+    ) {
         val bySubject = HashMap<String, MutableList<EventDoc>>(subjects.size * 2)
         val wanted = subjects.toHashSet()
-        // Independent reads: the chunk queries fan out concurrently (serialized
-        // engine round trips were the measured bulk-path bottleneck).
-        coroutineScope {
-            subjects
-                .chunked(FETCH_CHUNK)
-                .map { chunk -> async { inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) } }
-                .awaitAll()
-        }.forEach { docs ->
-            docs.forEach { doc ->
-                subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
+        subjects
+            .chunked(FETCH_CHUNK)
+            .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) }
+            .forEach { docs ->
+                docs.forEach { doc ->
+                    subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
+                }
             }
-        }
         val puts = ArrayList<ProfileDoc>(subjects.size)
+        val removes = ArrayList<String>()
         for (subject in subjects) {
             val profile = derive(subject, bySubject[subject].orEmpty(), serviceToObserver)
-            // No parent-doc REMOVE on the insert path: adding cards can only
-            // grow a derivation, so an empty one was empty before this batch
-            // too — the doc doesn't exist. (A corpus signed by unmapped
-            // providers would otherwise flood the engine with no-op deletes.)
-            // Removal flows through the single-doc react path (deletions).
-            if (!profile.isEmpty()) puts += profile
+            if (!profile.isEmpty()) {
+                puts += profile
+            } else if (removeEmpties) {
+                removes += subject
+            }
         }
         profiles.putAll(puts)
+        removes.mapBounded(QUERY_FANOUT) { profiles.remove(it) }
     }
 
     override suspend fun remove(id: String) {
@@ -191,7 +208,11 @@ class TrustProjection(
 
     /**
      * A 10040 appeared or disappeared: every subject its rank services have
-     * scored needs re-attribution under the new provider map.
+     * scored needs re-attribution under the new provider map. The subjects
+     * are enumerated through the engine's VISIT walk (d tags projected), not
+     * a search — a provider with millions of stored scores is exactly where
+     * a 10k search page would silently miss most of them — and re-derived in
+     * batches, empties removed (a re-attribution can empty a parent).
      */
     private suspend fun recomputeSubjectsOf(listDoc: EventDoc) {
         val list = Event.fromJsonOrNull(listDoc.toEventJson()) as? TrustProviderListEvent ?: return
@@ -201,20 +222,19 @@ class TrustProjection(
                 .filter { it.service == ProviderTypes.rank }
                 .map { it.pubkey }
         if (services.isEmpty()) return
-        inner
-            .search(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = services))
-            .mapNotNull { subjectOf(it) }
-            .distinct()
-            .forEach { recompute(it) }
+        recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = services))
     }
 
     /** Re-derive every parent doc from scratch (bootstrap over an existing index). */
-    suspend fun rebuildAll() {
-        inner
-            .search(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
-            .mapNotNull { subjectOf(it) }
-            .distinct()
-            .forEach { recompute(it) }
+    suspend fun rebuildAll() = recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+
+    /** Visit every score doc matching [query], collect the subjects, re-derive them in batches. */
+    private suspend fun recomputeWalk(query: EventQuery) {
+        val subjects = LinkedHashSet<String>()
+        inner.visitIds(query, withDTag = true) { page -> page.forEach { ref -> ref.dTag?.let(subjects::add) } }
+        if (subjects.isEmpty()) return
+        val map = providerMap()
+        subjects.toList().chunked(RECOMPUTE_BATCH).forEach { batch -> recomputeBatch(batch, map, removeEmpties = true) }
     }
 
     /** The 30382's d tag is the SUBJECT the score is about. */
@@ -225,7 +245,14 @@ class TrustProjection(
             ?.takeIf { it.isNotEmpty() }
 
     private companion object {
-        // Subjects per batched score-fetch query — well under the engine's page cap.
-        const val FETCH_CHUNK = 400
+        // Subjects per batched score-fetch query. Sized for DENSE subjects: a
+        // real NIP-85 corpus scores each subject from dozens of service keys
+        // (~50 observed), so 100 subjects already recall ~5k docs — a bigger
+        // chunk would cross the engine's 10k search page and silently truncate
+        // the derivation.
+        const val FETCH_CHUNK = 100
+
+        // Subjects per recompute round in a full walk (memory-bounded batches).
+        const val RECOMPUTE_BATCH = 20_000
     }
 }

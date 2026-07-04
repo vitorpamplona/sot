@@ -158,6 +158,16 @@ class VespaEventIndexTest {
             assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
         }
 
+    /** The projection's rebuild walk: d tags stream out with the ids. */
+    @Test
+    fun `visitIds projects d tags when asked`() =
+        runBlocking {
+            seed(*(1..15).map { doc(kind = 30382, tags = listOf(listOf("d", "s$it".repeat(1)))) }.toTypedArray())
+            val got = ArrayList<DocRef>()
+            index.visitIds(EventQuery(kinds = listOf(30382)), withDTag = true) { got += it }
+            assertEquals((1..15).map { "s$it" }.toSet(), got.mapNotNull { it.dTag }.toSet())
+        }
+
     /** A selection-inexpressible query (tags) still walks correctly via the search fallback. */
     @Test
     fun `visitIds falls back to search for tag queries`() =
