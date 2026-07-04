@@ -30,6 +30,9 @@ import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.ProfileDoc
 import com.vitorpamplona.sot.vespa.ProfileIndex
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 /**
  * Maintains the `profile` parent documents — the per-pubkey trust tensors the
@@ -105,9 +108,16 @@ class TrustProjection(
         if (subjects.isEmpty()) return
         val serviceToObserver = providerMap()
         val bySubject = HashMap<String, MutableList<EventDoc>>(subjects.size * 2)
-        subjects.chunked(FETCH_CHUNK).forEach { chunk ->
-            val wanted = chunk.toHashSet()
-            inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))).forEach { doc ->
+        val wanted = subjects.toHashSet()
+        // Independent reads: the chunk queries fan out concurrently (serialized
+        // engine round trips were the measured bulk-path bottleneck).
+        coroutineScope {
+            subjects
+                .chunked(FETCH_CHUNK)
+                .map { chunk -> async { inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) } }
+                .awaitAll()
+        }.forEach { docs ->
+            docs.forEach { doc ->
                 subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
             }
         }

@@ -236,9 +236,13 @@ class VespaEventIndex(
      */
     fun feedGauge(): String {
         val s = feed.stats()
-        val failed = (s.responses() - s.successes()) + s.exceptions()
+        // Non-2xx responses get retried and usually succeed — pushback, not
+        // loss (a big window ramping down shows a burst of 429s here). Only
+        // transport exceptions are worth shouting about.
+        val retried = s.responses() - s.successes()
         return "feed ok ${s.successes()} inflight ${s.inflight()} lat ${s.averageLatencyMillis()}ms" +
-            if (failed > 0) " FAILED $failed" else ""
+            (if (retried > 0) " retry $retried" else "") +
+            if (s.exceptions() > 0) " EXC ${s.exceptions()}" else ""
     }
 
     /** Graceful: waits for in-flight feed operations before closing the connections. */

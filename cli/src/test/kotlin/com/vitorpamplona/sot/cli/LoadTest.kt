@@ -98,6 +98,7 @@ object LoadTest {
             )
         val maxEvents = args.getOrNull(2)?.toIntOrNull() ?: 0
         val slices = (args.getOrNull(3)?.toIntOrNull() ?: 1).coerceAtLeast(1)
+        val reconcileConcurrency = (args.getOrNull(4)?.toIntOrNull() ?: 1).coerceAtLeast(1)
         val log: (String) -> Unit = {
             println(it)
             System.out.flush()
@@ -123,7 +124,7 @@ object LoadTest {
             val state = SyncState.load("load-state.json")
             val progress = SyncProgress(log = log)
             progress.gauge(stack.feedGauge())
-            val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = 30_000, progress = progress)
+            val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = 30_000, progress = progress, reconcileConcurrency = reconcileConcurrency)
             val ticker = launch { progress.run() }
 
             val t0 = System.currentTimeMillis()

@@ -42,6 +42,9 @@ import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.EventYql
 import com.vitorpamplona.sot.vespa.SearchFields
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
@@ -198,17 +201,37 @@ class VespaEventStore(
             }
         }
 
-        // Stage B — ids already stored.
+        // Stage B — ids already stored. The chunk queries are independent
+        // reads; they fan out concurrently (each costs an engine round trip,
+        // and serialized round trips were the measured bulk-path bottleneck).
         val stored = HashSet<String>()
-        alive().map { events[it].id }.chunked(CHECK_CHUNK).forEach { chunk ->
-            index.search(EventQuery(ids = chunk)).forEach { stored += it.id }
-        }
+        coroutineScope {
+            alive()
+                .map { events[it].id }
+                .chunked(CHECK_CHUNK)
+                .map { chunk -> async { index.search(EventQuery(ids = chunk)) } }
+                .awaitAll()
+        }.forEach { docs -> docs.forEach { stored += it.id } }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected("duplicate: already have this event") }
 
-        // Stage C — tombstone + vanish guards, one pass per distinct owner.
-        for ((owner, idxs) in alive().groupBy { events[it].owner() }) {
-            val tombs = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner)))
-            val vanishes = index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner)))
+        // Stage C — tombstone + vanish guards, one pass per distinct owner;
+        // the two guard reads of every owner fan out together.
+        val owners = alive().groupBy { events[it].owner() }
+        val guards =
+            coroutineScope {
+                owners.keys
+                    .map { owner ->
+                        async {
+                            owner to
+                                Pair(
+                                    index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner))),
+                                    index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner))),
+                                )
+                        }
+                    }.awaitAll()
+            }.toMap()
+        for ((owner, idxs) in owners) {
+            val (tombs, vanishes) = guards.getValue(owner)
             if (tombs.size >= GUARD_PAGE || vanishes.size >= GUARD_PAGE) {
                 // Guard set larger than a page: the batched view could miss one.
                 // Exactness over speed — run these events through the per-event probes.
@@ -270,20 +293,25 @@ class VespaEventStore(
         val existing = HashMap<Triple<Int, String, String?>, MutableList<EventDoc>>()
         val addressable = groups.keys.filter { it.third != null }
         val replaceable = groups.keys.filter { it.third == null }
-        for ((kind, keys) in replaceable.groupBy { it.first }) {
-            keys.map { it.second }.distinct().chunked(CHECK_CHUNK).forEach { authors ->
-                index.search(EventQuery(kinds = listOf(kind), authors = authors)).forEach { doc ->
-                    existing.getOrPut(Triple(kind, doc.pubkey, null)) { mutableListOf() } += doc
+        val versionQueries =
+            buildList {
+                for ((kind, keys) in replaceable.groupBy { it.first }) {
+                    keys.map { it.second }.distinct().chunked(CHECK_CHUNK).forEach { authors ->
+                        add(EventQuery(kinds = listOf(kind), authors = authors))
+                    }
+                }
+                for ((kind, keys) in addressable.groupBy { it.first }) {
+                    keys.chunked(CHECK_CHUNK).forEach { chunk ->
+                        val authors = chunk.map { it.second }.distinct()
+                        val ds = chunk.mapNotNull { it.third }.distinct()
+                        add(EventQuery(kinds = listOf(kind), authors = authors, tags = mapOf("d" to ds)))
+                    }
                 }
             }
-        }
-        for ((kind, keys) in addressable.groupBy { it.first }) {
-            keys.chunked(CHECK_CHUNK).forEach { chunk ->
-                val authors = chunk.map { it.second }.distinct()
-                val ds = chunk.mapNotNull { it.third }.distinct()
-                index.search(EventQuery(kinds = listOf(kind), authors = authors, tags = mapOf("d" to ds))).forEach { doc ->
-                    existing.getOrPut(Triple(kind, doc.pubkey, dTagOf(doc.tags))) { mutableListOf() } += doc
-                }
+        coroutineScope { versionQueries.map { q -> async { index.search(q) } }.awaitAll() }.forEach { docs ->
+            docs.forEach { doc ->
+                val d = if (doc.kind.isAddressable()) dTagOf(doc.tags) else null
+                existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
             }
         }
         val removeFromStore = ArrayList<String>()

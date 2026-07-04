@@ -91,6 +91,15 @@ class RelaySyncer(
     // the first contact with each relay waits for its challenge handshake, so
     // an auth-required relay doesn't reject the sync's opening downloads.
     private val auth: IAuthStatus = EmptyIAuthStatus,
+    // How many negentropy WINDOWS one session reconciles concurrently
+    // (Quartz default 1). The relay computes each window server-side, so at 1
+    // the socket idles for the full computation between streams; overlapping
+    // windows hides that latency. Raise with care: it multiplies the relay's
+    // concurrent NEG work per connection.
+    private val reconcileConcurrency: Int = 1,
+    // The id-download REQ pool per session (Quartz default 8 REQs of
+    // [fetchBatch] ids each).
+    private val maxConcurrentReqs: Int = 8,
 ) {
     data class Outcome(
         val inserted: Int,
@@ -313,6 +322,8 @@ class RelaySyncer(
                             maxEvents = maxEvents,
                             fetchBatch = fetchBatch,
                             idleTimeoutMs = idleTimeoutMs,
+                            reconcileConcurrency = reconcileConcurrency,
+                            maxConcurrentReqs = maxConcurrentReqs,
                             onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
                             onEvent = onEvent,
                         )

@@ -82,7 +82,7 @@ class SyncProgress(
 
     @Volatile private var phase = "starting"
 
-    @Volatile private var total = 0
+    private val total = AtomicInteger(0)
     private val done = AtomicInteger(0)
     private val received = AtomicLong(0)
     private val inserted = AtomicLong(0)
@@ -133,12 +133,20 @@ class SyncProgress(
         totalItems: Int,
     ) {
         phase = name
-        total = totalItems
+        total.set(totalItems)
         done.set(0)
+    }
+
+    /** Grow the current phase by [n] items — pipelines discover their work as they run. */
+    fun addPhaseItems(n: Int) {
+        total.addAndGet(n)
     }
 
     /** One phase item finished; returns its 1-based position for `[n/total]` log lines. */
     fun itemDone(): Int = done.incrementAndGet()
+
+    /** The current `done/total` position (for log lines in dynamically-growing phases). */
+    fun position(): String = "${done.get()}/${total.get()}"
 
     /** Add [supplier]'s text to every status line (e.g. the Vespa write gauge). */
     fun gauge(supplier: () -> String) {
@@ -204,7 +212,7 @@ class SyncProgress(
         busy: String = "",
     ): String =
         buildString {
-            append("  ~ $phase ${done.get()}/$total")
+            append("  ~ $phase ${done.get()}/${total.get()}")
             append(" | recv ${compact(received.get())}")
             if (perSec > 0) append(" (${compact(perSec)}/s)")
             append(" new ${compact(inserted.get())}")

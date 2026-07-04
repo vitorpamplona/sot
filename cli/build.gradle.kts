@@ -64,5 +64,6 @@ tasks.register<JavaExec>("loadTest") {
         (project.findProperty("service") as String?) ?: "",
         (project.findProperty("max") as String?) ?: "0",
         (project.findProperty("slices") as String?) ?: "1",
+        (project.findProperty("reconcile") as String?) ?: "1",
     )
 }

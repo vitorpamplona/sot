@@ -32,11 +32,16 @@ import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Tuning knobs for one sync pass. Everything has a sensible default. */
 data class SyncOptions(
@@ -110,31 +115,10 @@ class TrustSync(
         house: HouseAccount? = null,
         seedRelays: List<NormalizedRelayUrl> = emptyList(),
     ) {
-        discoverObserverHints(seedRelays)
-        val all = observers + setOfNotNull(house?.pubkey) + storedObservers()
-        if (all.isEmpty()) {
-            log("[sync] no observers (no house account, no config extras, no stored 10040s) - nothing to sync")
-            return
-        }
-        resolveObserverRelayLists(all, indexRelays, house)
-        syncObserverOutboxes(all, indexRelays)
-        syncProviderScores()
+        log("=== scores: blended chain (${seedRelays.size} seed / ${indexRelays.size} index relay(s)) ===")
+        progress.startPhase("chain", 0)
+        BlendedPass(indexRelays, house).run(observers + setOfNotNull(house?.pubkey), seedRelays)
         sweepOrphanScores()
-    }
-
-    /**
-     * Phase 0 — discovery hints: 10040s held by the seed relays tell us WHO
-     * the observers are. Never the authority (that's the outbox pass); a
-     * stale hint is harmless because supersession keeps the newest.
-     */
-    private suspend fun discoverObserverHints(seedRelays: List<NormalizedRelayUrl>) {
-        if (seedRelays.isEmpty()) return
-        log("=== scores 0: 10040 hints from ${seedRelays.size} seed relay(s) ===")
-        progress.startPhase("hints", seedRelays.size)
-        forEachParallel(seedRelays, opts.concurrency) { relay ->
-            val o = syncer.sync(relay, Filter(kinds = listOf(TrustProviderListEvent.KIND)), maxEvents = opts.maxEvents)
-            log("[${progress.itemDone()}/${seedRelays.size}] ${relay.displayUrl()} 10040=+${o.inserted}/${o.downloaded}")
-        }
     }
 
     /** Every stored 10040's author is an observer — however the list got here. */
@@ -144,112 +128,212 @@ class TrustSync(
             .map { it.pubKey }
             .toSet()
 
+    /** Every stored 10040's `30382:rank` (service key -> relay hint) pairs. */
+    private suspend fun storedProviderPairs(): List<Pair<HexKey, NormalizedRelayUrl?>> =
+        store
+            .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
+            .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
+            .distinct()
+
     /**
-     * Phase A — 10002 resolution from the index relays (the identity's stored
-     * 10086), plus the house account's home relay for its bootstrap. NIP-65
-     * says relay lists are broadcast widely, which is exactly what the index
-     * relays exist to hold — this is how 10002 escapes the circularity that
-     * sinks 10040-first designs.
+     * One pass's work-unit pipeline: every download is a unit in ONE worker
+     * pool, and each unit's completion enqueues exactly the downstream units
+     * it unblocks — an observer's outbox sync starts the moment THEIR 10002
+     * resolution finished (not when everyone's did), and a provider's score
+     * sync starts the moment any completed outbox names it. No relay waits
+     * for an unrelated relay: a slow index relay delays only the observers
+     * whose lists it still owes, and the (typically massive) provider score
+     * downloads begin while the rest of the directory chain still resolves.
+     *
+     * The phased dependency order survives PER OBSERVER: outbox units are
+     * derived only after ALL of that observer's 10002 lookups completed, and
+     * provider units only from 10040s read back after their observer's outbox
+     * unit — so the outbox version of a 10040 still supersedes any seed-relay
+     * hint before its providers are chosen. The end-of-pass catch-up derives
+     * providers from EVERYTHING stored (hint-only observers, failed outbox
+     * units), which is exactly the old phase C over the final store state.
+     *
+     * Work units batch as they accumulate: same-relay authors buffer up to
+     * [AUTHORS_PER_FILTER] and flush either on overflow or when the pool goes
+     * idle — big rosters still get big filters, small ones never wait.
      */
-    private suspend fun resolveObserverRelayLists(
-        observers: Set<HexKey>,
-        indexRelays: List<NormalizedRelayUrl>,
-        house: HouseAccount?,
+    private inner class BlendedPass(
+        private val indexRelays: List<NormalizedRelayUrl>,
+        private val house: HouseAccount?,
     ) {
-        val batches = observers.chunked(AUTHORS_PER_FILTER)
-        val units =
-            buildList {
-                for (relay in indexRelays) for (batch in batches) add(relay to batch)
-                house?.let { add(it.relay to listOf(it.pubkey)) }
+        private val queue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+        private val pending = AtomicInteger(0)
+        private val known = ConcurrentHashMap.newKeySet<HexKey>()
+        private val listsLeft = ConcurrentHashMap<HexKey, AtomicInteger>()
+        private val outboxBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
+        private val noList = ConcurrentLinkedQueue<HexKey>()
+        private val providerBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
+        private val seenServices = ConcurrentHashMap.newKeySet<HexKey>()
+        private val catchUpRan = AtomicBoolean(false)
+
+        suspend fun run(
+            initialObservers: Set<HexKey>,
+            seedRelays: List<NormalizedRelayUrl>,
+        ) = coroutineScope {
+            registerObservers(initialObservers + storedObservers())
+            for (relay in seedRelays) submit { hintUnit(relay) }
+            if (pending.get() == 0) {
+                log("[sync] no observers (no house account, no config extras, no stored 10040s) and no seed relays - nothing to sync")
+                queue.close()
             }
-        log("=== scores A: ${observers.size} observer 10002(s) from ${indexRelays.size} index relay(s) ===")
-        progress.startPhase("relay lists", units.size)
-        forEachParallel(units, opts.concurrency) { (relay, batch) ->
+            repeat(opts.concurrency.coerceAtLeast(1)) {
+                launch {
+                    for (job in queue) {
+                        runCatching { job() }.onFailure { log("  ! chain unit failed: ${it.message}") }
+                        unitDone()
+                    }
+                }
+            }
+        }
+
+        private fun submit(job: suspend () -> Unit) {
+            pending.incrementAndGet()
+            progress.addPhaseItems(1)
+            queue.trySend(job)
+        }
+
+        /** Pool drained: flush the partial batches; when nothing is left to flush either, the pass is over. */
+        private suspend fun unitDone() {
+            if (pending.decrementAndGet() > 0) return
+            if (!onIdle()) queue.close()
+        }
+
+        private suspend fun onIdle(): Boolean {
+            var submitted = false
+            for ((relay, batch) in drain(outboxBuf)) {
+                submit { outboxUnit(relay, batch) }
+                submitted = true
+            }
+            val unresolved = generateSequence { noList.poll() }.toList()
+            if (unresolved.isNotEmpty()) {
+                // No 10002 anywhere: degrade to the index relays, never drop the observer.
+                for (relay in indexRelays) {
+                    unresolved.chunked(AUTHORS_PER_FILTER).forEach { batch ->
+                        submit { outboxUnit(relay, batch) }
+                        submitted = true
+                    }
+                }
+            }
+            for ((relay, batch) in drain(providerBuf)) {
+                submit { scoreUnit(relay, batch) }
+                submitted = true
+            }
+            if (!submitted && catchUpRan.compareAndSet(false, true)) {
+                // The old phase C over the final store state: hint-only
+                // observers and failed outbox units still get their providers.
+                storedProviderPairs().forEach { (service, relay) -> enqueueProvider(service, relay) }
+                for ((relay, batch) in drain(providerBuf)) {
+                    submit { scoreUnit(relay, batch) }
+                    submitted = true
+                }
+            }
+            return submitted
+        }
+
+        /** New observers join the pipeline: their 10002 lookups are submitted immediately. */
+        private suspend fun registerObservers(observers: Collection<HexKey>) {
+            val fresh = observers.filter(known::add)
+            if (fresh.isEmpty()) return
+            for (o in fresh) {
+                listsLeft[o] = AtomicInteger(indexRelays.size + if (house?.pubkey == o) 1 else 0)
+            }
+            for (relay in indexRelays) {
+                fresh.chunked(AUTHORS_PER_FILTER).forEach { batch -> submit { listUnit(relay, batch) } }
+            }
+            house?.takeIf { it.pubkey in fresh }?.let { h -> submit { listUnit(h.relay, listOf(h.pubkey)) } }
+            // Nowhere to look a 10002 up: resolve from whatever the store already has.
+            if (indexRelays.isEmpty()) {
+                for (o in fresh) if (house?.pubkey != o) resolveOutboxes(o)
+            }
+        }
+
+        /** Seed-relay 10040 discovery; any new authors join the pipeline mid-flight. */
+        private suspend fun hintUnit(relay: NormalizedRelayUrl) {
+            val o = syncer.sync(relay, Filter(kinds = listOf(TrustProviderListEvent.KIND)), maxEvents = opts.maxEvents)
+            log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] hints @ ${relay.displayUrl()}: 10040 +${o.inserted}/${o.downloaded}")
+            registerObservers(storedObservers())
+        }
+
+        /** One (index relay x observer batch) 10002 lookup; completing an observer's LAST lookup unblocks their outboxes. */
+        private suspend fun listUnit(
+            relay: NormalizedRelayUrl,
+            batch: List<HexKey>,
+        ) {
             syncer.sync(relay, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch), maxEvents = opts.maxEvents)
             progress.itemDone()
-        }
-    }
-
-    /**
-     * Phase B — the observers' outboxes: the AUTHORITATIVE 10040 lives there,
-     * and their kind 0, a fresher 10002, and their own 5/62 ride along (a
-     * deletion published only to the author's outbox must still erase here —
-     * the v2 store interprets both).
-     */
-    private suspend fun syncObserverOutboxes(
-        observers: Set<HexKey>,
-        indexRelays: List<NormalizedRelayUrl>,
-    ) {
-        val outboxes = writeRelaysByAuthor(observers)
-        val noList = observers.filterNot { it in outboxes.keys }
-        val units =
-            buildList {
-                outboxes
-                    .flatMap { (author, relays) -> relays.map { it to author } }
-                    .groupBy({ it.first }, { it.second })
-                    .forEach { (relay, authors) -> authors.distinct().chunked(AUTHORS_PER_FILTER).forEach { add(relay to it) } }
-                // No 10002 anywhere: degrade to the index relays, never drop the observer.
-                for (relay in indexRelays) for (batch in noList.chunked(AUTHORS_PER_FILTER)) add(relay to batch)
+            for (o in batch) {
+                if (listsLeft[o]?.decrementAndGet() == 0) resolveOutboxes(o)
             }
-        val kinds =
-            listOf(
-                MetadataEvent.KIND,
-                AdvertisedRelayListEvent.KIND,
-                TrustProviderListEvent.KIND,
-                DeletionEvent.KIND,
-                RequestToVanishEvent.KIND,
-            )
-        log("=== scores B: outboxes of ${observers.size} observer(s) (${noList.size} without a 10002) across ${units.size} unit(s) ===")
-        progress.startPhase("outboxes", units.size)
-        forEachParallel(units, opts.concurrency) { (relay, batch) ->
-            val o = syncer.sync(relay, Filter(kinds = kinds, authors = batch), maxEvents = opts.maxEvents)
-            log("[${progress.itemDone()}/${units.size}] ${batch.size} observer(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         }
-    }
 
-    /** The stored (newest — supersession) 10002 write/both relays per author. */
-    private suspend fun writeRelaysByAuthor(authors: Set<HexKey>): Map<HexKey, List<NormalizedRelayUrl>> =
-        authors
-            .chunked(AUTHORS_PER_FILTER)
-            .flatMap { batch -> store.query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch)) }
-            .mapNotNull { list -> list.writeRelaysNorm()?.let { list.pubKey to it } }
-            .toMap()
+        /** All of [o]'s 10002 lookups are in: derive their outbox units (or the no-list fallback). */
+        private suspend fun resolveOutboxes(o: HexKey) {
+            val relays =
+                store
+                    .query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = listOf(o)))
+                    .firstOrNull()
+                    ?.writeRelaysNorm()
+                    .orEmpty()
+            if (relays.isEmpty()) {
+                noList.add(o)
+                return
+            }
+            for (relay in relays) {
+                bufferedBatch(outboxBuf, relay, o)?.let { batch -> submit { outboxUnit(relay, batch) } }
+            }
+        }
 
-    /**
-     * Phase C — the providers: every stored 10040's `30382:rank` entries,
-     * pulled from their own relay hints. Providers cluster hard on a few
-     * NIP-85 relays, so services group by relay into ONE multi-author filter
-     * (chunked).
-     *
-     * **The provider relay is the AUTHORITATIVE source of truth for its
-     * service keys' 30382s** — the observer chose it in their 10040. So
-     * deletion is ABSENCE: a full sync reconciles the batch's complete id
-     * set, and any score we hold that the relay no longer serves is deleted
-     * locally. No kind-5 download is needed for this scope (a provider
-     * retracting a score just removes it; the reconcile diff sees the hole).
-     * This absence-is-deletion rule applies ONLY here — kind 30382 on the
-     * 10040-chosen relay — never to the records plane, where an author's
-     * outbox is one replica among many and deletion needs an explicit
-     * kind 5/62.
-     */
-    private suspend fun syncProviderScores() {
-        var providers =
+        /**
+         * The observers' outboxes: the AUTHORITATIVE 10040 lives there, and
+         * their kind 0, a fresher 10002, and their own 5/62 ride along (a
+         * deletion published only to the author's outbox must still erase
+         * here — the store interprets both). Completion feeds the stored
+         * 10040s' providers into the pipeline.
+         */
+        private suspend fun outboxUnit(
+            relay: NormalizedRelayUrl,
+            authors: List<HexKey>,
+        ) {
+            val o = syncer.sync(relay, Filter(kinds = OUTBOX_KINDS, authors = authors), maxEvents = opts.maxEvents)
+            log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${authors.size} observer(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
             store
-                .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
+                .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND), authors = authors))
                 .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
-                .distinct()
-        if (opts.maxProviders > 0 && providers.size > opts.maxProviders) {
-            providers = providers.take(opts.maxProviders)
-            log("[sync] capped to ${opts.maxProviders} providers for this run")
+                .forEach { (service, relayHint) -> enqueueProvider(service, relayHint) }
         }
-        val units =
-            providers
-                .groupBy({ it.second }, { it.first })
-                .flatMap { (relay, services) -> services.distinct().chunked(AUTHORS_PER_FILTER).map { relay to it } }
 
-        log("=== scores C: 30382 for ${providers.size} provider(s) across ${units.size} relay batch(es) ===")
-        progress.startPhase("providers", units.size)
-        forEachParallel(units, opts.concurrency) { (relay, services) ->
+        /** A provider surfaced: buffer it under its relay hint; overflow flushes a full score unit. */
+        private fun enqueueProvider(
+            service: HexKey,
+            relayHint: NormalizedRelayUrl?,
+        ) {
+            if (relayHint == null) return
+            if (opts.maxProviders > 0 && seenServices.size >= opts.maxProviders) return
+            if (!seenServices.add(service)) return
+            bufferedBatch(providerBuf, relayHint, service)?.let { batch -> submit { scoreUnit(relayHint, batch) } }
+        }
+
+        /**
+         * The providers' 30382s. **The provider relay is the AUTHORITATIVE
+         * source of truth for its service keys' 30382s** — the observer chose
+         * it in their 10040. So deletion is ABSENCE: a full sync reconciles
+         * the batch's complete id set, and any score we hold that the relay
+         * no longer serves is deleted locally. No kind-5 download is needed
+         * for this scope (a provider retracting a score just removes it; the
+         * reconcile diff sees the hole). This absence-is-deletion rule applies
+         * ONLY here — kind 30382 on the 10040-chosen relay — never to the
+         * records plane, where an author's outbox is one replica among many
+         * and deletion needs an explicit kind 5/62.
+         */
+        private suspend fun scoreUnit(
+            relay: NormalizedRelayUrl,
+            services: List<HexKey>,
+        ) {
             val scores = Filter(kinds = listOf(ContactCardEvent.KIND), authors = services)
             if (opts.maxEvents == 0) {
                 // Full sync: reconcile the batch's complete id set; absence IS
@@ -265,14 +349,44 @@ class TrustSync(
                         stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }
                     }
                 }
-                log("[${progress.itemDone()}/${units.size}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
+                log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
             } else {
                 // Bounded experiment: incremental slice only, no deletion diff (a
                 // capped download must never be read as "the rest was deleted").
                 val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents)
-                log("[${progress.itemDone()}/${units.size}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
+                log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
             }
         }
+
+        /** Add [item] under [key]; returns a full batch to flush when the buffer reaches the filter cap. */
+        private fun <K> bufferedBatch(
+            buffers: ConcurrentHashMap<K, MutableList<HexKey>>,
+            key: K,
+            item: HexKey,
+        ): List<HexKey>? {
+            val buf = buffers.getOrPut(key) { mutableListOf() }
+            synchronized(buf) {
+                buf.add(item)
+                if (buf.size < AUTHORS_PER_FILTER) return null
+                val batch = buf.toList()
+                buf.clear()
+                return batch
+            }
+        }
+
+        /** Take every non-empty partial batch (the idle flush). */
+        private fun <K> drain(buffers: ConcurrentHashMap<K, MutableList<HexKey>>): List<Pair<K, List<HexKey>>> =
+            buffers.entries.mapNotNull { (key, buf) ->
+                synchronized(buf) {
+                    if (buf.isEmpty()) {
+                        null
+                    } else {
+                        val batch = buf.toList()
+                        buf.clear()
+                        key to batch
+                    }
+                }
+            }
     }
 
     /**
@@ -308,6 +422,20 @@ class TrustSync(
 
 /** Relays reject filters with unboundedly many authors; fold author sets into batches this size. */
 internal const val AUTHORS_PER_FILTER = 500
+
+/**
+ * What an observer's outbox owes the scores plane: their profile, a fresher
+ * 10002, the AUTHORITATIVE 10040, and their own 5/62 (a deletion published
+ * only to the author's outbox must still erase here — the store interprets both).
+ */
+private val OUTBOX_KINDS =
+    listOf(
+        MetadataEvent.KIND,
+        AdvertisedRelayListEvent.KIND,
+        TrustProviderListEvent.KIND,
+        DeletionEvent.KIND,
+        RequestToVanishEvent.KIND,
+    )
 
 /** Run [body] for every item, [concurrency] at a time; one item's failure doesn't stop the rest. */
 internal suspend fun <T> forEachParallel(
