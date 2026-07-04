@@ -29,6 +29,7 @@ import com.vitorpamplona.sot.vespa.EventDoc
 import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.IngestStats
+import com.vitorpamplona.sot.vespa.ProfileCells
 import com.vitorpamplona.sot.vespa.ProfileDoc
 import com.vitorpamplona.sot.vespa.ProfileIndex
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
@@ -94,25 +95,44 @@ class TrustProjection(
     }
 
     /**
-     * The bulk path: one provider-map read for the whole batch, the touched
-     * subjects' score docs fetched back in CHUNKED queries (hundreds of
-     * subjects per round trip, not one), every parent derived locally, and
-     * the results written through one pipelined [ProfileIndex.putAll] — a
-     * million-score sync costs a handful of engine calls per chunk instead
-     * of two per subject.
+     * The bulk path writes ranking with ZERO reads: the store's supersession
+     * guarantees every card reaching this putAll is the NEWEST version of its
+     * (service, subject) address, so its rank/followers can be applied as a
+     * tensor-cell UPDATE ([ProfileIndex.updateCells]) directly — measured on
+     * an 11M-card load, re-deriving parents from re-fetched cards was 44% of
+     * the entire ingest wall clock.
+     *
+     * Semantics note (many services -> ONE observer cell): the cell holds the
+     * latest-arriving mapped card's value, where the full derivation held an
+     * arbitrary one — equally arbitrary, an order of magnitude cheaper. A
+     * RETRACTION (a card whose rank tag disappeared) can't be applied blindly
+     * (another service's card may still back the cell), so those rare
+     * subjects take the exact recompute path; deletions and 10040 changes
+     * always did.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         IngestStats.timed("write") { inner.putAll(docs) }
         // Provider lists first: they change the map the scores attribute through.
         docs.filter { it.kind == TrustProviderListEvent.KIND }.forEach { recomputeSubjectsOf(it) }
-        val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
-        if (subjects.isEmpty()) return
-        // No parent-doc REMOVE on the insert path: adding cards can only grow
-        // a derivation, so an empty one was empty before this batch too — the
-        // doc doesn't exist. (A corpus signed by unmapped providers would
-        // otherwise flood the engine with no-op deletes.) Removal flows
-        // through the single-doc react path (deletions).
-        recomputeBatch(subjects, providerMap(), removeEmpties = false)
+        val cards = docs.filter { it.kind == ContactCardEvent.KIND }
+        if (cards.isEmpty()) return
+        val serviceToObserver = providerMap()
+        val updates = ArrayList<ProfileCells>(cards.size)
+        val retracted = LinkedHashSet<String>()
+        for (doc in cards) {
+            val subject = subjectOf(doc) ?: continue
+            val observer = serviceToObserver[doc.pubkey] ?: continue
+            val card = Event.fromJsonOrNull(doc.toEventJson()) as? ContactCardEvent ?: continue
+            val quality = card.rank()
+            val followers = card.followerCount()?.toDouble()
+            if (quality == null && followers == null) {
+                retracted += subject
+            } else {
+                updates += ProfileCells(subject, observer, quality, followers)
+            }
+        }
+        IngestStats.timed("proj.write") { profiles.updateCells(updates) }
+        if (retracted.isNotEmpty()) recomputeBatch(retracted.toList(), serviceToObserver, removeEmpties = true)
     }
 
     /**

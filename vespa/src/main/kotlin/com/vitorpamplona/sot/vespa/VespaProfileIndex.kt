@@ -97,6 +97,33 @@ class VespaProfileIndex(
             }.forEach { it.await() }
     }
 
+    /**
+     * Pipelined tensor-cell upserts (Vespa `add` update, create-if-missing):
+     * `add` overwrites an existing cell and creates absent ones, and the feed
+     * client keeps per-document ordering — so same-subject updates land in
+     * list order, exactly the [ProfileIndex.updateCells] contract.
+     */
+    override suspend fun updateCells(updates: List<ProfileCells>) {
+        updates
+            .map { u ->
+                val fields =
+                    buildJsonObject {
+                        put("pubkey", buildJsonObject { put("assign", u.subject) })
+                        u.quality?.let { q ->
+                            put("quality_scores", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.observer, q) }) }) })
+                        }
+                        u.followers?.let { f ->
+                            put("follower_counts", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.observer, f) }) }) })
+                        }
+                    }
+                feed.update(
+                    DocumentId.of(NAMESPACE, DOCTYPE, u.subject),
+                    buildJsonObject { put("fields", fields) }.toString(),
+                    OperationParameters.empty().createIfNonExistent(true),
+                )
+            }.forEach { it.await() }
+    }
+
     override suspend fun remove(pubkey: String) {
         feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), OperationParameters.empty()).await()
     }

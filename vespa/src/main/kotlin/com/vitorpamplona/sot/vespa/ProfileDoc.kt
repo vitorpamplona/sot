@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.vespa
 
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -57,15 +58,33 @@ data class ProfileDoc(
         }
 
     companion object {
-        /** Parse a document-API `fields` object (the [indexFields] shape) back into a doc. */
+        /**
+         * Parse a document-API `fields` object back into a doc. Mapped tensors
+         * arrive in TWO shapes: the short object form we feed (`{obs: v}`) and
+         * the verbose form document-API GETs render (`{"type": …, "cells": {obs: v}}`).
+         */
         fun fromSummary(fields: JsonObject): ProfileDoc =
             ProfileDoc(
                 pubkey = fields.getValue("pubkey").jsonPrimitive.content,
-                qualityScores = fields["quality_scores"]?.jsonObject?.mapValues { it.value.jsonPrimitive.int } ?: emptyMap(),
-                followerCounts = fields["follower_counts"]?.jsonObject?.mapValues { it.value.jsonPrimitive.double } ?: emptyMap(),
+                qualityScores = cells(fields["quality_scores"])?.mapValues { it.value.jsonPrimitive.int } ?: emptyMap(),
+                followerCounts = cells(fields["follower_counts"])?.mapValues { it.value.jsonPrimitive.double } ?: emptyMap(),
             )
+
+        private fun cells(field: JsonElement?): Map<String, JsonElement>? = field?.jsonObject?.let { it["cells"]?.jsonObject ?: it }
     }
 }
+
+/**
+ * One score card's contribution to [subject]'s parent doc: the [observer]'s
+ * cells, applied as a partial UPDATE — no read, no full-doc rewrite. Null
+ * fields leave the corresponding tensor untouched.
+ */
+data class ProfileCells(
+    val subject: String,
+    val observer: String,
+    val quality: Int?,
+    val followers: Double?,
+)
 
 /**
  * The engine port for the profile parent documents. Same consistency contract
@@ -78,6 +97,25 @@ interface ProfileIndex : AutoCloseable {
 
     /** Bulk [put]; implementations may pipeline (see [EventIndex.putAll]). */
     suspend fun putAll(profiles: List<ProfileDoc>) = profiles.forEach { put(it) }
+
+    /**
+     * Upsert single tensor cells on the subjects' parents, creating missing
+     * parents — the insert path's ZERO-READ alternative to a full [put]
+     * (Vespa's tensor `add` update). The caller must only send values that
+     * are current-best for their (subject, observer) — the store's
+     * supersession provides exactly that at insert time. Same-subject updates
+     * apply in list order. Default: read-modify-write (the in-memory spec).
+     */
+    suspend fun updateCells(updates: List<ProfileCells>) =
+        updates.forEach { u ->
+            val cur = get(u.subject) ?: ProfileDoc(u.subject)
+            put(
+                cur.copy(
+                    qualityScores = u.quality?.let { cur.qualityScores + (u.observer to it) } ?: cur.qualityScores,
+                    followerCounts = u.followers?.let { cur.followerCounts + (u.observer to it) } ?: cur.followerCounts,
+                ),
+            )
+        }
 
     suspend fun remove(pubkey: String)
 }
