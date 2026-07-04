@@ -48,6 +48,60 @@ So the data flows in two directions:
 - **Out:** a search comes in over the websocket, Vespa ranks the matches by the
   observer's trust, and complete events flow back to the client.
 
+## What's searchable
+
+A search matches on the text SoT pulls out of each event, and different fields
+carry different weight: a **primary** field (a title or name) outweighs a
+**secondary** field (a summary, description, or hashtags), which outweighs the
+**body** (the event's `content`). Profiles (kind 0) are split into their own
+name and identity fields. The matches are then ordered by your web of trust.
+
+The kinds SoT indexes and the fields it reads from each (highest weight first):
+
+| Kind(s) | What it is | Indexed fields |
+| --- | --- | --- |
+| **0** | profile | name, display name, about, NIP-05, lightning address, website |
+| **1** | note | subject, hashtags, content |
+| **11** | thread | title, content |
+| **30023** | long-form article | title, summary + hashtags, content |
+| **30818** | wiki article | title, summary, content |
+| **30402** | classified listing | title, summary, content |
+| **9802** | highlight | comment + context, content |
+| **20** | picture | title, content |
+| **21 / 22** | video | title, content |
+| **1063** | file | summary, content |
+| **2003** | torrent | title, content |
+| **31337** | audio track | subject |
+| **36787** | music track | title, artist + album, content |
+| **34139** | music playlist | title, description, content |
+| **54 / 10154** | podcast episode / show | title, description, content |
+| **30617** | git repository | name, description, content |
+| **1621 / 1618** | git issue / pull request | subject, content |
+| **1337** | code snippet | name, description, content |
+| **30311 / 1313** | live event / clip | title, summary, content |
+| **31924 / 31922 / 31923** | calendar & slots | title, summary, content |
+| **30312 / 30313** | meeting space / room | room or title, summary, content |
+| **34550** | community | name, description + rules, content |
+| **39000** | group | name, about |
+| **40 / 41** | public chat channel | name, about |
+| **31990** | app handler | name + display name, about |
+| **32267** | software application | name, summary, content |
+| **15128 / 35128** | website | title, description |
+| **30009** | badge | name, description, content |
+| **30030** | emoji pack | title, description, content |
+| **9041** | zap goal | summary, content |
+| **30000 / 39089** | people list / follow pack | title, description |
+| **10003 / 30001 / 30003** | bookmark lists | title, description |
+| **30015** | interest set | title, description + hashtags |
+| **30004 / 30005 / 30006 / 30063 / 30267** | article / video / picture / release / app curation sets | title, description |
+| **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
+
+Dozens of other titled kinds (fundraisers, workouts, exercise templates, feeds,
+napplets, interactive stories, …) follow the same shape — a title or name as the
+primary field, the `content` as the body. Any remaining kind Quartz can parse is
+still indexed, by its full text content. The authoritative mapping is
+[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/sot/store/SearchExtractors.kt).
+
 ## Running it
 
 Everything is plain JVM (Kotlin, JDK 21). Docker is only used to run Vespa; you
