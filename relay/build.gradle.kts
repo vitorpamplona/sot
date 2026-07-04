@@ -3,16 +3,18 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":config")) // NIP-11 relay identity from env/.env
-    implementation(project(":vespa"))
-    implementation(libs.quartz) // relay server framework, events, NIP-42, NIP-50 Filter.search
+    // The relay is Quartz's protocol engine (RelayServerBase) over the Vespa
+    // store; both appear in the public wiring API.
+    api(libs.quartz)
+    api(project(":store"))
     implementation(libs.kotlinx.coroutines)
-    implementation(libs.ktor.server.core) // Route DSL only; the engine lives in :server
+    // The websocket mount for the composition root's Ktor app.
+    implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.websockets)
     testImplementation(kotlin("test"))
-    // The search-source test ranks against a canned Vespa and reads a real SQLite store.
-    testImplementation(libs.androidx.sqlite.bundled)
-    testImplementation(libs.kotlinx.serialization.json) // parse the NIP-11 document
+    testImplementation(testFixtures(project(":vespa")))
+    // RelayInfoTest parses the NIP-11 doc.
+    testImplementation(libs.kotlinx.serialization.json)
 }
 
 kotlin {

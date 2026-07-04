@@ -20,19 +20,10 @@
  */
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.sot.config.Config
-
 /*
- * Shared argument parsing for the sot CLI: value flags (`--name val`), boolean
- * flags (`--name`), positionals, and the default web-of-trust observer.
+ * Shared argument parsing for the sot CLI: value flags (`--name val`) and
+ * boolean flags (`--name`).
  */
-
-/**
- * Default observer (hex pubkey) when `--observer` is omitted, from `DEFAULT_OBSERVER`
- * (env or `.env`). Unset means no default: text results still come back, but every
- * trust score is 0 (no trust perspective applied).
- */
-internal val DEFAULT_OBSERVER: String get() = Config.defaultObserver
 
 /** Value of a `--name <value>` flag, or [default] if absent. */
 internal fun flag(
@@ -49,30 +40,3 @@ internal fun has(
     args: List<String>,
     name: String,
 ) = args.contains(name)
-
-/** Non-flag args, skipping each valued flag's value so it's never mistaken for a positional. */
-internal fun positionalArgs(
-    args: List<String>,
-    valuedFlags: Set<String>,
-): List<String> {
-    val out = ArrayList<String>()
-    var i = 0
-    while (i < args.size) {
-        val a = args[i]
-        when {
-            // a valued flag: skip the flag AND its value
-            a in valuedFlags -> {
-                i++
-            }
-
-            // a bare/boolean flag: skip just the flag
-            a.startsWith("--") -> {}
-
-            else -> {
-                out.add(a)
-            }
-        }
-        i++
-    }
-    return out
-}

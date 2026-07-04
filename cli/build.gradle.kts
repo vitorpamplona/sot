@@ -4,22 +4,20 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":config")) // env/.env resolution (the composition root reads it)
-    implementation(project(":event-store")) // open the shared event store (index + serve + status)
-    implementation(project(":vespa"))
-    implementation(project(":indexer")) // `sot index` / `sot serve` run the sync in-process
-    implementation(project(":http")) // GET /search route (serve)
-    implementation(project(":relay")) // NIP-50 relay route (serve)
-    implementation(libs.quartz) // --observer: NIP-19 (npub/nprofile) + NIP-05 resolver; store Filters
-    implementation(libs.okhttp) // OkHttp fetcher for Quartz's Nip05Client
-    implementation(libs.kotlinx.coroutines) // runBlocking around suspend calls (NIP-05, store count)
+    implementation(project(":vespa")) // VespaEventIndex + VespaProfileIndex (the engine clients)
+    implementation(project(":store")) // VespaEventStore (the one store)
+    implementation(project(":profile")) // TrustProjection decorates the store's index
+    implementation(project(":relay")) // SotRelayServer + Ktor mount + NIP-11
+    implementation(project(":sync")) // Identity + SyncService (serve's background loop, `sot index`)
+    implementation(libs.quartz) // NIP-19 parsing (init prompts), Filters (status counts)
+    implementation(libs.okhttp) // Quartz's Nip05Client fetcher (init resolves name@domain)
+    implementation(libs.kotlinx.coroutines)
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.websockets)
-    implementation(libs.ktor.server.content.negotiation)
-    implementation(libs.ktor.server.cors)
-    implementation(libs.ktor.serialization.json)
     testImplementation(kotlin("test"))
+    // UiDemoServer: the web UI over an in-memory relay (no Vespa) for UI development.
+    testImplementation(testFixtures(project(":vespa")))
 }
 
 kotlin {
@@ -36,4 +34,36 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// `gradle :cli:uiDemo` — develop web/index.html against the real relay
+// engine over an in-memory store: no Vespa, no docker, seeded demo events.
+tasks.register<JavaExec>("uiDemo") {
+    group = "application"
+    description = "Serve the web UI over an in-memory relay seeded with demo events"
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.sot.cli.UiDemoServer")
+}
+
+// `gradle :cli:loadTest [-Prelay=…]` — full-corpus 30382 sync into the local
+// Vespa through the production ingest path (see LoadTest in the test sources).
+tasks.register<JavaExec>("benchPut") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.sot.cli.BenchPut")
+    args((project.findProperty("n") as String?) ?: "100")
+}
+
+tasks.register<JavaExec>("loadTest") {
+    group = "verification"
+    description = "Negentropy-sync a provider relay's whole kind-30382 corpus into Vespa"
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.sot.cli.LoadTest")
+    jvmArgs("-Xmx4g")
+    args(
+        (project.findProperty("relay") as String?) ?: "wss://nip85.nosfabrica.com",
+        (project.findProperty("service") as String?) ?: "",
+        (project.findProperty("max") as String?) ?: "0",
+        (project.findProperty("slices") as String?) ?: "1",
+        (project.findProperty("reconcile") as String?) ?: "1",
+    )
 }

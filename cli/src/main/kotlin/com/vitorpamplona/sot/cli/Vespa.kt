@@ -20,14 +20,14 @@
  */
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.sot.config.Config
+import java.io.File
 import kotlin.system.exitProcess
 
 /*
- * Local Vespa lifecycle: `up` / `down` via docker compose, and `deploy` of the
- * application package (vespa/app — schema + rank profiles, next to the
- * Kotlin that depends on it) to the config server. Endpoints come from Config
- * (VESPA_URL / VESPA_CONFIG_URL), so moving Vespa's ports doesn't break these.
+ * Local Vespa lifecycle: `up` / `down` via the repo's docker compose, and
+ * `deploy` of the application package (vespa/app — the event + profile
+ * schemas and the rank profiles, next to the Kotlin that depends on them).
+ * Endpoints come from Config (VESPA_URL / VESPA_CONFIG_URL).
  */
 
 /** Run a subprocess, echoing the command; returns its exit code. */
@@ -37,11 +37,9 @@ internal fun run(vararg cmd: String): Int {
 }
 
 /**
- * Refuse to start a command that needs Vespa when it isn't up — every query and
- * write would just fail (and the feed client won't even construct). `--up` runs
- * the `sot up` sequence first (start + deploy) when the engine is the local
- * docker one; a remote VESPA_URL never gets docker side effects (its lifecycle
- * isn't ours to manage).
+ * Refuse to start a command that needs Vespa when it isn't up. `--up` runs the
+ * `sot up` sequence first when the engine is the local docker one; a remote
+ * VESPA_URL never gets docker side effects (its lifecycle isn't ours).
  */
 internal fun ensureVespaIsUp(args: List<String>) {
     val statusUrl = "${Config.vespaUrl}/ApplicationStatus"
@@ -62,7 +60,7 @@ internal fun ensureVespaIsUp(args: List<String>) {
             "Check VESPA_URL and the remote engine, then retry."
         },
     )
-    kotlin.system.exitProcess(1)
+    exitProcess(1)
 }
 
 /** `sot up` — start Vespa (docker compose) and deploy the app package. */
@@ -73,7 +71,7 @@ internal fun up(args: List<String>) {
         println(Ansi.red(" - timed out"))
         return
     }
-    println(Ansi.green(" ready") + "; deploying vespa/app ...")
+    println(Ansi.green(" ready") + "; deploying ${appDir(args)} ...")
     if (deploy(args) != 0) return
     print("waiting for Vespa to serve the app")
     println(if (waitUntil("${Config.vespaUrl}/ApplicationStatus")) Ansi.green(" ready.") else Ansi.red(" - timed out"))
@@ -84,9 +82,12 @@ internal fun down() {
     run("docker", "compose", "down")
 }
 
+/** The Vespa application package to deploy: `--app`, else the repo's vespa/app. */
+private fun appDir(args: List<String>): String = flag(args, "--app", "vespa/app")
+
 /** `sot deploy` — package the Vespa app and POST it to the config server. Returns the curl exit code. */
 internal fun deploy(args: List<String>): Int {
-    val app = flag(args, "--app", "vespa/app")
+    val app = appDir(args)
     val configUrl = flag(args, "--config", Config.vespaConfigUrl)
     if (!ping("$configUrl/state/v1/health")) {
         err("Vespa config server is not reachable at $configUrl.")
@@ -101,4 +102,33 @@ internal fun deploy(args: List<String>): Int {
         "curl -fSs --data-binary @$tgz -H 'Content-Type: application/x-gzip' " +
             "$configUrl/application/v2/tenant/default/prepareandactivate",
     )
+}
+
+/**
+ * `sot destroy` — wipe local sot state for a from-scratch run: the sync-state
+ * cursors and Vespa's data volume (the events live THERE — no local db).
+ * Asks before deleting unless `--yes`.
+ */
+internal fun destroy(args: List<String>) {
+    val state = File(Config.syncStatePath)
+
+    println(Ansi.bold("This wipes all local sot state:"))
+    if (state.exists()) hint("  rm ${state.path}") else hint("  (no sync state file at ${state.path})")
+    hint("  docker compose down -v      (stops Vespa and deletes its data volume - THE event store)")
+
+    if (!has(args, "--yes")) {
+        print("Continue? [y/N] ")
+        val answer = readlnOrNull()?.trim()?.lowercase()
+        if (answer != "y" && answer != "yes") {
+            warn("aborted")
+            return
+        }
+    }
+
+    runCatching { run("docker", "compose", "down", "-v") }
+        .onFailure { warn("docker compose failed (${it.message}) - remove the vespa_var volume manually") }
+    if (state.exists()) {
+        if (state.delete()) ok("deleted ${state.path}") else err("could not delete ${state.path}")
+    }
+    ok("Clean slate. Next: `sot up` then `sot serve` (or `sot index`).")
 }

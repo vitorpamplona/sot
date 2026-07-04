@@ -13,12 +13,35 @@
     <redundancy>1</redundancy>
 
     <documents>
-      <document type="doc" mode="index" />
+      <document type="event" mode="index" />
+      <!-- Ranking state per pubkey; GLOBAL so event docs can reference it and
+           import the trust tensors into their own ranking (parent/child). -->
+      <document type="profile" mode="index" global="true" />
     </documents>
 
     <nodes>
       <node distribution-key="0" hostalias="node1" />
     </nodes>
+
+    <!-- Single-node dev tuning: Vespa blocks feeds at 80% disk / 85% memory
+         by default, which thin-provisioned or small dev disks trip
+         immediately (statvfs reports the host, not the workload). Raised for
+         the local engine; a real multi-node deployment should size disks
+         instead of leaning on this. -->
+    <tuning>
+      <resource-limits>
+        <disk>0.985</disk>
+        <memory>0.92</memory>
+      </resource-limits>
+    </tuning>
+
+    <!-- Bulk ingest is the workload (a full trust-provider sync feeds
+         millions of docs); let proton use every core for feeding. -->
+    <config name="vespa.config.search.core.proton">
+      <feeding>
+        <concurrency>1.0</concurrency>
+      </feeding>
+    </config>
   </content>
 
 </services>

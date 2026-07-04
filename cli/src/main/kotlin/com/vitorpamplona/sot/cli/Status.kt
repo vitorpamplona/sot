@@ -20,95 +20,30 @@
  */
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.config.Config
-import com.vitorpamplona.sot.store.openEventStore
 import kotlinx.coroutines.runBlocking
-import java.io.File
-import java.net.URLEncoder
 
-/**
- * `sot status` — report whether Vespa and the sot server are reachable, plus data
- * health. The server hosts the web UI, /search API, and the NIP-50 relay on one port.
- */
+/** `sot status` — is Vespa up, and what does the store hold? */
 internal fun status(args: List<String>) {
-    val vespa = flag(args, "--vespa", Config.vespaUrl)
-    val server = flag(args, "--server", Config.serverUrl)
+    val vespaUrl = flag(args, "--vespa", Config.vespaUrl)
+    val vespaUp = ping("$vespaUrl/ApplicationStatus")
+    if (vespaUp) ok("vespa: up at $vespaUrl") else err("vespa: NOT reachable at $vespaUrl")
 
-    fun line(
-        name: String,
-        ok: Boolean,
-    ) = println("  ${if (ok) Ansi.green("● UP  ") else Ansi.red("● DOWN")}  $name")
+    val serverUp = ping(Config.serverUrl, accept = "application/nostr+json")
+    if (serverUp) ok("server: up at ${Config.serverUrl}") else warn("server: not reachable at ${Config.serverUrl} (is `sot serve` running?)")
 
-    println(Ansi.bold("component status:"))
-    val docs = vespaDocCount(vespa)
-    val docsLabel = docs?.let { "  ${"%,d".format(it)} docs" } ?: ""
-    line("Vespa   ($vespa)$docsLabel", ping("$vespa/ApplicationStatus"))
-    // Probe the server root (web UI / NIP-11) — 200 regardless of Vespa, unlike /search.
-    line("server  ($server)", ping("$server/"))
-
-    storeReport(Config.eventsDb, docs)
-}
-
-/** Vespa's total indexed doc count, or null if it can't be read (catches "up but empty"). */
-private fun vespaDocCount(vespa: String): Int? {
-    val yql = URLEncoder.encode("select * from doc where true", "UTF-8")
-    val body = httpGet("$vespa/search/?yql=$yql&hits=0") ?: return null
-    return Regex("\"totalCount\"\\s*:\\s*(\\d+)")
-        .find(body)
-        ?.groupValues
-        ?.get(1)
-        ?.toIntOrNull()
-}
-
-/**
- * Report the local event store (what the relay serves from) and reconcile it
- * against Vespa. kind:0 profiles should project ~1:1 into Vespa docs — but Vespa
- * docs are also created for 30382 score subjects, so `vespa docs >= kind:0` is
- * expected; `vespa docs < kind:0` means projection is lagging or failing.
- */
-private fun storeReport(
-    dbPath: String,
-    vespaDocs: Int?,
-) {
-    if (!File(dbPath).exists()) {
-        println("  store: $dbPath (missing)")
-        return
-    }
-    val counts =
-        runCatching {
-            runBlocking {
-                openEventStore(dbPath).use { s ->
-                    intArrayOf(
-                        s.count(Filter(kinds = listOf(MetadataEvent.KIND))),
-                        s.count(Filter(kinds = listOf(TrustProviderListEvent.KIND))),
-                        s.count(Filter(kinds = listOf(ContactCardEvent.KIND))),
-                    )
-                }
-            }
-        }.getOrNull()
-    if (counts == null) {
-        println("  store: $dbPath (unreadable)")
-        return
-    }
-    val (profiles, providers, assertions) = Triple(counts[0], counts[1], counts[2])
-    println(Ansi.bold("store: ") + Ansi.dim(dbPath))
-    // The sync-state file is rewritten at the end of every pass — its age IS the index's staleness.
-    File("$dbPath.state.json").takeIf { it.exists() }?.let {
-        val mins = (System.currentTimeMillis() - it.lastModified()) / 60_000
-        val age = if (mins == 0L) "just now" else "${mins}m ago"
-        println("    ${Ansi.dim("last sync ")}${if (mins < 60) Ansi.green(age) else Ansi.amber(age)}")
-    }
-    println("    ${Ansi.dim("kind:0     profiles   ")}${Ansi.bold("%,d".format(profiles))}")
-    println("    ${Ansi.dim("kind:10040 providers  ")}${Ansi.bold("%,d".format(providers))}")
-    println("    ${Ansi.dim("kind:30382 assertions ")}${Ansi.bold("%,d".format(assertions))}")
-    if (vespaDocs != null) {
-        val delta = vespaDocs - profiles
-        val ok = delta >= 0
-        val note = if (ok) Ansi.dim("score-only subjects add profiles") else Ansi.red("MISSING profiles in Vespa")
-        println("    ${Ansi.dim("reconcile ")}vespa ${"%,d".format(vespaDocs)} vs events ${"%,d".format(profiles)} (${"%+,d".format(delta)}; $note)")
+    if (!vespaUp) return
+    val store = openStore()
+    try {
+        runBlocking {
+            fun countOf(kind: Int) = runBlocking { store.count(Filter(kinds = listOf(kind))) }
+            println("  events:    ${store.count(Filter())}")
+            println("  profiles:  ${countOf(0)} (kind 0)")
+            println("  relaylists:${countOf(10002)} (kind 10002)")
+            println("  observers: ${countOf(10040)} (kind 10040)")
+            println("  scores:    ${countOf(30382)} (kind 30382)")
+        }
+    } finally {
+        store.close()
     }
 }

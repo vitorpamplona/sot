@@ -1,0 +1,99 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.vitorpamplona.sot.store
+
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.sot.vespa.EventYql
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+
+/**
+ * The NIP-50 `search` string -> [com.vitorpamplona.sot.vespa.EventQuery]
+ * extension mapping: `sort:` picks the rank profile, `filter:rank:…` sets the
+ * trust floor, and `include:spam` switches off the default floor (Brainstorm's
+ * onlyRanked, inverted).
+ */
+class FilterMappingTest {
+    private fun map(search: String?) = Filter(search = search).toEventQuery()!!
+
+    @Test
+    fun `plain terms get the default profile and the spam-filter floor`() {
+        val q = map("vitor pamplona")
+        assertEquals("vitor pamplona", q.search)
+        assertNull(q.ranking, "null = EventYql's default (the search profile)")
+        assertEquals(DEFAULT_MIN_RANK, q.minRank, "searches are onlyRanked by default")
+    }
+
+    @Test
+    fun `include spam removes the default floor`() {
+        val q = map("vitor include:spam")
+        assertEquals("vitor", q.search)
+        assertNull(q.minRank)
+    }
+
+    @Test
+    fun `sort picks the rank profile`() {
+        assertEquals(EventYql.RANK_DESC, map("vitor sort:rank").ranking)
+        assertEquals(EventYql.RANK_DESC, map("vitor sort:rank:desc").ranking)
+        assertEquals(EventYql.RANK_ASC, map("vitor sort:rank:asc").ranking)
+        assertEquals(EventYql.RANK_FOLLOWERS, map("vitor sort:followers").ranking)
+        assertEquals(EventYql.RANK_TEXT, map("vitor sort:text").ranking)
+        assertNull(map("vitor sort:bogus").ranking, "unknown sort values are ignored")
+    }
+
+    @Test
+    fun `sort without terms is a trust-ordered match-all, still spam-filtered`() {
+        val q = map("sort:rank")
+        assertNull(q.search)
+        assertEquals(EventYql.RANK_DESC, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+    }
+
+    @Test
+    fun `filter rank sets the floor and falls back to the filtered profile`() {
+        val gte = map("vitor filter:rank:gte:5")
+        assertEquals(5.0, gte.minRank)
+        assertEquals(EventYql.RANK_FILTERED, gte.ranking, "no sort: text order, trust-gated")
+
+        assertEquals(6.0, map("vitor filter:rank:gt:5").minRank, "gt on integer ranks = gte the next one")
+        assertNull(map("vitor filter:rank:eq:5").ranking, "unknown comparators are ignored")
+    }
+
+    @Test
+    fun `an explicit floor survives include spam and rides a chosen sort`() {
+        val q = map("vitor sort:rank filter:rank:gte:10 include:spam")
+        assertEquals(EventYql.RANK_DESC, q.ranking, "sort wins over the filter fallback")
+        assertEquals(10.0, q.minRank, "the user asked for the floor; include:spam only drops the default")
+    }
+
+    @Test
+    fun `plain filters are never trust-gated`() {
+        val none = Filter(kinds = listOf(1)).toEventQuery()!!
+        assertNull(none.search)
+        assertNull(none.ranking)
+        assertNull(none.minRank, "NIP-01 recall — spam filtering belongs to search only")
+
+        val extensionsOnly = map("language:en")
+        assertNull(extensionsOnly.search, "an all-extensions query imposes no text constraint")
+        assertNull(extensionsOnly.minRank, "…and no default floor either: nothing is ranked")
+    }
+}
