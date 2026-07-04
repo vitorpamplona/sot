@@ -22,9 +22,9 @@ package com.vitorpamplona.sot.store
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.EventIndex
-import com.vitorpamplona.sot.vespa.EventQuery
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals

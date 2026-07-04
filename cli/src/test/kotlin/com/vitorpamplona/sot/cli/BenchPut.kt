@@ -20,8 +20,8 @@
  */
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.VespaEventIndex
+import com.vitorpamplona.sot.vespa.client.VespaEventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
 import kotlinx.coroutines.runBlocking
 
 /** Throwaway: isolate putAll dispatch behavior against the local Vespa. */

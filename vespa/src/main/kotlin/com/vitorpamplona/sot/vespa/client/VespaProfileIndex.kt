@@ -18,12 +18,14 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa
-
+package com.vitorpamplona.sot.vespa.client
 import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.FeedClient
 import ai.vespa.feed.client.FeedClientBuilder
 import ai.vespa.feed.client.OperationParameters
+import com.vitorpamplona.sot.vespa.doc.ProfileCells
+import com.vitorpamplona.sot.vespa.doc.ProfileDoc
+import com.vitorpamplona.sot.vespa.doc.ProfileIndex
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject

@@ -26,8 +26,8 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
+import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals

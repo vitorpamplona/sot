@@ -19,6 +19,10 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.vitorpamplona.sot.vespa
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.query.EventQuery
+import com.vitorpamplona.sot.vespa.query.EventYql
 
 /**
  * The in-memory reference [EventIndex]: a map of docs plus a direct

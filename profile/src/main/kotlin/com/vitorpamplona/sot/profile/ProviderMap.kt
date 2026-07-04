@@ -23,9 +23,9 @@ package com.vitorpamplona.sot.profile
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.EventIndex
-import com.vitorpamplona.sot.vespa.EventQuery
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.query.EventQuery
 
 /**
  * The NIP-85 observer-attribution map: `service key -> observer`, derived from

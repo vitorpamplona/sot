@@ -23,16 +23,16 @@ package com.vitorpamplona.sot.profile
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.vespa.DocRef
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.EventIndex
-import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.IngestStats
-import com.vitorpamplona.sot.vespa.ProfileCells
-import com.vitorpamplona.sot.vespa.ProfileDoc
-import com.vitorpamplona.sot.vespa.ProfileIndex
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
+import com.vitorpamplona.sot.vespa.client.DocRef
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.doc.ProfileCells
+import com.vitorpamplona.sot.vespa.doc.ProfileDoc
+import com.vitorpamplona.sot.vespa.doc.ProfileIndex
 import com.vitorpamplona.sot.vespa.mapBounded
+import com.vitorpamplona.sot.vespa.query.EventQuery
 
 /**
  * Maintains the `profile` parent documents — the per-pubkey trust tensors the

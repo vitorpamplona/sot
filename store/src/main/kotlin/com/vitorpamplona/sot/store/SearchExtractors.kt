@@ -86,7 +86,7 @@ import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
 import com.vitorpamplona.quartz.nipC0CodeSnippets.CodeSnippetEvent
 import com.vitorpamplona.quartz.nipF4Podcasts.episode.PodcastEpisodeEvent
 import com.vitorpamplona.quartz.nipF4Podcasts.metadata.PodcastMetadataEvent
-import com.vitorpamplona.sot.vespa.SearchFields
+import com.vitorpamplona.sot.vespa.doc.SearchFields
 
 /**
  * Decomposes every Quartz [SearchableEvent] into the schema's search fields by

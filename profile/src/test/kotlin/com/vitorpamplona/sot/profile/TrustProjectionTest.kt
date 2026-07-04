@@ -29,7 +29,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.store.VespaEventStore
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
 import com.vitorpamplona.sot.vespa.InMemoryProfileIndex
-import com.vitorpamplona.sot.vespa.ProfileDoc
+import com.vitorpamplona.sot.vespa.doc.ProfileDoc
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals

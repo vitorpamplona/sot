@@ -22,8 +22,8 @@ package com.vitorpamplona.sot.store
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import com.vitorpamplona.sot.vespa.EventQuery
-import com.vitorpamplona.sot.vespa.EventYql
+import com.vitorpamplona.sot.vespa.query.EventQuery
+import com.vitorpamplona.sot.vespa.query.EventYql
 
 /*
  * NIP-01/NIP-50 filter -> engine query translation. A pure mapping with no

@@ -20,9 +20,9 @@
  */
 package com.vitorpamplona.sot.store
 
-import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.MockVespaEngine
-import com.vitorpamplona.sot.vespa.VespaEventIndex
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.client.VespaEventIndex
 import kotlin.test.AfterTest
 
 /**

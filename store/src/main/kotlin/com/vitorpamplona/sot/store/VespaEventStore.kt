@@ -34,12 +34,12 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.EventIndex
-import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
-import com.vitorpamplona.sot.vespa.SearchFields
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.doc.SearchFields
 import com.vitorpamplona.sot.vespa.mapBounded
+import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext

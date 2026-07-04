@@ -26,7 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
-import com.vitorpamplona.sot.vespa.EventDoc
+import com.vitorpamplona.sot.vespa.doc.EventDoc
 
 /*
  * Event <-> EventDoc and derived-field helpers. Covers the exact stored form

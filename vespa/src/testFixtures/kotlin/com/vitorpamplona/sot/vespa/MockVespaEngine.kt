@@ -19,7 +19,11 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.vitorpamplona.sot.vespa
-
+import com.vitorpamplona.sot.vespa.client.VespaEventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.query.EventQuery
+import com.vitorpamplona.sot.vespa.query.EventSelection
+import com.vitorpamplona.sot.vespa.query.EventYql
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray

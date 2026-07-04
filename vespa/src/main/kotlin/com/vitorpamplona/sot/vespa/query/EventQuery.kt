@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa
+package com.vitorpamplona.sot.vespa.query
 
 /**
  * A NIP-01 filter as plain values. The relay module maps a REQ's Filter into

@@ -29,10 +29,10 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.EventIndex
-import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals

@@ -37,17 +37,21 @@ Dependencies flow one way: `:cli` → (`:relay`, `:sync`) → `:store` → `:pro
   `EventIndex`), so ranking updates follow every insert and delete automatically.
 
 ```
-vespa    All Vespa access (com.vitorpamplona.sot.vespa):
+vespa    All Vespa access (com.vitorpamplona.sot.vespa), in sub-packages:
+           doc/   — the stored shapes: EventDoc (event <-> document +
+                    complete-event reconstruction), ProfileDoc, SearchFields.
+           query/ — EventQuery -> YQL: EventYql builds the filter,
+                    BrainstormWordGroup the per-word fuzzy recall, EventSelection
+                    the document-visit selection.
+           client/— the EventIndex/ProfileIndex ports and the real clients
+                    (VespaEventIndex/VespaProfileIndex).
+           root   — shared helpers (Concurrency, IngestStats, Patterns).
            app/ — the Vespa application package: event.sd (lossless NIP-01
            fields + per-kind search fields + rank profiles) and profile.sd (the
            global trust-tensor doc every event references for ranking).
-           EventDoc (event <-> stored document + complete-event reconstruction),
-           EventQuery -> YQL (EventYql builds the filter; BrainstormWordGroup
-           builds the per-word fuzzy recall), the EventIndex/ProfileIndex
-           interfaces, and the real clients (VespaEventIndex/VespaProfileIndex).
            testFixtures: InMemoryEventIndex (the reference implementation) +
            MockVespaEngine (parses the emitted YQL back and must agree with it).
-         Depends on: kotlinx-serialization, vespa-feed-client, (test) jetty.
+         Depends on: kotlinx-serialization, vespa-feed-client, quartz, (test) jetty.
 store    VespaEventStore : IEventStore (com.vitorpamplona.sot.store) — the one
            store. Enforces Nostr rules on insert (supersession, kind-5 deletion
            + tombstones, kind-62 vanish, NIP-40 expiry, gift-wrap ownership).

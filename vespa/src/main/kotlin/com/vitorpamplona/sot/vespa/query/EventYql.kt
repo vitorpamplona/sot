@@ -18,9 +18,10 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa
-
+package com.vitorpamplona.sot.vespa.query
 import com.vitorpamplona.quartz.utils.Hex
+import com.vitorpamplona.sot.vespa.WHITESPACE
+import com.vitorpamplona.sot.vespa.isSingleLetterTagName
 
 /**
  * Builds YQL over the `event` schema from an [EventQuery]. Returns null when
