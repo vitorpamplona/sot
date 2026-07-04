@@ -32,16 +32,19 @@ vespa    ALL Vespa access, Nostr-agnostic (com.vitorpamplona.sot.vespa):
            GLOBAL trust-tensor parent every event references). Change schema and
            Kotlin together.
            EventDoc (field mapping + complete-event reconstruction), EventQuery ->
-           YQL (EventYql: Brainstorm per-word fuzzy word groups, NIP-50 sort/filter
-           extension params), the EventIndex/ProfileIndex ports, and the real
+           YQL (EventYql assembles NIP-01/NIP-50 filters + sort/filter extension
+           params; BrainstormWordGroup builds the per-word fuzzy recall), the
+           EventIndex/ProfileIndex ports, and the real
            clients (VespaEventIndex/VespaProfileIndex: h2c feed writes, document-API
            gets, /search/ queries). testFixtures: InMemoryEventIndex (the executable
            spec) + MockVespaEngine (parses emitted YQL back and must agree with it).
          Depends on: kotlinx-serialization, vespa-feed-client, (test) jetty.
 store    VespaEventStore : IEventStore (com.vitorpamplona.sot.store) — the ONE
            store: Nostr semantics enforced on insert (supersession, kind-5 +
-           tombstones, kind-62 vanish, NIP-40, gift-wrap OWNER semantics), Filter ->
-           EventQuery mapping (NIP-50 extensions -> rank profile + min_rank),
+           tombstones, kind-62 vanish, NIP-40, gift-wrap OWNER semantics), the
+           BulkInsert fast path behind batchInsert (same rules, batched I/O — the
+           sync-scale ingest path), Filter -> EventQuery mapping (NIP-50 extensions
+           -> rank profile + min_rank),
            SearchExtractors (every Quartz SearchableEvent kind -> the schema's
            per-kind search fields), negentropy snapshots, ObserverContext (the
            coroutine element carrying the per-connection ranking observer).
@@ -57,14 +60,18 @@ relay    SotRelayServer (com.vitorpamplona.sot.relay): Quartz's protocol engine
            NIP-77, NIP-11 doc, Ktor websocket mount. NIP-42 auth switches the
            ranking observer per connection and fires onObserver (sync enrollment).
          Depends on: :store, quartz, ktor.
-sync     The trust-sync side (com.vitorpamplona.sot.sync): RelaySyncer (NIP-77
-           negentropy + paged fallback, per-scope cursors, streamed
-           verify->batchInsert), Identity (the relay's own key: NIP-42 client auth
-           upstream + first-run self-publish of kind 0/10002/10086 into its OWN
-           store — the stored 10086 IS the indexer configuration), TrustSync (the
-           scores plane: seed 10040 hints -> observer 10002s from index relays ->
-           outboxes [the AUTHORITATIVE 10040] -> provider 30382s + reconcile ->
-           orphan sweep), SyncService (runOnce/runForever + enroll()).
+sync     The trust-sync side (com.vitorpamplona.sot.sync): RelaySyncer (the
+           download orchestrator: NIP-77 negentropy + paged fallback, per-scope
+           cursors — delegating to EventStreamPipeline [bounded-channel verify->
+           batchInsert], NostrAuthHandshake [NIP-42 first contact], CursorScope),
+           Identity (the relay's own key: NIP-42 client auth upstream + first-run
+           self-publish of kind 0/10002/10086 into its OWN store — the stored 10086
+           IS the indexer configuration), TrustSync + BlendedPass (the scores
+           plane, run as a BLENDED work-unit pipeline over relays — not strict
+           phase barriers — in the dependency order: seed 10040 hints -> observer
+           10002s from index relays -> outboxes [the AUTHORITATIVE 10040] ->
+           provider 30382s + reconcile -> orphan sweep), SyncService
+           (runOnce/runForever + enroll()).
          Depends on: :vespa via :store (tests), quartz, okhttp.
 cli      `sot` — the ONE executable and composition root (wires
            TrustProjection(VespaEventIndex) under VespaEventStore, shared by
@@ -167,8 +174,9 @@ any Nostr client; the sync reads the newest back).
 - The Vespa schemas + rank profiles in `vespa/app/` are ported VERBATIM from
   Brainstorm's doc.sd (multiplicative `wot_mult` trust, IDF identity fields, gram
   safety nets) with sot's generic tier extension for non-profile kinds — a single
-  `search` profile ranks a mixed-kind result set. Change schema and `EventYql`
-  together; `MockVespaEngine`'s parser is the drift alarm.
+  `search` profile ranks a mixed-kind result set. Change schema and
+  `EventYql`/`BrainstormWordGroup` together; `MockVespaEngine`'s parser is the
+  drift alarm.
 
 ## Gotchas
 
@@ -176,8 +184,11 @@ any Nostr client; the sync reads the newest back).
   clean, and the full protocol path passed an acceptance run against the
   deployed engine — feed, recall, reconstruction, COUNT, the trust gate,
   NIP-42-ranked search through the imported tensors, `sort:rank` ordering,
-  the NIP-50 extensions, and kind-5 deletion. Still unvalidated: the sync
-  side against real public relays. Two operational notes from that run:
+  the NIP-50 extensions, and kind-5 deletion. The sync side has since driven
+  a multi-million-event (~11M) load against a real provider relay
+  (`nip85.nosfabrica.com`, the trust-scores plane); broad kind-1 sync across
+  arbitrary public relays is still only lightly exercised. Two operational
+  notes from the acceptance run:
   `services.xml` raises Vespa's feed-block resource limits (dev disks trip
   the 80% default), and **Quartz's `LiveEventStore` strips NIP-50 extensions
   before the store** — the relay backend carries the pre-strip filters in
@@ -195,7 +206,8 @@ any Nostr client; the sync reads the newest back).
   searches until the observer's chain syncs — `include:spam` bypasses the gate.
 - Don't run `sot index` while `sot serve` is mid-pass against the same Vespa:
   semantics stay correct (single store), but they double-download.
-- Scale prerequisites for kind-1 volume are known and deferred (see
-  `docs/v2-sync-proposal.md`): visit-based negentropy snapshots, a bulk-ingest
-  fast path in `batchInsert`, `attribute: paged` on fat attributes.
+- Scale prerequisites for kind-1 volume (see `docs/v2-sync-proposal.md`):
+  visit-based negentropy snapshots (`EventIndex.visitIds`) and the bulk-ingest
+  fast path (`BulkInsert` behind `batchInsert`) have LANDED; `attribute: paged`
+  on fat attributes remains deferred.
 - More detail: `README.md` (the decisions), `docs/` (the proposals).

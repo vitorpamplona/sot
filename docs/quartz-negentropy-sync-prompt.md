@@ -3,8 +3,8 @@
 > **Status: implemented — kept here as a design record.** Quartz shipped this as
 > `INostrClient.negentropySyncOrFetch` (returning `NegentropyOrFetchResult`:
 > `downloaded`, `pagedFallback`, `negentropy`, `fallbackCause`). **sot**'s
-> indexer now calls it directly from
-> [`indexer/.../RelaySyncer.kt`](../indexer/src/main/kotlin/com/vitorpamplona/sot/indexer/RelaySyncer.kt),
+> sync module calls it directly from
+> [`sync/.../RelaySyncer.kt`](../sync/src/main/kotlin/com/vitorpamplona/sot/sync/RelaySyncer.kt),
 > and the hand-rolled `NegentropyStage` described below was deleted. The shipped
 > result shape differs slightly from the API proposed here (see "Required API");
 > treat that section as the original request, not current Quartz.
@@ -156,11 +156,12 @@ Semantics:
 **sot**'s `NegentropyStage` implemented points 1–6 by hand and ultimately
 defaulted to `fetchAllPages` because it couldn't window around `maxSyncEvents`.
 With the accessory landed, that stage was deleted; `sot`'s `RelaySyncer` now
-calls the shipped API (which delivers events into a Quartz `EventStore`, from
-which a projection writes profiles + web-of-trust scores into Vespa):
+calls the shipped API and streams the events straight into `VespaEventStore`
+(Vespa IS the event store — the trust projection decorates its index, so
+web-of-trust scores update on the same write path):
 
 ```kotlin
-// indexer/.../RelaySyncer.kt — buf collects events, then store.batchInsert(buf)
+// sync/.../RelaySyncer.kt — a bounded channel batches events into store.batchInsert(...)
 client.negentropySyncOrFetch(
     relay, filter,
     maxEvents = maxEvents,
