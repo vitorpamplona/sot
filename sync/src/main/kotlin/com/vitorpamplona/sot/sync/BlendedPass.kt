@@ -77,6 +77,13 @@ internal class BlendedPass(
     private val noList = ConcurrentLinkedQueue<HexKey>()
     private val providerBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
     private val seenServices = ConcurrentHashMap.newKeySet<HexKey>()
+
+    // Every relay a service key is hinted on across all discovered 10040s.
+    // Absence-is-deletion is only authoritative when a service has exactly ONE
+    // canonical relay; a key hinted on two relays by two observers would
+    // otherwise have the second relay's scores deleted by the first relay's
+    // reconcile diff.
+    private val serviceRelays = ConcurrentHashMap<HexKey, MutableSet<NormalizedRelayUrl>>()
     private val catchUpRan = AtomicBoolean(false)
 
     suspend fun run(
@@ -132,6 +139,9 @@ internal class BlendedPass(
         val unresolved = generateSequence { noList.poll() }.toList()
         if (unresolved.isNotEmpty()) {
             // No 10002 anywhere: degrade to the index relays, never drop the observer.
+            if (indexRelays.isEmpty()) {
+                log("[sync] ${unresolved.size} observer(s) have no discoverable 10002 and no index relay - their outbox is not synced this pass (stored-10040 providers still are, via catch-up)")
+            }
             for (relay in indexRelays) {
                 unresolved.chunked(AUTHORS_PER_FILTER).forEach { batch ->
                     submit { outboxUnit(relay, batch) }
@@ -168,15 +178,24 @@ internal class BlendedPass(
         house?.takeIf { it.pubkey in fresh }?.let { h -> submit { listUnit(h.relay, listOf(h.pubkey)) } }
         // Nowhere to look a 10002 up: resolve from whatever the store already has.
         if (indexRelays.isEmpty()) {
-            for (o in fresh) if (house?.pubkey != o) resolveOutboxes(o)
+            resolveOutboxes(fresh.filter { house?.pubkey != it })
         }
     }
 
-    /** Seed-relay 10040 discovery; any new authors join the pipeline mid-flight. */
+    /**
+     * Seed-relay 10040 discovery; newly-verified 10040 authors join the
+     * pipeline mid-flight through the [onVerified] hook — no full 10040 table
+     * re-scan per seed relay (which was O(all observers) x seed relays).
+     */
     private suspend fun hintUnit(relay: NormalizedRelayUrl) {
-        val o = syncer.sync(relay, Filter(kinds = listOf(TrustProviderListEvent.KIND)), maxEvents = opts.maxEvents)
+        val o =
+            syncer.sync(
+                relay,
+                Filter(kinds = listOf(TrustProviderListEvent.KIND)),
+                maxEvents = opts.maxEvents,
+                onVerified = { events -> registerObservers(events.filterIsInstance<TrustProviderListEvent>().map { it.pubKey }) },
+            )
         log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] hints @ ${relay.displayUrl()}: 10040 +${o.inserted}/${o.downloaded}")
-        registerObservers(storedObservers())
     }
 
     /** One (index relay x observer batch) 10002 lookup; completing an observer's LAST lookup unblocks their outboxes. */
@@ -186,25 +205,28 @@ internal class BlendedPass(
     ) {
         syncer.sync(relay, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch), maxEvents = opts.maxEvents)
         progress.itemDone()
-        for (o in batch) {
-            if (listsLeft[o]?.decrementAndGet() == 0) resolveOutboxes(o)
-        }
+        // The observers in this batch whose LAST index-relay lookup just landed
+        // are resolved together — one 10002 query, not one per observer.
+        resolveOutboxes(batch.filter { listsLeft[it]?.decrementAndGet() == 0 })
     }
 
-    /** All of [o]'s 10002 lookups are in: derive their outbox units (or the no-list fallback). */
-    private suspend fun resolveOutboxes(o: HexKey) {
-        val relays =
-            store
-                .query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = listOf(o)))
-                .firstOrNull()
-                ?.writeRelaysNorm()
-                .orEmpty()
-        if (relays.isEmpty()) {
-            noList.add(o)
-            return
-        }
-        for (relay in relays) {
-            bufferedBatch(outboxBuf, relay, o)?.let { batch -> submit { outboxUnit(relay, batch) } }
+    /** [observers]' 10002 lookups are all in: derive their outbox units (or the no-list fallback), in ONE batched query. */
+    private suspend fun resolveOutboxes(observers: List<HexKey>) {
+        if (observers.isEmpty()) return
+        val byAuthor =
+            observers
+                .chunked(AUTHORS_PER_FILTER)
+                .flatMap { batch -> store.query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch)) }
+                .associateBy { it.pubKey }
+        for (o in observers) {
+            val relays = byAuthor[o]?.writeRelaysNorm().orEmpty()
+            if (relays.isEmpty()) {
+                noList.add(o)
+                continue
+            }
+            for (relay in relays) {
+                bufferedBatch(outboxBuf, relay, o)?.let { batch -> submit { outboxUnit(relay, batch) } }
+            }
         }
     }
 
@@ -233,6 +255,10 @@ internal class BlendedPass(
         relayHint: NormalizedRelayUrl?,
     ) {
         if (relayHint == null) return
+        // Record EVERY hinted relay (even for an already-seen service) so the
+        // stale-deletion diff can tell single-relay (authoritative) services
+        // from multi-relay ones.
+        serviceRelays.getOrPut(service) { ConcurrentHashMap.newKeySet() }.add(relayHint)
         if (opts.maxProviders > 0 && seenServices.size >= opts.maxProviders) return
         if (!seenServices.add(service)) return
         bufferedBatch(providerBuf, relayHint, service)?.let { batch -> submit { scoreUnit(relayHint, batch) } }
@@ -260,13 +286,18 @@ internal class BlendedPass(
             // deletion here (the relay is authoritative for this scope).
             val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores)
             if (r.relayIds != null) {
-                // The visit-backed snapshot, not query(): the diff must see
-                // EVERY stored id for these providers — a capped page would
-                // read the truncated remainder as "deleted on the relay".
-                val stale = store.snapshotIdsForNegentropy(listOf(scores)).map { it.id }.filterNot { it in r.relayIds }
-                if (stale.isNotEmpty()) {
-                    log("[reconcile] ${services.size} provider(s) @ ${relay.displayUrl()}: ${stale.size} score event(s) no longer served - deleting")
-                    stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }
+                // Absence-is-deletion applies ONLY to services with this as their
+                // single canonical relay; a service hinted on multiple relays has
+                // scores legitimately served elsewhere, which this relay's set
+                // wouldn't include. Multi-relay services still sync, just no diff.
+                val authoritative = services.filter { (serviceRelays[it]?.size ?: 1) == 1 }
+                if (authoritative.isNotEmpty()) {
+                    val held = store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(ContactCardEvent.KIND), authors = authoritative)))
+                    val stale = held.map { it.id }.filterNot { it in r.relayIds }
+                    if (stale.isNotEmpty()) {
+                        log("[reconcile] ${authoritative.size} provider(s) @ ${relay.displayUrl()}: ${stale.size} score event(s) no longer served - deleting")
+                        stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }
+                    }
                 }
             }
             log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${r.inserted}${if (r.usedNegentropy) " (neg)" else ""}")
