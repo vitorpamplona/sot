@@ -22,7 +22,6 @@ package com.vitorpamplona.sot.profile
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.vespa.DocRef
 import com.vitorpamplona.sot.vespa.EventDoc
@@ -116,7 +115,7 @@ class TrustProjection(
         recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
         val cards = docs.filter { it.kind == ContactCardEvent.KIND }
         if (cards.isEmpty()) return
-        val serviceToObserver = providerMap()
+        val serviceToObserver = providers.get()
         val updates = ArrayList<ProfileCells>(cards.size)
         val retracted = LinkedHashSet<String>()
         for (doc in cards) {
@@ -199,7 +198,7 @@ class TrustProjection(
         inner.removeAll(ids)
         recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
         val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
-        if (subjects.isNotEmpty()) recomputeBatch(subjects, providerMap(), removeEmpties = true)
+        if (subjects.isNotEmpty()) recomputeBatch(subjects, providers.get(), removeEmpties = true)
     }
 
     private suspend fun react(doc: EventDoc) {
@@ -210,7 +209,7 @@ class TrustProjection(
     }
 
     /** Re-derive [subject]'s whole parent doc from the stored 30382s about them. */
-    suspend fun recompute(subject: String) = recompute(subject, providerMap())
+    suspend fun recompute(subject: String) = recompute(subject, providers.get())
 
     private suspend fun recompute(
         subject: String,
@@ -238,27 +237,8 @@ class TrustProjection(
         return ProfileDoc(subject, quality, followers)
     }
 
-    /**
-     * service key -> observer, from every stored 10040's `30382:rank` entries.
-     * CACHED across a pass: this map only changes when a 10040 is written or
-     * removed, and every such path invalidates it ([recomputeSubjectsOf]), so
-     * a run of single 30382 publishes (each of which re-derives its subject)
-     * pays the full-10040 scan ONCE, not per event. Safe as a plain field:
-     * every write/react path runs under the store's single-writer lock.
-     */
-    @Volatile private var cachedProviderMap: Map<String, String>? = null
-
-    private suspend fun providerMap(): Map<String, String> =
-        cachedProviderMap ?: inner
-            .search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND)))
-            .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) as? TrustProviderListEvent }
-            .flatMap { list ->
-                list
-                    .serviceProviders()
-                    .filter { it.service == ProviderTypes.rank }
-                    .map { it.pubkey to list.pubKey }
-            }.toMap()
-            .also { cachedProviderMap = it }
+    /** service key -> observer (NIP-85 attribution), cached across a pass; see [ProviderMap]. */
+    private val providers = ProviderMap(inner)
 
     /**
      * One or more 10040s appeared or disappeared: the provider map changed, so
@@ -272,12 +252,8 @@ class TrustProjection(
      */
     private suspend fun recomputeSubjectsOf(listDocs: List<EventDoc>) {
         if (listDocs.isEmpty()) return
-        cachedProviderMap = null // the map just changed; next providerMap() rebuilds
-        val services =
-            listDocs
-                .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) as? TrustProviderListEvent }
-                .flatMap { it.serviceProviders().filter { p -> p.service == ProviderTypes.rank }.map { p -> p.pubkey } }
-                .distinct()
+        providers.invalidate() // the map just changed; next providers.get() rebuilds
+        val services = ProviderMap.rankServicesOf(listDocs)
         if (services.isEmpty()) return
         recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = services))
     }
@@ -296,7 +272,7 @@ class TrustProjection(
      * dedup set.
      */
     private suspend fun recomputeWalk(query: EventQuery) {
-        val map = providerMap()
+        val map = providers.get()
         val buffer = LinkedHashSet<String>()
 
         suspend fun flush() {
