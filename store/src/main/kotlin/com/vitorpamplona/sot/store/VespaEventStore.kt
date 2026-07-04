@@ -303,16 +303,15 @@ class VespaEventStore(
                         add(EventQuery(kinds = listOf(kind), authors = authors))
                     }
                 }
-                for ((kind, keys) in addressable.groupBy { it.first }) {
-                    // Small chunks on purpose: the (authors x d-tags) recall is a
-                    // cross product — a dense corpus (dozens of service keys
-                    // scoring the same subjects) at 500 pairs recalls tens of
-                    // thousands of docs, sailing past the search page cap and
-                    // SILENTLY missing existing versions.
-                    keys.chunked(ADDR_CHUNK).forEach { chunk ->
-                        val authors = chunk.map { it.second }.distinct()
-                        val ds = chunk.mapNotNull { it.third }.distinct()
-                        add(EventQuery(kinds = listOf(kind), authors = authors, tags = mapOf("d" to ds)))
+                // Addressables recall PER (kind, author), never across authors: a
+                // multi-author (authors x d-tags) query is a CROSS PRODUCT, and a
+                // dense corpus (dozens of service keys scoring the same subjects)
+                // makes it recall authors×ds real docs — past the 10k search page,
+                // silently missing existing versions. One author's d-set is bounded.
+                for ((ka, keys) in addressable.groupBy { it.first to it.second }) {
+                    val (kind, author) = ka
+                    keys.mapNotNull { it.third }.distinct().chunked(CHECK_CHUNK).forEach { ds ->
+                        add(EventQuery(kinds = listOf(kind), authors = listOf(author), tags = mapOf("d" to ds)))
                     }
                 }
             }
@@ -354,7 +353,7 @@ class VespaEventStore(
             // Older stored versions beyond the single best also fall (drift repair).
             versions.forEach { doc -> if (doc.id != bestDocId && doc.id !in removeFromStore) removeFromStore += doc.id }
         }
-        removeFromStore.distinct().forEach { index.remove(it) }
+        index.removeAll(removeFromStore.distinct())
 
         // Stage E — one pipelined write for everything that survived. (Timing
         // is booked by the layers below: the projection decorator splits it
@@ -372,7 +371,7 @@ class VespaEventStore(
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
         val observer = coroutineContext[ObserverContext]?.pubkey
         val queries = restoreSearches(filters).mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer) }
-        val docs = queries.flatMap { index.search(it) }.distinctBy { it.id }
+        val docs = searchDocs(queries)
         // NIP-50: a searching query's results stay in the engine's RELEVANCE
         // order "instead of the usual created_at ordering" — re-sorting here
         // would undo the rank profile. Plain filters keep NIP-01 recency.
@@ -380,6 +379,14 @@ class VespaEventStore(
         val ordered = if (ranked) docs else docs.sortedWith(NEWEST_FIRST)
         return ordered.mapNotNull { Event.fromJsonOrNull(it.toEventJson()) } as List<T>
     }
+
+    /** Search every query concurrently (bounded), deduped by id — the shared recall for query and multi-filter count. */
+    private suspend fun searchDocs(queries: List<EventQuery>): List<EventDoc> =
+        when (queries.size) {
+            0 -> emptyList()
+            1 -> index.search(queries[0])
+            else -> queries.mapBounded(QUERY_FANOUT) { index.search(it) }.flatten().distinctBy { it.id }
+        }
 
     override suspend fun <T : Event> query(
         filter: Filter,
@@ -393,7 +400,14 @@ class VespaEventStore(
 
     override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toEventQuery()?.let { index.count(it.copy(notExpiredAt = nowSecs())) } ?: 0
 
-    override suspend fun count(filters: List<Filter>): Int = if (filters.size == 1) count(filters[0]) else query<Event>(filters).size
+    override suspend fun count(filters: List<Filter>): Int {
+        // Multi-filter counts need cross-filter id dedup (engine count can't),
+        // but they don't need the events materialized — recall the docs and
+        // count distinct ids, skipping the per-doc Event reconstruction.
+        if (filters.size == 1) return count(filters[0])
+        val queries = restoreSearches(filters).mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs()) }
+        return searchDocs(queries).size
+    }
 
     /**
      * Undo Quartz's relay-side NIP-50 extension stripping: `LiveEventStore`
@@ -427,12 +441,19 @@ class VespaEventStore(
         maxEntries: Int?,
     ): List<IdAndTime> {
         val all = ArrayList<IdAndTime>()
+        // A single-filter cap can stop the walk early: the caller only needs to
+        // learn the set exceeds the cap, not scan a 10M corpus to prove it.
+        // (Multi-filter needs the full set for cross-filter dedup, so no break.)
+        val cap = maxEntries?.takeIf { filters.size == 1 }?.plus(1)
         // Exclude already-expired events (NIP-40), exactly as query/count do —
         // otherwise the negentropy set offers ids a plain REQ would never
         // serve, and a peer keeps trying to reconcile events we refuse to return.
         for (q in filters.mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs()) }) {
             if (q.search == null && q.limit == null) {
-                index.visitIds(q) { page -> page.forEach { all += IdAndTime(it.createdAt, it.id) } }
+                index.visitIds(q) { page ->
+                    page.forEach { all += IdAndTime(it.createdAt, it.id) }
+                    cap == null || all.size < cap
+                }
             } else {
                 index.search(q).forEach { all += IdAndTime(it.createdAt, it.id) }
             }
@@ -460,7 +481,7 @@ class VespaEventStore(
         while (rounds++ < MAX_SWEEP_ROUNDS) {
             val page = index.search(q)
             if (page.isEmpty()) return
-            page.forEach { index.remove(it.id) }
+            index.removeAll(page.map { it.id })
             // A limit'd delete is satisfied by its first page.
             if (q.limit != null) return
         }
@@ -628,11 +649,6 @@ class VespaEventStore(
 
         // Ids/authors/d-tags per check query — well under the engine's page cap.
         const val CHECK_CHUNK = 500
-
-        // (author, d) pairs per addressable version-query: the recall is a
-        // cross product, and a dense corpus (~50 services scoring the same
-        // subjects) must stay under the engine's 10k search page.
-        const val ADDR_CHUNK = 100
 
         // A tombstone/vanish guard set this big may have been page-capped by
         // the engine; those owners fall back to the exact per-event probes.

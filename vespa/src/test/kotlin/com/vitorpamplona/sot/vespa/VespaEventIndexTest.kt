@@ -150,7 +150,10 @@ class VespaEventIndexTest {
             seed(*(1..20).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
             seed(doc(kind = 1, pubkey = bob), doc(kind = 30382)) // outside the selection
             val pages = ArrayList<List<DocRef>>()
-            index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) { pages += it }
+            index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                pages += it
+                true
+            }
             // The mock caps pages far below the requested size, so a full walk
             // proves the client actually follows continuation tokens.
             assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
@@ -164,7 +167,10 @@ class VespaEventIndexTest {
         runBlocking {
             seed(*(1..15).map { doc(kind = 30382, tags = listOf(listOf("d", "s$it".repeat(1)))) }.toTypedArray())
             val got = ArrayList<DocRef>()
-            index.visitIds(EventQuery(kinds = listOf(30382)), withDTag = true) { got += it }
+            index.visitIds(EventQuery(kinds = listOf(30382)), withDTag = true) {
+                got += it
+                true
+            }
             assertEquals((1..15).map { "s$it" }.toSet(), got.mapNotNull { it.dTag }.toSet())
         }
 
@@ -177,7 +183,10 @@ class VespaEventIndexTest {
                 doc(kind = 30382, tags = listOf(listOf("d", "y"))),
             )
             val got = ArrayList<DocRef>()
-            index.visitIds(EventQuery(kinds = listOf(30382), tags = mapOf("d" to listOf("x")))) { got += it }
+            index.visitIds(EventQuery(kinds = listOf(30382), tags = mapOf("d" to listOf("x")))) {
+                got += it
+                true
+            }
             val expected = reference.search(EventQuery(kinds = listOf(30382), tags = mapOf("d" to listOf("x")))).map { DocRef(it.id, it.createdAt) }
             assertEquals(expected, got)
         }

@@ -45,6 +45,9 @@ interface EventIndex : AutoCloseable {
 
     suspend fun remove(id: String)
 
+    /** Bulk [remove]; the real client pipelines the deletes over HTTP/2 (a big sweep is O(1) round trips, not O(N)). */
+    suspend fun removeAll(ids: List<String>) = ids.forEach { remove(it) }
+
     /** Docs matching [query]: newest first (`created_at` desc, id asc tiebreak) unless ranked by a search term. */
     suspend fun search(query: EventQuery): List<EventDoc>
 
@@ -54,6 +57,8 @@ interface EventIndex : AutoCloseable {
      * no result cap: the real client pages through Vespa's document-API visit
      * (a streaming scan, not a query), calling [onPage] per page; order across
      * pages is engine-defined, and callers must not assume recency.
+     * [onPage] returns whether to CONTINUE — false stops the walk early (a
+     * capped snapshot needn't scan a 10M corpus to learn it exceeds the cap).
      * [withDTag] additionally projects each doc's `d` tag — what an
      * addressable-corpus walk (rebuilding the trust projection) keys on. This
      * default rides [search] and is only complete where search is uncapped
@@ -62,8 +67,10 @@ interface EventIndex : AutoCloseable {
     suspend fun visitIds(
         query: EventQuery,
         withDTag: Boolean = false,
-        onPage: suspend (List<DocRef>) -> Unit,
-    ) = onPage(search(query).map { DocRef(it.id, it.createdAt, if (withDTag) it.dTag() else null) })
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) {
+        onPage(search(query).map { DocRef(it.id, it.createdAt, if (withDTag) it.dTag() else null) })
+    }
 
     suspend fun count(query: EventQuery): Int
 }

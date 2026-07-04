@@ -79,7 +79,7 @@ class TrustProjection(
     override suspend fun visitIds(
         query: EventQuery,
         withDTag: Boolean,
-        onPage: suspend (List<DocRef>) -> Unit,
+        onPage: suspend (List<DocRef>) -> Boolean,
     ) = inner.visitIds(query, withDTag, onPage)
 
     override suspend fun count(query: EventQuery): Int = inner.count(query)
@@ -189,6 +189,19 @@ class TrustProjection(
         doc?.let { react(it) }
     }
 
+    /**
+     * Bulk remove: read the doomed docs (what each removal invalidates), delete
+     * them all pipelined, then react ONCE for the whole set — every removed
+     * 30382's subject re-derived in a single batch, not one recompute per doc.
+     */
+    override suspend fun removeAll(ids: List<String>) {
+        val docs = ids.mapBounded(QUERY_FANOUT) { inner.get(it) }.filterNotNull()
+        inner.removeAll(ids)
+        docs.filter { it.kind == TrustProviderListEvent.KIND }.forEach { recomputeSubjectsOf(it) }
+        val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
+        if (subjects.isNotEmpty()) recomputeBatch(subjects, providerMap(), removeEmpties = true)
+    }
+
     private suspend fun react(doc: EventDoc) {
         when (doc.kind) {
             ContactCardEvent.KIND -> subjectOf(doc)?.let { recompute(it) }
@@ -282,6 +295,7 @@ class TrustProjection(
         inner.visitIds(query, withDTag = true) { page ->
             page.forEach { ref -> ref.dTag?.let(buffer::add) }
             if (buffer.size >= RECOMPUTE_BATCH) flush()
+            true // walk the whole corpus
         }
         flush()
     }

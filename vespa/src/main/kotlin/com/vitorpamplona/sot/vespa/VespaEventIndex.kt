@@ -132,6 +132,11 @@ class VespaEventIndex(
         feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), feedParams()).await()
     }
 
+    /** All removes in flight together over HTTP/2, like [putAll]. */
+    override suspend fun removeAll(ids: List<String>) {
+        ids.map { feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, it), feedParams()) }.forEach { it.await() }
+    }
+
     override suspend fun search(query: EventQuery): List<EventDoc> {
         val root = queryRoot(query, hits = query.limit ?: maxHits) ?: return emptyList()
         return root["children"]
@@ -149,7 +154,7 @@ class VespaEventIndex(
     override suspend fun visitIds(
         query: EventQuery,
         withDTag: Boolean,
-        onPage: suspend (List<DocRef>) -> Unit,
+        onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         val selection = EventSelection.build(query) ?: return super.visitIds(query, withDTag, onPage)
         val fieldSet = "$DOCTYPE:created_at" + if (withDTag) ",$DOCTYPE:tag_index" else ""
@@ -182,7 +187,7 @@ class VespaEventIndex(
                         }
                     DocRef(id, at, dTag)
                 } ?: emptyList()
-            if (page.isNotEmpty()) onPage(page)
+            if (page.isNotEmpty() && !onPage(page)) return
             continuation = json["continuation"]?.jsonPrimitive?.content ?: return
         }
     }
