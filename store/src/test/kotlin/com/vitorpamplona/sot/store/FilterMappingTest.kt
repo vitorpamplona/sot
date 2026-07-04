@@ -21,7 +21,7 @@
 package com.vitorpamplona.sot.store
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.sot.vespa.EventYql
+import com.vitorpamplona.sot.vespa.query.EventYql
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

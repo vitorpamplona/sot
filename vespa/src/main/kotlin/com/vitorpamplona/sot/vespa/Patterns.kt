@@ -18,24 +18,10 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.cli
+package com.vitorpamplona.sot.vespa
 
-import com.vitorpamplona.sot.vespa.client.VespaEventIndex
-import com.vitorpamplona.sot.vespa.doc.EventDoc
-import kotlinx.coroutines.runBlocking
+/** Splits on any run of whitespace. */
+internal val WHITESPACE = Regex("\\s+")
 
-/** Throwaway: isolate putAll dispatch behavior against the local Vespa. */
-object BenchPut {
-    @JvmStatic
-    fun main(args: Array<String>) {
-        val n = args.getOrNull(0)?.toIntOrNull() ?: 100
-        runBlocking {
-            val index = VespaEventIndex()
-            val docs = (0 until n).map { i -> EventDoc(id = "bb%060x".format(i), pubkey = "cc".repeat(32), createdAt = 1_700_000_000L + i, kind = 1, tags = emptyList(), content = "bench $i", sig = "") }
-            val t0 = System.currentTimeMillis()
-            index.putAll(docs)
-            println("putAll($n) took ${System.currentTimeMillis() - t0}ms")
-            index.close()
-        }
-    }
-}
+/** True for a single ASCII-letter tag name — the space NIP-01 `#x` filters address and `tag_index` holds. */
+internal fun isSingleLetterTagName(name: String): Boolean = name.length == 1 && (name[0] in 'a'..'z' || name[0] in 'A'..'Z')

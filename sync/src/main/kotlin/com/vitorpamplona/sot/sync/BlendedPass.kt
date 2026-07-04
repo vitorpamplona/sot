@@ -27,7 +27,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
@@ -39,26 +38,26 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * One scores-plane pass as a work-unit pipeline: every download is a unit in
- * ONE worker pool, and each unit's completion enqueues exactly the downstream
- * units it unblocks — an observer's outbox sync starts the moment THEIR 10002
- * resolution finished (not when everyone's did), and a provider's score sync
- * starts the moment any completed outbox names it. No relay waits for an
- * unrelated relay: a slow index relay delays only the observers whose lists it
- * still owes, and the (typically massive) provider score downloads begin while
- * the rest of the directory chain still resolves.
+ * One scores-plane pass as a work-unit pipeline. Every download is a unit in
+ * one worker pool, and each unit's completion enqueues exactly the downstream
+ * units it unblocks. An observer's outbox sync starts the moment THEIR 10002
+ * resolution finishes, not when everyone's does. A provider's score sync starts
+ * the moment any completed outbox names it. No relay waits for an unrelated
+ * relay: a slow index relay delays only the observers whose lists it still
+ * owes, and the (typically massive) provider score downloads begin while the
+ * rest of the directory chain still resolves.
  *
- * The phased dependency order survives PER OBSERVER: outbox units are derived
- * only after ALL of that observer's 10002 lookups completed, and provider
- * units only from 10040s read back after their observer's outbox unit — so the
- * outbox version of a 10040 still supersedes any seed-relay hint before its
- * providers are chosen. The end-of-pass catch-up derives providers from
- * EVERYTHING stored (hint-only observers, failed outbox units), which is
- * exactly the old phase C over the final store state.
+ * The phased dependency order survives PER OBSERVER. Outbox units are derived
+ * only after ALL of that observer's 10002 lookups complete, and provider units
+ * only from 10040s read back after their observer's outbox unit. So the outbox
+ * version of a 10040 still supersedes any seed-relay hint before its providers
+ * are chosen. The end-of-pass catch-up derives providers from EVERYTHING stored
+ * (hint-only observers, failed outbox units); this is phase C run over the
+ * final store state.
  *
- * Work units batch as they accumulate: same-relay authors buffer up to
- * [AUTHORS_PER_FILTER] and flush either on overflow or when the pool goes
- * idle — big rosters still get big filters, small ones never wait.
+ * Work units batch as they accumulate. Same-relay authors buffer up to
+ * [AUTHORS_PER_FILTER] and flush either on overflow or when the pool goes idle.
+ * Big rosters still get big filters, and small ones never wait.
  */
 internal class BlendedPass(
     private val syncer: RelaySyncer,
@@ -79,8 +78,8 @@ internal class BlendedPass(
     private val seenServices = ConcurrentHashMap.newKeySet<HexKey>()
 
     // Every relay a service key is hinted on across all discovered 10040s.
-    // Absence-is-deletion is only authoritative when a service has exactly ONE
-    // canonical relay; a key hinted on two relays by two observers would
+    // Absence-is-deletion is only authoritative when a service has exactly one
+    // canonical relay. A key hinted on two relays by two observers would
     // otherwise have the second relay's scores deleted by the first relay's
     // reconcile diff.
     private val serviceRelays = ConcurrentHashMap<HexKey, MutableSet<NormalizedRelayUrl>>()
@@ -92,10 +91,10 @@ internal class BlendedPass(
     ) = coroutineScope {
         registerObservers(initialObservers + storedObservers())
         for (relay in seedRelays) submit { hintUnit(relay) }
-        // No initial units doesn't mean no work: an observer with no
-        // discoverable 10002 lands in the no-list fallback, and stored
-        // 10040s feed the catch-up — both surface through onIdle. Only a
-        // pass that STILL finds nothing after that has nothing to sync.
+        // No initial units doesn't mean no work. An observer with no
+        // discoverable 10002 lands in the no-list fallback, and stored 10040s
+        // feed the catch-up; both surface through onIdle. Only a pass that
+        // STILL finds nothing after that has nothing to sync.
         if (pending.get() == 0 && !onIdle()) {
             log("[sync] no observers (no house account, no config extras, no stored 10040s) and no seed relays - nothing to sync")
             queue.close()
@@ -103,8 +102,8 @@ internal class BlendedPass(
         repeat(opts.concurrency.coerceAtLeast(1)) {
             launch {
                 for (job in queue) {
-                    // Rethrow cancellation so a torn-down pass actually unwinds;
-                    // only real unit failures are logged-and-skipped.
+                    // Rethrow cancellation so a torn-down pass actually
+                    // unwinds. Only real unit failures are logged and skipped.
                     try {
                         job()
                     } catch (e: CancellationException) {
@@ -154,8 +153,8 @@ internal class BlendedPass(
             submitted = true
         }
         if (!submitted && catchUpRan.compareAndSet(false, true)) {
-            // The old phase C over the final store state: hint-only
-            // observers and failed outbox units still get their providers.
+            // Phase C over the final store state: hint-only observers and
+            // failed outbox units still get their providers.
             storedProviderPairs().forEach { (service, relay) -> enqueueProvider(service, relay) }
             for ((relay, batch) in drain(providerBuf)) {
                 submit { scoreUnit(relay, batch) }
@@ -183,9 +182,10 @@ internal class BlendedPass(
     }
 
     /**
-     * Seed-relay 10040 discovery; newly-verified 10040 authors join the
-     * pipeline mid-flight through the [onVerified] hook — no full 10040 table
-     * re-scan per seed relay (which was O(all observers) x seed relays).
+     * Seed-relay 10040 discovery. Newly-verified 10040 authors join the
+     * pipeline mid-flight through the [onVerified] hook, so there is no full
+     * 10040 table re-scan per seed relay (which would be O(all observers) x
+     * seed relays).
      */
     private suspend fun hintUnit(relay: NormalizedRelayUrl) {
         val o =
@@ -205,8 +205,8 @@ internal class BlendedPass(
     ) {
         syncer.sync(relay, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch), maxEvents = opts.maxEvents)
         progress.itemDone()
-        // The observers in this batch whose LAST index-relay lookup just landed
-        // are resolved together — one 10002 query, not one per observer.
+        // The observers in this batch whose LAST index-relay lookup just
+        // landed are resolved together: one 10002 query, not one per observer.
         resolveOutboxes(batch.filter { listsLeft[it]?.decrementAndGet() == 0 })
     }
 
@@ -231,11 +231,11 @@ internal class BlendedPass(
     }
 
     /**
-     * The observers' outboxes: the AUTHORITATIVE 10040 lives there, and
-     * their kind 0, a fresher 10002, and their own 5/62 ride along (a
-     * deletion published only to the author's outbox must still erase
-     * here — the store interprets both). Completion feeds the stored
-     * 10040s' providers into the pipeline.
+     * The observers' outboxes. The AUTHORITATIVE 10040 lives there, and their
+     * kind 0, a fresher 10002, and their own 5/62 ride along. A deletion
+     * published only to the author's outbox must still erase here, and the
+     * store interprets both. Completion feeds the stored 10040s' providers into
+     * the pipeline.
      */
     private suspend fun outboxUnit(
         relay: NormalizedRelayUrl,
@@ -245,7 +245,7 @@ internal class BlendedPass(
         log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${authors.size} observer(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         store
             .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND), authors = authors))
-            .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
+            .flatMap { l -> l.rankProviders().map { it.pubkey to it.relayUrl } }
             .forEach { (service, relayHint) -> enqueueProvider(service, relayHint) }
     }
 
@@ -265,16 +265,16 @@ internal class BlendedPass(
     }
 
     /**
-     * The providers' 30382s. **The provider relay is the AUTHORITATIVE
-     * source of truth for its service keys' 30382s** — the observer chose
-     * it in their 10040. So deletion is ABSENCE: a full sync reconciles
-     * the batch's complete id set, and any score we hold that the relay
-     * no longer serves is deleted locally. No kind-5 download is needed
-     * for this scope (a provider retracting a score just removes it; the
-     * reconcile diff sees the hole). This absence-is-deletion rule applies
-     * ONLY here — kind 30382 on the 10040-chosen relay — never to the
-     * records plane, where an author's outbox is one replica among many
-     * and deletion needs an explicit kind 5/62.
+     * The providers' 30382s. **The provider relay is the AUTHORITATIVE source
+     * of truth for its service keys' 30382s**, because the observer chose it in
+     * their 10040. So deletion is ABSENCE: a full sync reconciles the batch's
+     * complete id set, and any score we hold that the relay no longer serves is
+     * deleted locally. No kind-5 download is needed for this scope, since a
+     * provider retracting a score just removes it and the reconcile diff sees
+     * the hole. This absence-is-deletion rule applies ONLY here (kind 30382 on
+     * the 10040-chosen relay). It never applies to the records plane, where an
+     * author's outbox is one replica among many and deletion needs an explicit
+     * kind 5/62.
      */
     private suspend fun scoreUnit(
         relay: NormalizedRelayUrl,
@@ -286,10 +286,11 @@ internal class BlendedPass(
             // deletion here (the relay is authoritative for this scope).
             val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores)
             if (r.relayIds != null) {
-                // Absence-is-deletion applies ONLY to services with this as their
-                // single canonical relay; a service hinted on multiple relays has
-                // scores legitimately served elsewhere, which this relay's set
-                // wouldn't include. Multi-relay services still sync, just no diff.
+                // Absence-is-deletion applies ONLY to services with this as
+                // their single canonical relay. A service hinted on multiple
+                // relays has scores legitimately served elsewhere, which this
+                // relay's set wouldn't include. Multi-relay services still
+                // sync, just without a diff.
                 val authoritative = services.filter { (serviceRelays[it]?.size ?: 1) == 1 }
                 if (authoritative.isNotEmpty()) {
                     val held = store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(ContactCardEvent.KIND), authors = authoritative)))
@@ -350,7 +351,7 @@ internal class BlendedPass(
     private suspend fun storedProviderPairs(): List<Pair<HexKey, NormalizedRelayUrl?>> =
         store
             .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
-            .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
+            .flatMap { l -> l.rankProviders().map { it.pubkey to it.relayUrl } }
             .distinct()
 
     private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""

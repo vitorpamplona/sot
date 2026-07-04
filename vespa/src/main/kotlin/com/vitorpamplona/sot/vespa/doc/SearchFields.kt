@@ -18,20 +18,21 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa
+package com.vitorpamplona.sot.vespa.doc
+import com.vitorpamplona.sot.vespa.WHITESPACE
+import com.vitorpamplona.sot.vespa.query.EventYql
 
 /**
- * The derived, kind-specific search surface of one event — what the store's
- * extractors decompose a searchable event into, mirroring how Brainstorm
- * decomposed kind 0. All-null = the event is invisible to NIP-50 search
- * (SQLite's "not a SearchableEvent" case).
+ * The derived, kind-specific search surface of one event: what the store's
+ * extractors decompose a searchable event into. All-null means the event is
+ * invisible to NIP-50 search.
  *
- * Two groups, DISJOINT per kind, which is what lets the schema's rank
+ * There are two groups, DISJOINT per kind, which is what lets the schema's rank
  * profiles compose them as a plain sum (see event.sd):
  *
- *  - the kind-0 profile group ([name]..[website]) — Brainstorm's fields with
- *    their roles: name/displayName primary, nip05/lud16 identity (IDF),
- *    about/website affiliation;
+ *  - the kind-0 profile group ([name]..[website]), with each field's role:
+ *    name/displayName primary, nip05/lud16 identity (IDF), about/website
+ *    affiliation;
  *  - the generic tiers for every other kind: [primary] (title/subject-like),
  *    [secondary] (summary/hashtag-like), [text] (the body).
  */
@@ -61,10 +62,10 @@ data class SearchFields(
         }
 
     /**
-     * Naive recall check for the in-memory reference index, mirroring the
-     * word-group YQL's OR shape: ANY query word (capped like the YQL)
-     * substring-matching ANY field recalls the doc — ranking, not recall,
-     * decides what floats. Fuzzy/gram recall is deliberately not modeled.
+     * Naive recall check for the in-memory reference index, following the
+     * word-group YQL's OR shape. ANY query word (capped like the YQL) that
+     * substring-matches ANY field recalls the doc; ranking, not recall, decides
+     * what floats. Fuzzy/gram recall is deliberately not modeled.
      */
     fun matches(term: String): Boolean {
         val values = fields().values
@@ -77,8 +78,6 @@ data class SearchFields(
 
     companion object {
         val NONE = SearchFields()
-
-        private val WHITESPACE = Regex("\\s+")
 
         /** Rebuild from a doc field map (the [fields] shape). */
         fun fromFields(get: (String) -> String?): SearchFields =

@@ -45,21 +45,25 @@ import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
 
 /**
- * The v2 Nostr relay: Quartz's protocol engine over the Vespa-backed store.
- * One store, full NIP-01 filters, NIP-50 search, live subscriptions, EVENT
- * publishes, NIP-45 COUNT, and server-side NIP-77 negentropy — all inherited
- * from [RelayServerBase] + [LiveEventStore]; the store supplies storage
- * semantics and `snapshotIdsForNegentropy`.
+ * The Nostr relay: Quartz's protocol engine over the Vespa-backed store.
+ * It provides one store, full NIP-01 filters, NIP-50 search, live
+ * subscriptions, EVENT publishes, NIP-45 COUNT, and server-side NIP-77
+ * negentropy. Most of this is inherited from [RelayServerBase] and
+ * [LiveEventStore]. The store supplies storage semantics and
+ * `snapshotIdsForNegentropy`.
  *
- * Per connection the policy stack is [VerifyPolicy] (published events must
- * carry a valid id + signature — the store itself never verifies) then
- * [OptionalAuthPolicy] (a NIP-42 challenge on connect, nothing gated on it).
- * What auth DOES change is ranking: [ObserverRoutingBackend] resolves the
- * observer — the authenticated pubkey, else [defaultObserver] — for every
- * REQ/COUNT, so a search runs through the caller's own web of trust.
+ * Each connection runs two policies. [VerifyPolicy] requires published events
+ * to carry a valid id and signature, because the store itself never verifies.
+ * [OptionalAuthPolicy] sends a NIP-42 challenge on connect but gates nothing
+ * on it.
  *
- * [close] shuts the connections and the ingest writer down but NOT the store:
- * the composition root owns it (the sync service shares it).
+ * What auth does change is ranking. [ObserverRoutingBackend] resolves the
+ * observer for every REQ/COUNT: the authenticated pubkey, or else
+ * [defaultObserver]. This makes a search run through the caller's own web of
+ * trust.
+ *
+ * [close] shuts down the connections and the ingest writer, but not the
+ * store. The composition root owns the store, and the sync service shares it.
  */
 class SotRelayServer(
     store: IEventStore,
@@ -68,9 +72,9 @@ class SotRelayServer(
     parentContext: CoroutineContext = SupervisorJob(),
     listener: RelayServerListener = RelayServerListener.None,
     limits: RelayLimits? = null,
-    // The product loop's seam: fires with each authenticated pubkey observed
-    // on a ranked read, so the composition root can enroll NIP-42 logins as
-    // sync observers (SyncService.enroll dedups).
+    // Fires with each authenticated pubkey seen on a ranked read. This lets
+    // the composition root enroll NIP-42 logins as sync observers
+    // (SyncService.enroll dedups).
     onObserver: ((String) -> Unit)? = null,
 ) : RelayServerBase(
         policyBuilder = { PolicyStack(VerifyPolicy, OptionalAuthPolicy(relayUrl)) },
@@ -92,10 +96,10 @@ class SotRelayServer(
 
 /**
  * Delegates everything to [LiveEventStore], wrapping each read in an
- * [ObserverContext] carrying the session's ranking observer: the first
- * NIP-42-authenticated pubkey, else the operator's default. The store reads
- * the element back out when it builds the Vespa query — the seam that lets a
- * per-connection fact cross the caller-agnostic `IEventStore` interface.
+ * [ObserverContext] that carries the session's ranking observer: the first
+ * NIP-42-authenticated pubkey, or else the operator's default. The store
+ * reads that element back out when it builds the Vespa query. This is how a
+ * per-connection fact crosses the caller-agnostic `IEventStore` interface.
  */
 internal class ObserverRoutingBackend(
     private val inner: LiveEventStore,
@@ -137,10 +141,10 @@ internal class ObserverRoutingBackend(
         val authenticated = ctx.authenticatedUsers.firstOrNull()
         authenticated?.let { onObserver?.invoke(it) }
         val observer = authenticated ?: defaultObserver
-        // Both elements cross IEventStore's caller-agnostic seam through the
-        // coroutine context: OriginalFilters preserves the NIP-50 extensions
-        // Quartz's engine strips before the store (this store honors them);
-        // ObserverContext carries the ranking observer.
+        // Both elements cross IEventStore's caller-agnostic interface through
+        // the coroutine context. OriginalFilters preserves the NIP-50
+        // extensions that Quartz's engine strips before the store, which this
+        // store honors. ObserverContext carries the ranking observer.
         var context: CoroutineContext = OriginalFilters(filters)
         if (observer != null) context += ObserverContext(observer)
         return withContext(context) { block() }

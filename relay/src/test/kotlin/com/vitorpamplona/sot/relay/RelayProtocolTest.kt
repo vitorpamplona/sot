@@ -27,11 +27,11 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import com.vitorpamplona.sot.store.DEFAULT_MIN_RANK
 import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.EventIndex
-import com.vitorpamplona.sot.vespa.EventQuery
-import com.vitorpamplona.sot.vespa.EventYql
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.query.EventQuery
+import com.vitorpamplona.sot.vespa.query.EventYql
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.AfterTest

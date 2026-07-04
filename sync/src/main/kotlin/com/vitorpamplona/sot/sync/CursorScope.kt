@@ -24,16 +24,16 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 
 /**
  * Incrementality bookkeeping: how a [Filter] maps to its persisted `since`
- * cursor key, and how a stored cursor scopes the next download. Pulled out of
- * [RelaySyncer] because it's the ONE place the cursor's identity is defined —
- * change the key here and every relay/scope pair re-syncs from scratch, so it
- * pays to keep it small and staring back at you.
+ * cursor key, and how a stored cursor scopes the next download. This is the one
+ * place the cursor's identity is defined. Change the key here and every
+ * relay/scope pair re-syncs from scratch, so it pays to keep it small and easy
+ * to see.
  */
 internal object CursorScope {
     /**
-     * Cursor scope key: ALL the filter's kinds, plus authors so per-provider
+     * Cursor scope key: all of the filter's kinds, plus authors so per-provider
      * 30382 syncs don't share a cursor. Joining every kind (not just the first)
-     * keeps a multi-kind filter's cursor distinct from any single-kind one — a
+     * keeps a multi-kind filter's cursor distinct from any single-kind one. A
      * single-kind filter still scopes to exactly its kind, so existing per-kind
      * cursors are byte-identical.
      */

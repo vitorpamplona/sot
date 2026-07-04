@@ -22,36 +22,36 @@ package com.vitorpamplona.sot.store
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import com.vitorpamplona.sot.vespa.EventQuery
-import com.vitorpamplona.sot.vespa.EventYql
+import com.vitorpamplona.sot.vespa.query.EventQuery
+import com.vitorpamplona.sot.vespa.query.EventYql
 
 /*
- * NIP-01/NIP-50 filter -> engine query translation. Pure mapping, no store
- * state: the Quartz REQ Filter (with Brainstorm's sort:/filter:/include:spam
- * extensions) becomes the Nostr-agnostic EventQuery the :vespa module builds
- * YQL from.
+ * NIP-01/NIP-50 filter -> engine query translation. A pure mapping with no
+ * store state: the Quartz REQ Filter (with the NIP-50 sort:/filter:/include:spam
+ * extensions) becomes the Nostr-agnostic EventQuery the :vespa module builds YQL
+ * from.
  */
 
 /**
- * Quartz Filter -> the engine's plain [EventQuery]. Null when the filter can
- * never match: NIP-01 semantics for a present-but-EMPTY list ("the event's
- * value must be in the list" — of nothing). Absent (null) lists mean no
- * constraint, which is EventQuery's empty default.
+ * Maps a Quartz Filter to the engine's plain [EventQuery]. Returns null when the
+ * filter can never match. Under NIP-01, a present-but-EMPTY list means "the
+ * event's value must be in the list" — of nothing, so it matches nothing. An
+ * absent (null) list means no constraint, which is EventQuery's empty default.
  *
- * NIP-50 extensions are relay hints, not text — Quartz's parser splits them
- * off (and, unlike a naive key:value regex, keeps `scheme://…` tokens as
- * terms). The honored set maps onto Brainstorm's search API:
+ * NIP-50 extensions are relay hints, not text. Quartz's parser splits them off,
+ * and unlike a naive key:value regex it keeps `scheme://…` tokens as terms. The
+ * extensions this store honors:
  *
  *  - `sort:rank[:desc]` / `sort:rank:asc` / `sort:followers` / `sort:text`
- *    pick the rank profile; with no terms that's a trust-ordered match-all.
+ *    pick the rank profile. With no terms this is a trust-ordered match-all.
  *  - `filter:rank:gte:N` / `filter:rank:gt:N` set the observer trust floor
  *    (rank_filtered when no sort chose a profile — text order, gated).
- *  - `include:spam` switches OFF the default trust floor: every ranked query
- *    is otherwise gated at [DEFAULT_MIN_RANK] (Brainstorm's onlyRanked
- *    default — include:spam is its NIP-50 inverse). Plain filter REQs (no
- *    terms, no sort) are never gated: that recall is NIP-01's, not search's.
+ *  - `include:spam` turns OFF the default trust floor. Every ranked query is
+ *    otherwise gated at [DEFAULT_MIN_RANK], and include:spam is its inverse.
+ *    Plain filter REQs (no terms, no sort) are never gated: that recall belongs
+ *    to NIP-01, not to search.
  *
- * Unknown extensions stay ignored; an all-extensions query becomes
+ * Unknown extensions are ignored. A query that is nothing but extensions becomes
  * unconstrained (null terms), not match-nothing.
  */
 internal fun Filter.toEventQuery(): EventQuery? {
@@ -78,9 +78,9 @@ internal fun Filter.toEventQuery(): EventQuery? {
 }
 
 /**
- * The default observer trust floor for search (Brainstorm passes min_rank=2
- * on the 0..100 rank scale): hits whose author the observer's provider
- * doesn't rank are spam-filtered out unless the query says `include:spam`.
+ * The default observer trust floor for search: min_rank=2 on the 0..100 rank
+ * scale. Hits whose author the observer's provider doesn't rank are
+ * spam-filtered out unless the query says `include:spam`.
  */
 const val DEFAULT_MIN_RANK = 2.0
 

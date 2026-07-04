@@ -38,20 +38,21 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration
 
 /**
- * The composition of the v2 sync side: owns the Nostr client, the NIP-42
- * authenticator (the identity's key answers upstream AUTH challenges), and
- * the persisted [SyncState]; each pass runs the [TrustSync] scores plane. It
- * CONSUMES an event store — the composition root creates it and shares it
- * with the relay, and the ranking projection is already wired UNDER the
- * store (`:profile` decorates its EventIndex), so unlike v1 there is no
- * separate projection to babysit: everything inserted here ranks
+ * The composition root of the sync side. It owns the Nostr client, the NIP-42
+ * authenticator (the identity's key answers upstream AUTH challenges), and the
+ * persisted [SyncState]. Each pass runs the [TrustSync] scores plane.
+ *
+ * It consumes an event store rather than creating one: the composition root
+ * creates the store and shares it with the relay. The ranking projection is
+ * already wired under the store (`:profile` decorates its EventIndex), so there
+ * is no separate projection to babysit. Everything inserted here ranks
  * immediately.
  *
- * [runOnce] is one pass; [runForever] is the server's background loop.
+ * [runOnce] is one pass, and [runForever] is the server's background loop.
  * [enroll] is the product loop: the relay calls it when a user NIP-42
- * authenticates, so the first person to search through their own web of
- * trust is also the trigger that starts syncing it (their scores plane runs
- * on the next pass).
+ * authenticates. So the first person to search through their own web of trust
+ * is also the trigger that starts syncing it, and their scores plane runs on
+ * the next pass.
  */
 class SyncService(
     private val store: IEventStore,

@@ -37,8 +37,8 @@ import java.io.File
 /**
  * Persist a [NormalizedRelayUrl] as its plain url string, so the state file
  * stays a readable JSON of urls while the in-memory maps stay typed. Loading
- * re-normalizes; a corrupt url makes [SyncState.load] start fresh (same as any
- * other corrupt state file).
+ * re-normalizes. A corrupt url makes [SyncState.load] start fresh, the same as
+ * any other corrupt state file.
  */
 internal object RelayUrlSerializer : KSerializer<NormalizedRelayUrl> {
     override val descriptor = PrimitiveSerialDescriptor("NormalizedRelayUrl", PrimitiveKind.STRING)
@@ -52,26 +52,26 @@ internal object RelayUrlSerializer : KSerializer<NormalizedRelayUrl> {
 }
 
 /**
- * Per-relay sync bookkeeping: negentropy capability + per-scope last-synced
- * cursor. (Ported from v1's `:indexer`; the relayPool is gone — v2 has no
- * blind discovery crawl, the outbox directory is the store itself.)
+ * Per-relay sync bookkeeping: negentropy capability plus a per-scope
+ * last-synced cursor. There is no blind discovery crawl and no relay pool; the
+ * outbox directory is the store itself.
  */
 @Serializable
 data class RelayState(
     var negentropyCapable: Boolean? = null,
-    // scope key ("kinds" or "kinds:authors") -> last time we finished that sync
-    // (epoch seconds). The authors are part of the key because each provider's
-    // 30382 set on a relay is an independent sync scope — a shared per-kind
-    // cursor would let one provider's sync since-filter every other provider
-    // on that relay.
+    // scope key ("kinds" or "kinds:authors") -> last time we finished that
+    // sync (epoch seconds). The authors are part of the key because each
+    // provider's 30382 set on a relay is an independent sync scope. A shared
+    // per-kind cursor would let one provider's sync since-filter every other
+    // provider on that relay.
     val lastSyncedAt: MutableMap<String, Long> = mutableMapOf(),
 )
 
 /**
- * Small persisted state so periodic re-runs are cheap: which relays speak
+ * Small persisted state that keeps periodic re-runs cheap: which relays speak
  * negentropy and how far each scope has synced. Stored as JSON next to the
- * config. The store holds the events; this holds only the sync bookkeeping —
- * losing it costs a re-download, never correctness.
+ * config. The store holds the events; this holds only the sync bookkeeping.
+ * Losing it costs a re-download, never correctness.
  */
 @Serializable
 data class SyncState(

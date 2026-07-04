@@ -25,7 +25,7 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
-import com.vitorpamplona.sot.vespa.SearchFields
+import com.vitorpamplona.sot.vespa.doc.SearchFields
 import kotlin.test.Test
 import kotlin.test.assertEquals
 

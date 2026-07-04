@@ -23,6 +23,7 @@ package com.vitorpamplona.sot.cli
 import com.vitorpamplona.quartz.nip05DnsIdentifiers.Nip05Client
 import com.vitorpamplona.quartz.nip05DnsIdentifiers.OkHttpNip05Fetcher
 import com.vitorpamplona.quartz.nip05DnsIdentifiers.resolveUserHexOrNull
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 
@@ -34,9 +35,9 @@ import okhttp3.OkHttpClient
 private val nip05 = Nip05Client(OkHttpNip05Fetcher { OkHttpClient() })
 
 /**
- * Resolve a user identifier — 64-hex, NIP-19 `npub`/`nprofile`, or a NIP-05
- * `name@domain` (looked up over HTTPS) — to a hex pubkey; null when it isn't
- * one.
+ * Resolve a user identifier to a hex pubkey: 64-hex, NIP-19 `npub`/`nprofile`,
+ * or a NIP-05 `name@domain` (looked up over HTTPS). Returns null when it isn't
+ * one of those.
  */
 internal fun resolvePubkey(input: String): String? {
     val s = input.trim()
@@ -45,7 +46,5 @@ internal fun resolvePubkey(input: String): String? {
     // only a full 64-hex key is a pubkey.
     return runCatching { runBlocking { resolveUserHexOrNull(s, nip05) } }
         .getOrNull()
-        ?.takeIf(HEX64::matches)
+        ?.takeIf(Hex::isHex64)
 }
-
-private val HEX64 = Regex("^[0-9a-f]{64}$")

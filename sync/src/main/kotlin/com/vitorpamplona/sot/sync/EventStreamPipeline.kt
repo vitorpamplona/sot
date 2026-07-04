@@ -47,21 +47,22 @@ internal class Streamed(
 )
 
 /**
- * The store-writer half of [RelaySyncer]: turn a relay download (a producer
+ * The store-writer half of [RelaySyncer]. It turns a relay download (a producer
  * that hands over events one at a time) into stored events, without ever
  * holding the whole set in memory.
  *
- * A bounded channel decouples download from ingest — a consumer coroutine
- * verifies + batch-inserts in [CHUNK_SIZE] chunks as events arrive, and a full
- * channel backpressures the socket instead of growing the heap (the old
- * whole-download buffer was multiple GB for one big relay). The channel dance
- * also carries the tail-wedge fix: a dead consumer cancels the channel so a
- * producer parked in the non-cancellable [trySendBlocking] unblocks instead of
- * deadlocking forever.
+ * A bounded channel decouples download from ingest. A consumer coroutine
+ * verifies and batch-inserts in [CHUNK_SIZE] chunks as events arrive, and a
+ * full channel backpressures the socket instead of growing the heap (for one
+ * big relay, buffering the whole download could reach multiple GB).
  *
- * This class also OWNS the single-writer discipline: every store mutation —
- * both the streamed inserts and [deleteFromStore] — serializes behind one
- * [Mutex], so parallel relay syncs never write concurrently.
+ * The channel handling also carries the tail-wedge fix: a dead consumer cancels
+ * the channel, so a producer parked in the non-cancellable [trySendBlocking]
+ * unblocks instead of deadlocking forever.
+ *
+ * This class also owns the single-writer discipline. Every store mutation, both
+ * the streamed inserts and [deleteFromStore], serializes behind one [Mutex], so
+ * parallel relay syncs never write concurrently.
  */
 internal class EventStreamPipeline(
     private val store: IEventStore,
@@ -76,15 +77,17 @@ internal class EventStreamPipeline(
     suspend fun deleteFromStore(filter: Filter) = storeWrites.withLock { store.delete(filter) }
 
     /**
-     * The streaming core: [producer] runs the relay download, handing every
-     * event to the callback; a consumer coroutine verifies + inserts them in
+     * The streaming core. [producer] runs the relay download, handing every
+     * event to the callback. A consumer coroutine verifies and inserts them in
      * [CHUNK_SIZE] chunks as they arrive. The bounded channel backpressures the
      * download (the callback blocks a socket thread briefly) instead of
-     * buffering the whole set. [producer] returns whether the download
-     * COMPLETED (vs timed out). [collectIds] gathers every event's id (for
-     * reconcile's deletion diff); [onVerified] fires with each verified chunk
-     * before it hits the store (discovery feeds newly-advertised relays from
-     * it); [needHint] supplies the reconcile target for the status line.
+     * buffering the whole set.
+     *
+     * [producer] returns whether the download completed (rather than timing
+     * out). [collectIds] gathers every event's id, for reconcile's deletion
+     * diff. [onVerified] fires with each verified chunk before it hits the
+     * store; discovery uses it to feed newly-advertised relays. [needHint]
+     * supplies the reconcile target for the status line.
      */
     suspend fun stream(
         relay: NormalizedRelayUrl,
@@ -117,14 +120,14 @@ internal class EventStreamPipeline(
                         }
                         flush()
                     } finally {
-                        // If the consumer stops for ANY reason — cancellation of
-                        // the pass, or an insert/verify exception — close the
-                        // channel for SEND so a producer parked in the
-                        // (non-cancellable) trySendBlocking unblocks immediately
-                        // instead of deadlocking on a full channel forever. This
-                        // is the fix for the tail-wedge: without it, "producer
-                        // closes the channel" only holds while the consumer keeps
-                        // draining, which a dead consumer doesn't.
+                        // If the consumer stops for any reason (the pass is
+                        // cancelled, or an insert/verify throws), close the
+                        // channel for send. That way a producer parked in the
+                        // non-cancellable trySendBlocking unblocks immediately
+                        // instead of deadlocking on a full channel forever.
+                        // This is the tail-wedge fix: without it, "the producer
+                        // closes the channel" only holds while the consumer
+                        // keeps draining, which a dead consumer doesn't.
                         channel.cancel()
                     }
                 }
@@ -135,8 +138,9 @@ internal class EventStreamPipeline(
                         progress.onEvent()
                         watch.tick(received.incrementAndGet(), needHint())
                         // A failed send means the consumer closed the channel
-                        // (died/cancelled) — stop feeding promptly rather than
-                        // draining the rest of the relay download into the void.
+                        // (it died or was cancelled). Stop feeding promptly
+                        // rather than draining the rest of the download into
+                        // the void.
                         if (channel.trySendBlocking(e).isFailure) throw CancellationException("consumer stopped; aborting download")
                         progress.onQueued()
                     }
@@ -154,8 +158,8 @@ internal class EventStreamPipeline(
         filter: Filter,
         onVerified: (suspend (List<Event>) -> Unit)?,
     ): Int {
-        // Stage-timed for the status line's bottleneck dial: signature CPU vs
-        // waiting on the single writer vs the store insert itself.
+        // Stage-timed for the status line's bottleneck dial: signature CPU
+        // time vs. waiting on the single writer vs. the store insert itself.
         val t0 = System.nanoTime()
         val valid = dropForged(events, relay, filter)
         onVerified?.invoke(valid)
@@ -171,9 +175,9 @@ internal class EventStreamPipeline(
     }
 
     /**
-     * Drop events whose id or Schnorr signature doesn't verify — relays are
-     * untrusted input. Verification is CPU-bound (~0.2ms each) and the chunks
-     * are large, so it fans out across cores; order is preserved.
+     * Drop events whose id or Schnorr signature doesn't verify, since relays
+     * are untrusted input. Verification is CPU-bound (~0.2ms each) and the
+     * chunks are large, so it fans out across cores. Order is preserved.
      */
     private suspend fun dropForged(
         events: List<Event>,
@@ -195,10 +199,10 @@ internal class EventStreamPipeline(
     }
 
     /**
-     * The download's slot name in the status line: relay, kind, (for provider
-     * syncs) the author, and (for time-sliced syncs) the slice's date window —
-     * without it, parallel slices of the same filter are indistinguishable and
-     * a stalled one can't be identified.
+     * The download's slot name in the status line: relay, kind, the author
+     * (for provider syncs), and the slice's date window (for time-sliced
+     * syncs). Without the window, parallel slices of the same filter look
+     * identical, and a stalled one can't be told apart.
      */
     private fun label(
         relay: NormalizedRelayUrl,

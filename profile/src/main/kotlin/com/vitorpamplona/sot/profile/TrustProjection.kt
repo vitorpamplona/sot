@@ -23,29 +23,27 @@ package com.vitorpamplona.sot.profile
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.vespa.DocRef
-import com.vitorpamplona.sot.vespa.EventDoc
-import com.vitorpamplona.sot.vespa.EventIndex
-import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.IngestStats
-import com.vitorpamplona.sot.vespa.ProfileCells
-import com.vitorpamplona.sot.vespa.ProfileDoc
-import com.vitorpamplona.sot.vespa.ProfileIndex
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
+import com.vitorpamplona.sot.vespa.client.DocRef
+import com.vitorpamplona.sot.vespa.client.EventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.doc.ProfileCells
+import com.vitorpamplona.sot.vespa.doc.ProfileDoc
+import com.vitorpamplona.sot.vespa.doc.ProfileIndex
 import com.vitorpamplona.sot.vespa.mapBounded
+import com.vitorpamplona.sot.vespa.query.EventQuery
 
 /**
  * Maintains the `profile` parent documents — the per-pubkey trust tensors the
- * schema imports into every event's ranking — as an [EventIndex] DECORATOR:
- * wrap the index the store writes through, and every mutation that touches
- * trust data triggers a recompute.
+ * schema imports into every event's ranking. It works as an [EventIndex]
+ * DECORATOR: it wraps the index the store writes through, so every mutation that
+ * touches trust data triggers a recompute.
  *
- * Observing the index (not the events) is the whole trick: the store's
- * semantic machinery — supersession, kind-5, vanish, sweeps, admin deletes —
- * all funnel into [put]/[remove] calls here, so every deletion style updates
- * the tensors with ZERO deletion-specific code. This replaces v1's
- * change-feed projection and its provenance maps, id lookups, and
- * million-cell sweeps.
+ * Observing the index (not the events) is the whole trick. The store's semantic
+ * machinery — supersession, kind-5, vanish, sweeps, admin deletes — all funnels
+ * into [put]/[remove] calls here, so every deletion style updates the tensors
+ * with ZERO deletion-specific code.
  *
  * Recompute, never cell surgery: a change re-derives the SUBJECT's whole
  * [ProfileDoc] from the stored kind-30382s about them —
@@ -57,11 +55,10 @@ import com.vitorpamplona.sot.vespa.mapBounded
  *      followers tag; a version without a rank tag contributes nothing
  *      (the provider retracted the score).
  *
- * Idempotent and self-healing; no cells left -> the parent doc is removed. A
- * 10040 change (new provider, switched provider, vanished observer)
- * recomputes every subject its service keys had scored, so late-arriving or
- * superseded provider lists re-attribute stored scores automatically —
- * v1's "unresolved" events are picked up instead of dropped.
+ * Idempotent and self-healing; when no cells are left the parent doc is removed.
+ * A 10040 change (new provider, switched provider, vanished observer) recomputes
+ * every subject its service keys had scored. So late-arriving or superseded
+ * provider lists re-attribute stored scores automatically.
  *
  * Recomputes run inline with the store's single-writer insert, so ranking is
  * read-your-writes consistent with the event corpus. [rebuildAll] re-derives
@@ -94,24 +91,24 @@ class TrustProjection(
     }
 
     /**
-     * The bulk path writes ranking with ZERO reads: the store's supersession
+     * The bulk path writes ranking with ZERO reads. The store's supersession
      * guarantees every card reaching this putAll is the NEWEST version of its
      * (service, subject) address, so its rank/followers can be applied as a
-     * tensor-cell UPDATE ([ProfileIndex.updateCells]) directly — measured on
-     * an 11M-card load, re-deriving parents from re-fetched cards was 44% of
-     * the entire ingest wall clock.
+     * tensor-cell UPDATE ([ProfileIndex.updateCells]) directly. Measured on an
+     * 11M-card load, re-deriving parents from re-fetched cards was 44% of the
+     * entire ingest wall clock.
      *
      * Semantics note (many services -> ONE observer cell): the cell holds the
      * latest-arriving mapped card's value, where the full derivation held an
-     * arbitrary one — equally arbitrary, an order of magnitude cheaper. A
-     * RETRACTION (a card whose rank tag disappeared) can't be applied blindly
-     * (another service's card may still back the cell), so those rare
-     * subjects take the exact recompute path; deletions and 10040 changes
-     * always did.
+     * arbitrary one. Equally arbitrary, and an order of magnitude cheaper. A
+     * RETRACTION (a card whose rank tag disappeared) can't be applied blindly,
+     * because another service's card may still back the cell. So those rare
+     * subjects take the exact recompute path; deletions and 10040 changes always
+     * did.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         IngestStats.timed("write") { inner.putAll(docs) }
-        // Provider lists first (ONE walk over the union): they change the map the scores attribute through.
+        // Provider lists first (ONE walk over the union): they change the service->observer map the scores are attributed through.
         recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
         val cards = docs.filter { it.kind == ContactCardEvent.KIND }
         if (cards.isEmpty()) return
@@ -128,7 +125,7 @@ class TrustProjection(
                 updates += ProfileCells(subject, observer, quality, followers)
             } else {
                 // A card MISSING either dimension can't take the zero-read cell
-                // update: updateCells only ADDS cells, so a null dimension would
+                // update. updateCells only ADDS cells, so a null dimension would
                 // leave the OTHER tensor's prior cell stale (bulk would diverge
                 // from the single-doc derive, which drops it). Any partial or
                 // full retraction goes through the read-based recompute, which
@@ -142,11 +139,11 @@ class TrustProjection(
 
     /**
      * The batched recompute behind [putAll], [recomputeSubjectsOf] and
-     * [rebuildAll]: the touched subjects' score docs fetched back in CHUNKED,
-     * concurrency-BOUNDED queries (hundreds of subjects per round trip, a few
-     * round trips in flight — unbounded fan-out measurably times the engine
-     * out), every parent derived locally, and the results written through one
-     * pipelined [ProfileIndex.putAll].
+     * [rebuildAll]. The touched subjects' score docs are fetched back in
+     * CHUNKED, concurrency-BOUNDED queries: hundreds of subjects per round trip,
+     * a few round trips in flight (unbounded fan-out measurably times the engine
+     * out). Every parent is derived locally, and the results are written through
+     * one pipelined [ProfileIndex.putAll].
      */
     private suspend fun recomputeBatch(
         subjects: List<String>,
@@ -190,8 +187,8 @@ class TrustProjection(
 
     /**
      * Bulk remove: read the doomed docs (what each removal invalidates), delete
-     * them all pipelined, then react ONCE for the whole set — every removed
-     * 30382's subject re-derived in a single batch, not one recompute per doc.
+     * them all pipelined, then react ONCE for the whole set. Every removed
+     * 30382's subject is re-derived in a single batch, not one recompute per doc.
      */
     override suspend fun removeAll(ids: List<String>) {
         val docs = ids.mapBounded(QUERY_FANOUT) { inner.get(it) }.filterNotNull()
@@ -241,14 +238,14 @@ class TrustProjection(
     private val providers = ProviderMap(inner)
 
     /**
-     * One or more 10040s appeared or disappeared: the provider map changed, so
+     * One or more 10040s appeared or disappeared. The provider map changed, so
      * every subject their rank services have scored needs re-attribution. The
-     * subjects are enumerated through the engine's VISIT walk (d tags
-     * projected), not a search — a provider with millions of stored scores is
-     * exactly where a 10k search page would silently miss most of them — and
-     * re-derived in batches, empties removed (a re-attribution can empty a
-     * parent). A BATCH of 10040s does ONE walk over the union of their
-     * services, not one walk per list.
+     * subjects are enumerated through the engine's VISIT walk (d tags projected),
+     * not a search: a provider with millions of stored scores is exactly where a
+     * 10k search page would silently miss most of them. The subjects are then
+     * re-derived in batches, with empties removed (a re-attribution can empty a
+     * parent). A BATCH of 10040s does ONE walk over the union of their services,
+     * not one walk per list.
      */
     private suspend fun recomputeSubjectsOf(listDocs: List<EventDoc>) {
         if (listDocs.isEmpty()) return
@@ -263,13 +260,12 @@ class TrustProjection(
 
     /**
      * Visit every score doc matching [query] and re-derive the subjects in
-     * bounded batches, STREAMING: the subject buffer is flushed and cleared
-     * every [RECOMPUTE_BATCH] distinct subjects rather than collecting the
-     * whole corpus first — a `rebuildAll()` or a large provider's 10040 change
-     * would otherwise hold millions of subject strings in memory (an OOM on
-     * the exact "scale-safe" path). A subject whose cards span a batch
-     * boundary is re-derived (idempotent), which is cheaper than an unbounded
-     * dedup set.
+     * bounded batches, STREAMING. The subject buffer is flushed and cleared every
+     * [RECOMPUTE_BATCH] distinct subjects rather than collecting the whole corpus
+     * first. Otherwise a `rebuildAll()` or a large provider's 10040 change would
+     * hold millions of subject strings in memory (an OOM on the exact
+     * "scale-safe" path). A subject whose cards span a batch boundary is
+     * re-derived (idempotent), which is cheaper than an unbounded dedup set.
      */
     private suspend fun recomputeWalk(query: EventQuery) {
         val map = providers.get()

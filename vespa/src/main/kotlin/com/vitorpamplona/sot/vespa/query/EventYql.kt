@@ -18,27 +18,32 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa
+package com.vitorpamplona.sot.vespa.query
+import com.vitorpamplona.quartz.utils.Hex
+import com.vitorpamplona.sot.vespa.WHITESPACE
+import com.vitorpamplona.sot.vespa.isSingleLetterTagName
 
 /**
- * [EventQuery] -> YQL over the `event` schema. Returns null when the query
- * provably matches nothing (an id/author constraint with no valid 64-hex
- * entries, a non-single-letter tag name, limit 0) — the caller answers with an
- * empty result (EOSE) instead of asking Vespa.
+ * Builds YQL over the `event` schema from an [EventQuery]. Returns null when
+ * the query provably matches nothing, so the caller can answer with an empty
+ * result (EOSE) instead of asking Vespa. That happens for an id/author
+ * constraint with no valid 64-hex entries, a non-single-letter tag name, or
+ * limit 0.
  *
  * Injection safety: ids and authors only reach the YQL after 64-hex
- * validation; every other caller-supplied string is either escaped ([quote])
- * or passed out-of-band as a query parameter (the search words), except the
- * trigram literals, which are filtered to alphanumeric characters only.
+ * validation. Every other caller-supplied string is either escaped ([quote])
+ * or passed out-of-band as a query parameter (the search words). The one
+ * exception is the trigram literals, which are filtered to alphanumeric
+ * characters only.
  */
 object EventYql {
     /** Vespa's built-in no-scoring profile — filters without a search term. */
     const val RANK_UNRANKED = "unranked"
 
-    /** The DEFAULT search profile in event.sd (Brainstorm §12: text × concave trust). */
+    /** The DEFAULT search profile in event.sd: text relevance combined with concave trust. */
     const val RANK_SEARCH = "search"
 
-    /** Pure text relevance, no trust (`sort:text` / Brainstorm text_relevance). */
+    /** Pure text relevance, no trust (`sort:text`). */
     const val RANK_TEXT = "text"
 
     /** Text order with the trust floor applied (`filter:rank:…` without a sort). */
@@ -50,7 +55,7 @@ object EventYql {
     /** Ascending trust within each (still-descending) match tier (`sort:rank:asc`). */
     const val RANK_ASC = "rank_asc"
 
-    /** Brainstorm's default profile under its own name (`sort:followers`). */
+    /** Follower-count ranking (`sort:followers`). */
     const val RANK_FOLLOWERS = "sort_followers"
 
     /** YQL caps at this many query words; the rest add nothing and are dropped. */
@@ -84,7 +89,7 @@ object EventYql {
                 .take(MAX_QUERY_WORDS)
         if (words.isNotEmpty()) {
             clauses += BrainstormWordGroup.clause(words, params)
-            // Short queries lean harder on the trigram safety net (Brainstorm vespa.py).
+            // Short queries lean harder on the trigram safety net.
             params["ranking.features.query(w_gram)"] = if (BrainstormWordGroup.leansOnGrams(words)) "8.0" else "2.0"
         }
 
@@ -92,7 +97,7 @@ object EventYql {
         if (ranking != RANK_UNRANKED) {
             q.observer
                 ?.lowercase()
-                ?.takeIf(HEX64::matches)
+                ?.takeIf(Hex::isHex64)
                 ?.let { params["ranking.features.query(user_q)"] = "{$it:1.0}" }
         }
         q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
@@ -109,8 +114,6 @@ object EventYql {
         )
     }
 
-    private val WHITESPACE = Regex("\\s+")
-
     /**
      * One tag constraint: values joined with [op] ("or" = NIP-01 tags, "and" =
      * tagsAll). Null when it can't match: tag_index only holds single-letter
@@ -121,7 +124,7 @@ object EventYql {
         values: List<String>,
         op: String,
     ): String? {
-        if (name.length != 1 || (name[0] !in 'a'..'z' && name[0] !in 'A'..'Z')) return null
+        if (!isSingleLetterTagName(name)) return null
         if (values.isEmpty()) return null
         return values.joinToString(" $op ", prefix = "(", postfix = ")") { v -> "tag_index contains ${quote("$name:$v")}" }
     }
@@ -135,7 +138,7 @@ object EventYql {
         field: String,
         values: List<String>,
     ): String? {
-        val hexes = values.map { it.lowercase() }.filter(HEX64::matches).distinct()
+        val hexes = values.map { it.lowercase() }.filter(Hex::isHex64).distinct()
         if (hexes.isEmpty()) return null
         return "$field in (${hexes.joinToString(", ") { "\"$it\"" }})"
     }
@@ -150,6 +153,4 @@ object EventYql {
                 .replace("\r", "\\r")
                 .replace("\t", "\\t") +
             "\""
-
-    private val HEX64 = Regex("^[0-9a-f]{64}$")
 }

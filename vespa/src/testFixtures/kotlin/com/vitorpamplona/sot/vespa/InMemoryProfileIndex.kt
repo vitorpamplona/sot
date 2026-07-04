@@ -19,7 +19,8 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.vitorpamplona.sot.vespa
-
+import com.vitorpamplona.sot.vespa.doc.ProfileDoc
+import com.vitorpamplona.sot.vespa.doc.ProfileIndex
 import java.util.concurrent.ConcurrentHashMap
 
 /** The in-memory reference [ProfileIndex] — what projection tests assert against. */

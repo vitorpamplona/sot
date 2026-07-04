@@ -18,17 +18,20 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa
+package com.vitorpamplona.sot.vespa.client
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.query.EventQuery
 
 /**
  * The engine port an event store talks to: document-keyed get/put/remove plus
- * [EventQuery] recall. Implementations: the real Vespa client (document API +
- * feed + `/search/`) and the in-memory reference in this module's testFixtures
- * — which doubles as the executable spec of [EventQuery]'s matching semantics.
+ * [EventQuery] recall. There are two implementations: the real Vespa client
+ * (document API + feed + `/search/`) and the in-memory reference in this
+ * module's testFixtures. The reference also serves as the executable spec of
+ * [EventQuery]'s matching semantics.
  *
- * [get]/[put]/[remove] must be read-your-writes consistent per document, and
- * an acked [put] must be visible to [search] — Vespa's proton gives both (the
- * memory index is updated on the write path), which is what makes
+ * [get]/[put]/[remove] must be read-your-writes consistent per document, and an
+ * acked [put] must be visible to [search]. Vespa's proton gives both, because
+ * the memory index is updated on the write path. That is what makes
  * query-then-write semantics sound under a single writer.
  */
 interface EventIndex : AutoCloseable {
@@ -38,8 +41,8 @@ interface EventIndex : AutoCloseable {
 
     /**
      * Bulk [put]: same contract (all acked and visible on return), but an
-     * implementation may pipeline the writes — the real client keeps them all
-     * in flight at once, which is what makes million-event ingest feasible.
+     * implementation may pipeline the writes. The real client keeps them all in
+     * flight at once, which is what makes million-event ingest feasible.
      */
     suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
 
@@ -52,17 +55,20 @@ interface EventIndex : AutoCloseable {
     suspend fun search(query: EventQuery): List<EventDoc>
 
     /**
-     * Stream EVERY match's (id, created_at) — the full-corpus walk behind
-     * negentropy snapshots and sync reconcile diffs. Unlike [search] there is
-     * no result cap: the real client pages through Vespa's document-API visit
-     * (a streaming scan, not a query), calling [onPage] per page; order across
-     * pages is engine-defined, and callers must not assume recency.
-     * [onPage] returns whether to CONTINUE — false stops the walk early (a
-     * capped snapshot needn't scan a 10M corpus to learn it exceeds the cap).
-     * [withDTag] additionally projects each doc's `d` tag — what an
-     * addressable-corpus walk (rebuilding the trust projection) keys on. This
-     * default rides [search] and is only complete where search is uncapped
-     * (the in-memory reference).
+     * Stream EVERY match's (id, created_at). This is the full-corpus walk
+     * behind negentropy snapshots and sync reconcile diffs. Unlike [search]
+     * there is no result cap: the real client pages through Vespa's
+     * document-API visit (a streaming scan, not a query), calling [onPage] per
+     * page. Order across pages is engine-defined, so callers must not assume
+     * recency.
+     *
+     * [onPage] returns whether to CONTINUE; false stops the walk early. (A
+     * capped snapshot needn't scan a 10M corpus to learn it exceeds the cap.)
+     * [withDTag] also projects each doc's `d` tag, which is what an
+     * addressable-corpus walk (rebuilding the trust projection) keys on.
+     *
+     * This default rides [search], so it is only complete where search is
+     * uncapped (the in-memory reference).
      */
     suspend fun visitIds(
         query: EventQuery,

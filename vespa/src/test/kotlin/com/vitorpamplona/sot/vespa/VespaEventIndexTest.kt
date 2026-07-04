@@ -19,7 +19,11 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.vitorpamplona.sot.vespa
-
+import com.vitorpamplona.sot.vespa.client.DocRef
+import com.vitorpamplona.sot.vespa.client.VespaEventIndex
+import com.vitorpamplona.sot.vespa.doc.EventDoc
+import com.vitorpamplona.sot.vespa.doc.SearchFields
+import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test

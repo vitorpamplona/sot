@@ -28,18 +28,17 @@ import okhttp3.OkHttpClient
 import java.net.Proxy
 
 /**
- * Quartz's JVM websocket transport, backed by a single shared OkHttpClient
- * (ported from v1's `:indexer`).
+ * Quartz's JVM websocket transport, backed by a single shared OkHttpClient.
  *
- * Relay connections go out *directly* (Proxy.NO_PROXY), not through any
- * configured egress proxy — the JVM's https.proxyHost system property would
- * otherwise tunnel wss through a local proxy the relays aren't reachable
+ * Relay connections go out directly (Proxy.NO_PROXY), not through any
+ * configured egress proxy. Otherwise the JVM's https.proxyHost system property
+ * would tunnel wss through a local proxy that the relays aren't reachable
  * behind.
  *
- * The dispatcher limits are lifted to Amethyst's values (1024 total, 1024
- * per-host): OkHttp defaults to 64 concurrent calls / 5 per host, which would
- * silently queue relay connects once the sync fans out to dozens of relays —
- * the cap has to sit above the sync concurrency, not below it.
+ * The dispatcher limits are raised to 1024 total and 1024 per-host. OkHttp
+ * defaults to 64 concurrent calls and 5 per host, which would silently queue
+ * relay connects once the sync fans out to dozens of relays. The cap has to sit
+ * above the sync concurrency, not below it.
  */
 fun okHttpWebsocketBuilder(): WebsocketBuilder {
     val shared =

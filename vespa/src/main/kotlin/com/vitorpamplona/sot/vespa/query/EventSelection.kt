@@ -18,20 +18,23 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa
+package com.vitorpamplona.sot.vespa.query
+
+import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * [EventQuery] -> a Vespa *document selection* — the expression language the
- * document-API visit scans with (a streaming read over the whole corpus, no
- * result cap, no ranking). Only attribute-shaped constraints translate:
- * kinds, authors, owners, since/until, and the not-yet-expired guard
- * (`expires_at` is always materialized, so a plain range works).
+ * Builds a Vespa *document selection* from an [EventQuery]. A selection is the
+ * expression language the document-API visit scans with: a streaming read over
+ * the whole corpus, no result cap, no ranking. Only attribute-shaped
+ * constraints translate: kinds, authors, owners, since/until, and the
+ * not-yet-expired guard (`expires_at` is always materialized, so a plain range
+ * works).
  *
  * Returns null when [q] carries anything a selection can't (or shouldn't)
- * express — ids, tags, a search term, a limit, the expiry-sweep bound, or a
- * non-64-hex key — and the caller falls back to the ranked `/search/` path,
- * which handles all of those. Keys are validated to 64-hex BEFORE they are
- * quoted into the expression (same injection rule as [EventYql]).
+ * express: ids, tags, a search term, a limit, the expiry-sweep bound, or a
+ * non-64-hex key. In that case the caller falls back to the ranked `/search/`
+ * path, which handles all of those. Keys are validated to 64-hex BEFORE they
+ * are quoted into the expression (same injection rule as [EventYql]).
  */
 object EventSelection {
     fun build(q: EventQuery): String? {
@@ -53,9 +56,7 @@ object EventSelection {
         keys: List<String>,
     ): String? {
         val hexes = keys.map { it.lowercase() }
-        if (hexes.any { !HEX64.matches(it) }) return null
+        if (hexes.any { !Hex.isHex64(it) }) return null
         return hexes.distinct().joinToString(" or ", "(", ")") { "event.$field==\"$it\"" }
     }
-
-    private val HEX64 = Regex("^[0-9a-f]{64}$")
 }

@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.hexToByteArray
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -40,26 +41,25 @@ import com.vitorpamplona.quartz.utils.Hex
 import com.vitorpamplona.quartz.utils.TimeUtils
 
 /**
- * The relay's OWN Nostr identity (v1's `SERVER_NSEC`, carried forward), used
- * two ways:
+ * The relay's OWN Nostr identity (the key from `SERVER_NSEC`), used two ways:
  *
  *  - **as a NIP-42 client**: the composition root wraps [signer] in Quartz's
  *    `RelayAuthenticator` so auth-required upstream relays serve our sync
- *    connections; it is also NIP-11 `self`;
+ *    connections. It is also the NIP-11 `self`.
  *  - **as an author**: [ensurePublished] signs and inserts the identity's own
- *    events into its OWN store on first run — where the operator (or anyone)
- *    can read them, and the operator can supersede them any time from a
- *    normal Nostr client (replaceable supersession keeps the newest; no
- *    config redeploy):
+ *    events into its OWN store on first run. There the operator (or anyone) can
+ *    read them, and the operator can supersede them any time from a normal
+ *    Nostr client. Replaceable supersession keeps the newest, with no config
+ *    redeploy. The events are:
  *      - **kind 0** — service name/description/icon, seeded from config;
  *      - **kind 10002** — pointing at this relay's own URL;
  *      - **kind 10086** ([IndexerRelayListEvent]) — the indexer relay list,
  *        seeded with [DEFAULT_INDEX_RELAYS].
  *
- * **The stored 10086 IS the indexer configuration**: [indexRelays] reads the
- * newest one back wherever the sync needs "the index relays" — the relays
- * used to find 10002s for pubkeys we don't hold yet, and the fallback for
- * authors with no relay list. Changing indexers is publishing a new 10086.
+ * **The stored 10086 IS the indexer configuration.** [indexRelays] reads the
+ * newest one back wherever the sync needs "the index relays": the relays used
+ * to find 10002s for pubkeys we don't hold yet, and the fallback for authors
+ * with no relay list. Changing indexers means publishing a new 10086.
  */
 class Identity(
     val signer: NostrSignerSync,
@@ -114,7 +114,7 @@ class Identity(
 
     private suspend fun insert(
         store: IEventStore,
-        event: com.vitorpamplona.quartz.nip01Core.core.Event,
+        event: Event,
     ) {
         // A concurrent writer beating us to it is fine — the stored one rules.
         runCatching { store.insert(event) }
