@@ -27,8 +27,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Live counters for one sync pass, rendered as ONE dense status line every
- * [everyMs] — the answer to "where are things at?" AND "what's the
+ * Live counters for one sync pass, rendered as one dense status line every
+ * [everyMs]. It answers both "where are things at?" and "what's the
  * bottleneck?" while a multi-hour pass runs:
  *
  *   ~ providers 3/12 | recv 1.2M (8.9k/s) new 987k (2.1k/s) q 9.8k | vrf 0.4x wait 3.1x ins 92% | feed ok 950k inflight 512 lat 19ms | nip85.… k30382 05-19..06-02 741k/2.3M
@@ -44,10 +44,10 @@ import java.util.concurrent.atomic.AtomicLong
  *  - the feed [gauge] (registered by the composition) shows the engine
  *    client's live window and latency.
  *
- * Every component reports in: [RelaySyncer] counts events, registers each
- * live [Download], and stamps the stage timings; the pipeline phases set the
- * `done/total` position; other components contribute [gauge]s. The line only
- * prints while something is happening.
+ * Every component reports in. [RelaySyncer] counts events, registers each live
+ * [Download], and stamps the stage timings. The pipeline phases set the
+ * `done/total` position, and other components contribute [gauge]s. The line
+ * only prints while something is happening.
  */
 class SyncProgress(
     private val everyMs: Long = 5_000,
@@ -184,8 +184,9 @@ class SyncProgress(
             prevAt = now
 
             val line = statusLine(perSec, insPerSec, busy)
-            // While downloads are live, keep printing even if the numbers froze -
-            // a visibly stalled line beats silence. Only true idleness goes quiet.
+            // While downloads are live, keep printing even if the numbers
+            // froze: a visibly stalled line beats silence. Only true idleness
+            // goes quiet.
             if (active.isEmpty() && line == lastLine) continue
             lastLine = line
             log(line)

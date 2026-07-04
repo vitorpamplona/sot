@@ -45,13 +45,11 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
 
 /**
- * Quartz [IEventStore] backed by the search engine itself — the v2 replacement
- * for the SQLite store: ONE copy of the data, queryable with full NIP-01
- * filters plus NIP-50 search, wrappable in `ObservableEventStore` like any
- * other store.
+ * Quartz [IEventStore] backed by the search engine itself: ONE copy of the
+ * data, queryable with full NIP-01 filters plus NIP-50 search, and wrappable in
+ * `ObservableEventStore` like any other store.
  *
- * The SQLite store enforces Nostr semantics with triggers; this store enforces
- * the same rules in [insertLocked], matching sqlite ...Module.kt behavior:
+ * It enforces Nostr semantics in [insertLocked]:
  *
  *  - duplicates rejected ("duplicate:");
  *  - replaceables/addressables: strictly-older versions (created_at, then
@@ -62,27 +60,26 @@ import kotlin.coroutines.coroutineContext
  *    the kind 5 kept as a tombstone, and covered inserts rejected ("blocked:");
  *  - kind 62 covering [relay]: the owner's strictly-older events erased, the
  *    request kept, covered inserts rejected ("blocked:");
- *  - deletion/vanish enforcement keys on the event's OWNER (SQLite's
- *    pubkey_owner_hash): the gift-wrap recipient for kind 1059, else the
- *    author — recipients control the wraps addressed to them;
+ *  - deletion/vanish enforcement keys on the event's OWNER: the gift-wrap
+ *    recipient for kind 1059, else the author. Recipients control the wraps
+ *    addressed to them;
  *  - ephemeral kinds are accepted WITHOUT storing (persistence is a no-op per
  *    NIP-01; an observable wrapper still broadcasts them live); already-expired
  *    events rejected; [deleteExpiredEvents] sweeps due NIP-40 expirations via
  *    the derived `expires_at` attribute;
  *  - NIP-50: only kinds implementing [SearchableEvent] are searchable, via
- *    [SearchExtractors] — every kind's indexable content decomposed into the
- *    schema's per-kind search fields (= SQLite's FTS table, tiered);
- *    [reindexFullTextSearch] re-derives them after extractor/Quartz upgrades.
+ *    [SearchExtractors], which decomposes each kind's indexable content into the
+ *    schema's per-kind search fields. [reindexFullTextSearch] re-derives them
+ *    after extractor/Quartz upgrades.
  *
- * Correctness rests on two properties: all writes serialize behind one [Mutex]
- * (query-then-write is atomic against other writers in this process — mirror
- * of v1's single-writer rule), and [EventIndex] guarantees an acked put is
- * visible to search (see its contract). There are no cross-document
- * transactions: [transaction] buffers and applies sequentially without
- * rollback, which relay semantics never needed.
+ * Correctness rests on two properties. First, all writes serialize behind one
+ * [Mutex], so query-then-write is atomic against other writers in this process.
+ * Second, [EventIndex] guarantees an acked put is visible to search (see its
+ * contract). There are no cross-document transactions: [transaction] buffers and
+ * applies sequentially without rollback, which relay semantics never needed.
  *
- * Events are NOT verified here — like the SQLite store, verification is the
- * ingest path's job (syncer/relay), once, before insert.
+ * Events are NOT verified here. Verification is the ingest path's job
+ * (syncer/relay), once, before insert.
  */
 class VespaEventStore(
     private val index: EventIndex,
@@ -102,17 +99,16 @@ class VespaEventStore(
     override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
 
     /**
-     * Batches take the BULK fast path: the per-event path costs 3–5 index
+     * Batches take the BULK fast path. The per-event path costs 3–5 index
      * round-trips each (dup probe, tombstone probe, vanish probe,
-     * supersession), which caps ingest in the low thousands per second —
-     * useless against a million-event sync. Bulk runs the same rules with
-     * chunked queries and one pipelined [EventIndex.putAll].
+     * supersession), which caps ingest in the low thousands per second — useless
+     * against a million-event sync. Bulk runs the same rules with chunked
+     * queries and one pipelined [EventIndex.putAll].
      *
-     * Kind 5 and kind 62 keep the exact sequential path: they MUTATE the
-     * store, and order against their neighbors matters (a deletion inside the
-     * batch may target an event earlier in it). The batch is processed as
-     * plain-event runs separated by those events; tiny runs just loop
-     * [insertLocked].
+     * Kind 5 and kind 62 keep the exact sequential path: they MUTATE the store,
+     * and order against their neighbors matters (a deletion inside the batch may
+     * target an event earlier in it). The batch is processed as plain-event runs
+     * separated by those events; tiny runs just loop [insertLocked].
      */
     override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> =
         writes.withLock {
@@ -228,14 +224,14 @@ class VespaEventStore(
     }
 
     /**
-     * Undo Quartz's relay-side NIP-50 extension stripping: `LiveEventStore`
+     * Undo Quartz's relay-side NIP-50 extension stripping. `LiveEventStore`
      * strips `key:value` tokens from every REQ's search before the store sees
-     * it — the right default for stores that would match them as text, but
-     * THIS store honors `sort:`/`filter:rank:`/`include:spam`. The relay
-     * backend carries the pre-strip filters in [OriginalFilters] (same list,
-     * same order — only `search` differs), and each filter's original search
-     * string is restored before mapping. Direct callers (no context element)
-     * are untouched.
+     * it. That is the right default for stores that would match them as text,
+     * but THIS store honors `sort:`/`filter:rank:`/`include:spam`. The relay
+     * backend carries the pre-strip filters in [OriginalFilters] — the same list
+     * in the same order, only `search` differs — so each filter's original
+     * search string is restored before mapping. Direct callers (no context
+     * element) are untouched.
      */
     private suspend fun restoreSearches(filters: List<Filter>): List<Filter> {
         val originals = coroutineContext[OriginalFilters]?.filters ?: return filters
@@ -247,12 +243,12 @@ class VespaEventStore(
     }
 
     /**
-     * (created_at, id) pairs straight off the docs — no Event materialization,
-     * and no result cap: plain filters walk the corpus through the engine's
-     * visit ([com.vitorpamplona.sot.vespa.EventIndex.visitIds]), so a
-     * negentropy session (or a sync reconcile diff) sees the COMPLETE match
-     * set even when it dwarfs the search page limit. Searching or limit'd
-     * filters keep the search path — their semantics live there.
+     * (created_at, id) pairs straight off the docs — no Event materialization
+     * and no result cap. Plain filters walk the corpus through the engine's
+     * visit ([com.vitorpamplona.sot.vespa.EventIndex.visitIds]), so a negentropy
+     * session (or a sync reconcile diff) sees the COMPLETE match set even when it
+     * dwarfs the search page limit. Searching or limit'd filters keep the search
+     * path, since their semantics live there.
      */
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
@@ -263,9 +259,9 @@ class VespaEventStore(
         // learn the set exceeds the cap, not scan a 10M corpus to prove it.
         // (Multi-filter needs the full set for cross-filter dedup, so no break.)
         val cap = maxEntries?.takeIf { filters.size == 1 }?.plus(1)
-        // Exclude already-expired events (NIP-40), exactly as query/count do —
-        // otherwise the negentropy set offers ids a plain REQ would never
-        // serve, and a peer keeps trying to reconcile events we refuse to return.
+        // Exclude already-expired events (NIP-40), exactly as query/count do.
+        // Otherwise the negentropy set offers ids a plain REQ would never serve,
+        // and a peer keeps trying to reconcile events we refuse to return.
         for (q in filters.mapNotNull { it.toExpiryQuery() }) {
             if (q.search == null && q.limit == null) {
                 index.visitIds(q) { page ->
@@ -305,12 +301,12 @@ class VespaEventStore(
         }
     }
 
-    // ---- Nostr semantics (the sqlite ...Module.kt rules) -----------------------
+    // ---- Nostr semantics -------------------------------------------------------
 
     /**
      * NIP-09: a kind 5 authored by this event's OWNER, e/a-tagging it, with
-     * created_at >= the event's, blocks the insert (SQLite's
-     * reject_deleted_events trigger, both target styles time-guarded).
+     * created_at >= the event's, blocks the insert. Both target styles (e-tag
+     * and a-tag) are time-guarded.
      */
     private suspend fun rejectIfDeleted(event: Event) {
         // NIP-09/NIP-62: a deletion request against a deletion request or a
@@ -338,10 +334,10 @@ class VespaEventStore(
     }
 
     /**
-     * Replaceable/addressable version resolution, in ONE query: fetch the stored
-     * versions once, reject this insert if any of them wins the (created_at,
-     * lowest id wins ties) comparison, otherwise delete the strictly-older ones
-     * it supersedes (the sqlite trigger's reject + DELETE, merged).
+     * Replaceable/addressable version resolution in ONE query. Fetch the stored
+     * versions once. If any of them wins the (created_at, lowest id wins ties)
+     * comparison, reject this insert. Otherwise delete the strictly-older ones it
+     * supersedes.
      */
     private suspend fun supersede(event: Event) {
         val versions = currentVersions(event)
@@ -367,8 +363,8 @@ class VespaEventStore(
         val d = event.tags.dTag()
         // Constrain by d in the QUERY when it's present, so a prolific author's
         // OTHER addresses of this kind don't push the target version past the
-        // 10k search page (which would miss supersession — a real defect for
-        // trust providers with tens of thousands of 30382s). The empty/missing-d
+        // 10k search page. Missing it would miss supersession — a real defect for
+        // trust providers with tens of thousands of 30382s. The empty/missing-d
         // address can't use tag recall, so it keeps the broad (kind, author)
         // query; an author with >10k empty-d addressables of one kind is not a
         // real case. The doc-side d filter still normalizes missing == empty.
@@ -408,9 +404,8 @@ class VespaEventStore(
 
     /**
      * NIP-62 enforcement: when the request covers [relay], erase the owner's
-     * history "until its created_at" — INCLUSIVE, per the spec (Quartz's
-     * SQLite trigger uses strict <; the spec wins). The request itself is only
-     * stored after this runs, so it survives its own sweep.
+     * history "until its created_at" — INCLUSIVE, per the spec. The request
+     * itself is only stored after this runs, so it survives its own sweep.
      */
     private suspend fun applyVanish(ev: RequestToVanishEvent) {
         if (!ev.shouldVanishFrom(relay)) return
@@ -422,9 +417,9 @@ class VespaEventStore(
     /**
      * Re-derive the search fields for every stored event. Which kinds are
      * searchable — and how [SearchExtractors] decomposes them — is baked into
-     * this build, so docs indexed under old code can be stale (or missing
-     * from search) until this runs; it also clears fields for kinds that LOST
-     * searchability, mirroring the one-shot SQLite rebuild.
+     * this build, so docs indexed under old code can be stale (or missing from
+     * search) until this runs. It also clears fields for kinds that LOST
+     * searchability.
      */
     override suspend fun reindexFullTextSearch() {
         var cursor: String? = null
@@ -436,8 +431,8 @@ class VespaEventStore(
 
     /**
      * Resumable batch: docs are walked in id order from [resumeFrom]
-     * (exclusive). Reference-grade paging — each call re-lists the ids through
-     * [EventIndex.search]; the real Vespa client will page with a visit.
+     * (exclusive). This is reference-grade paging: each call re-lists the ids
+     * through [EventIndex.search]. The real Vespa client will page with a visit.
      */
     override suspend fun reindexFullTextSearch(
         resumeFrom: String?,

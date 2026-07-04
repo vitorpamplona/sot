@@ -30,8 +30,9 @@ import kotlinx.coroutines.launch
 /** Mount the relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
 fun Route.nostrRelay(server: SotRelayServer) {
     webSocket("/") {
-        // One writer coroutine drains an ordered queue to the socket; the engine's
-        // send callback is non-suspend, so we bridge via the channel.
+        // One writer coroutine drains an ordered queue to the socket. The
+        // engine's send callback is non-suspend, so we bridge through the
+        // channel.
         val outCh = Channel<String>(Channel.UNLIMITED)
         val writer = launch { for (text in outCh) outgoing.send(Frame.Text(text)) }
         try {

@@ -21,10 +21,10 @@
 package com.vitorpamplona.sot.vespa
 
 /**
- * A NIP-01 filter as plain values — what the relay module maps a REQ's Filter
- * into (this module stays Nostr-library-agnostic). Empty lists mean "no
- * constraint"; a filter that arrived with a present-but-empty list matches
- * nothing and must be handled by the caller before building.
+ * A NIP-01 filter as plain values. The relay module maps a REQ's Filter into
+ * this, which keeps this module Nostr-library-agnostic. Empty lists mean "no
+ * constraint". A filter that arrived with a present-but-empty list matches
+ * nothing, and the caller must handle that before building.
  */
 data class EventQuery(
     /** 64-hex event ids. */
@@ -64,10 +64,10 @@ data class EventQuery(
      */
     val ranking: String? = null,
     /**
-     * The per-observer trust floor — emitted as query(min_rank), which every
-     * trust profile gates on (and the default profile's wot_mult() zeroes
-     * below). Set from NIP-50 `filter:rank:…`, or the spam-filter default
-     * (Brainstorm's onlyRanked) that `include:spam` switches off.
+     * The per-observer trust floor, emitted as query(min_rank). Every trust
+     * profile gates on it, and the default profile's wot_mult() zeroes anything
+     * below it. Set from NIP-50 `filter:rank:…`, or from the spam-filter
+     * default that `include:spam` switches off.
      */
     val minRank: Double? = null,
 )

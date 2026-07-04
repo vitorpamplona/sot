@@ -37,7 +37,7 @@ import com.vitorpamplona.sot.vespa.IngestStats
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
 import com.vitorpamplona.sot.vespa.mapBounded
 
-/** A SEMANTIC insert rejection (duplicate / replaced / blocked). Transient engine failures are NOT this — they propagate. */
+/** A SEMANTIC insert rejection (duplicate, replaced, or blocked). Transient engine failures are NOT this; they propagate. */
 class RejectedException(
     message: String,
 ) : Exception(message)
@@ -53,19 +53,19 @@ internal object Rejections {
 }
 
 /**
- * The bulk insert fast path: one run of plain events (no kind 5/62), the same
- * Nostr rules the per-event [VespaEventStore] path enforces but with BATCHED
- * I/O — the per-event path costs 3–5 engine round trips each, useless against
- * a million-event sync. Stages:
+ * The bulk insert fast path for one run of plain events (no kind 5/62). It
+ * enforces the same Nostr rules as the per-event [VespaEventStore] path, but
+ * with BATCHED I/O. The per-event path costs 3–5 engine round trips per event,
+ * which is useless against a million-event sync. Stages:
  *
  *  A. local checks (ephemeral accepted-not-stored, expired rejected, later
  *     copies of an id already in this run rejected as duplicates);
  *  B. one `id in (…)` duplicate query per [CHECK_CHUNK], fanned out bounded;
  *  C. per-owner tombstone/vanish guards (one query each; an owner with a guard
  *     set too large for one page falls back to the exact per-event [probe]);
- *  D. per-address supersession resolved IN RUN ORDER (existing versions
- *     fetched per (kind, author), losers inside the run Accepted-then-
- *     superseded exactly as sequential inserts would end up);
+ *  D. per-address supersession resolved IN RUN ORDER. Existing versions are
+ *     fetched per (kind, author), and losers inside the run are
+ *     Accepted-then-superseded exactly as sequential inserts would end up;
  *  E. one pipelined [EventIndex.putAll] of the survivors.
  *
  * [probe] runs the exact per-event deletion/vanish checks (throwing
@@ -93,9 +93,9 @@ internal class BulkInsert(
         }
 
         // Stage B — ids already stored. The chunk queries are independent
-        // reads; they fan out with BOUNDED concurrency (serialized round trips
-        // starve the batch, but unbounded fan-out measurably 504s the engine's
-        // summary stage).
+        // reads, so they fan out with BOUNDED concurrency. Serialized round
+        // trips starve the batch, but unbounded fan-out measurably 504s the
+        // engine's summary stage.
         val stored = HashSet<String>()
         IngestStats.timed("dedup") {
             alive()
@@ -178,9 +178,10 @@ internal class BulkInsert(
                 toPut[e.id] = e
             }
         }
-        // Existing versions for every touched address, chunked: replaceables by
-        // (kind, authors…); addressables by (kind, author, d-tags…) via tag_index
-        // recall, bucketed doc-side (the d filter is exact there).
+        // Existing versions for every touched address, chunked. Replaceables are
+        // fetched by (kind, authors…). Addressables are fetched by
+        // (kind, author, d-tags…) via tag_index recall, then bucketed doc-side
+        // (the d filter is exact there).
         val existing = HashMap<Triple<Int, String, String?>, MutableList<EventDoc>>()
         val addressable = groups.keys.filter { it.third != null }
         val replaceable = groups.keys.filter { it.third == null }
@@ -191,11 +192,12 @@ internal class BulkInsert(
                         add(EventQuery(kinds = listOf(kind), authors = authors))
                     }
                 }
-                // Addressables recall PER (kind, author), never across authors: a
-                // multi-author (authors x d-tags) query is a CROSS PRODUCT, and a
+                // Addressables recall PER (kind, author), never across authors. A
+                // multi-author (authors x d-tags) query is a CROSS PRODUCT. In a
                 // dense corpus (dozens of service keys scoring the same subjects)
-                // makes it recall authors×ds real docs — past the 10k search page,
-                // silently missing existing versions. One author's d-set is bounded.
+                // that recalls authors×ds real docs, which runs past the 10k
+                // search page and silently misses existing versions. One author's
+                // d-set is bounded.
                 for ((ka, keys) in addressable.groupBy { it.first to it.second }) {
                     val (kind, author) = ka
                     keys.mapNotNull { it.third }.distinct().chunked(CHECK_CHUNK).forEach { ds ->
@@ -215,8 +217,8 @@ internal class BulkInsert(
         val removeFromStore = ArrayList<String>()
         for ((key, idxs) in groups) {
             val versions = existing[key].orEmpty()
-            // The run competes against the store's best; every stored version
-            // strictly older than the final winner is swept, like supersedeOlder.
+            // The run competes against the store's best. Every stored version
+            // strictly older than the final winner is swept.
             var bestDocId: String? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })?.id
             var bestAt = versions.maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE
             var bestId = versions.filter { it.createdAt == bestAt }.minOfOrNull { it.id }
@@ -227,7 +229,7 @@ internal class BulkInsert(
                 if (lost) {
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
                 } else {
-                    // The previous best is superseded: an in-run best stays
+                    // The previous best is superseded. An in-run best stays
                     // Accepted but never lands; a stored best is removed.
                     bestInRun?.let { toPut.remove(events[it].id) }
                     bestDocId?.let { removeFromStore += it }

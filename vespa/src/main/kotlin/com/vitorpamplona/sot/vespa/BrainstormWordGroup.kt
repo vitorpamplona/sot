@@ -21,19 +21,20 @@
 package com.vitorpamplona.sot.vespa
 
 /**
- * Brainstorm's per-word fuzzy recall — the VERBATIM port of brainstorm_server
- * `vespa_query.py` build_query()/_word_group(), extended with sot's generic
- * tier fields. This is the drift-prone half of [EventYql] (the half
- * MockVespaEngine's parser guards): it stays in lockstep with the schema's
- * search fields and match ladder, isolated here from the generic NIP-01/NIP-50
- * filter-to-YQL assembly.
+ * Per-word fuzzy recall, extended with sot's generic tier fields. This is the
+ * drift-prone half of [EventYql]. It must stay in lockstep with the schema's
+ * search fields and match ladder, so it is isolated here from the generic
+ * NIP-01/NIP-50 filter-to-YQL assembly. MockVespaEngine's parser guards against
+ * drift.
  *
- * One OR group per query word (each word matching ANY field recalls the doc;
- * ranking sorts it out), plus a joined-CamelCase variant (≥2 words: "John
- * Carvalho" finds @johncarvalho) and adjacent-pair concatenations (≥3 words).
- * Words go out-of-band as @w0..@w5 / @wj / @wp0.. query parameters — never
- * inlined — so no escaping is needed, and the trigram literals are filtered to
- * alphanumeric characters (safe to embed).
+ * There is one OR group per query word: a word that matches ANY field recalls
+ * the doc, and ranking sorts the results out. Two extra groups help multi-word
+ * queries: a joined-CamelCase variant for 2+ words ("John Carvalho" finds
+ * @johncarvalho), and adjacent-pair concatenations for 3+ words.
+ *
+ * Words go out-of-band as @w0..@w5 / @wj / @wp0.. query parameters, never
+ * inlined, so no escaping is needed. The trigram literals are filtered to
+ * alphanumeric characters, which makes them safe to embed.
  */
 internal object BrainstormWordGroup {
     /** All word groups OR'd into one parenthesized clause, filling [params] with the out-of-band words. */
@@ -81,11 +82,12 @@ internal object BrainstormWordGroup {
     }
 
     /**
-     * Match clauses for one (field, word): exact, prefix, and the
-     * length-gated fuzzy tiers (Meilisearch's typo budget: <4 chars exact
-     * or prefix only, ≥4 one edit, ≥9 two; prefixLength:2 = the first two
-     * characters must match exactly). Labels feed the schema's match_quality
-     * ladder on primary-role fields (known-inert today; kept verbatim).
+     * Match clauses for one (field, word): exact, prefix, and the length-gated
+     * fuzzy tiers. The fuzzy budget is by word length: under 4 chars gets exact
+     * or prefix only, 4+ chars one edit, 9+ chars two edits. prefixLength:2
+     * means the first two characters must match exactly. Labels feed the
+     * schema's match_quality ladder on primary-role fields; they have no effect
+     * today but are kept in place.
      */
     private fun fieldClauses(
         field: String,
@@ -161,11 +163,11 @@ internal object BrainstormWordGroup {
     private enum class Role { PRIMARY, AFFILIATION, RECALL }
 
     /**
-     * Field roles (vespa_query.py): primary = the name-tier fields whose
-     * clauses carry the match-quality labels (nip05/lud16 are @-address
-     * identity fields; search_primary is the tier twin), affiliation =
-     * bio + website (exact clause labeled mtch_affil), recall = everything
-     * that matches without labeling.
+     * Field roles. Primary is the name-tier fields whose clauses carry the
+     * match-quality labels: nip05/lud16 are @-address identity fields, and
+     * search_primary is the generic-tier twin. Affiliation is bio and website,
+     * whose exact clause is labeled mtch_affil. Recall is everything else,
+     * which matches without labeling.
      */
     private fun roleOf(field: String): Role =
         when (field) {

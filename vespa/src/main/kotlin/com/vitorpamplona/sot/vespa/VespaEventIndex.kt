@@ -46,17 +46,17 @@ import java.util.concurrent.Executors
 /**
  * The real [EventIndex]: Vespa over HTTP. Writes go through Vespa's official
  * feed client (HTTP/2 multiplexed, per-doc ordering, retries built in) and are
- * AWAITED before returning — the store's read-your-writes contract needs the
- * ack, and proton makes an acked write visible to search. Reads are the plain
+ * AWAITED before returning. The store's read-your-writes contract needs the
+ * ack, and proton makes an acked write visible to search. Reads use the plain
  * document API (get) and `/search/` (query), non-blocking via the JDK client's
  * async sends on virtual threads.
  *
  * Unlimited queries are capped at [maxHits] (the app package's query profile
- * must allow it); a full-corpus walk goes through [visitIds] — the document
- * API's visit, which streams past any cap.
+ * must allow it). A full-corpus walk goes through [visitIds] instead: the
+ * document API's visit, which streams past any cap.
  *
  * Counts read `totalCount`: exact for attribute-only recall, approximate under
- * a weakAnd search term — same caveat Vespa itself carries.
+ * a weakAnd search term. That is the same caveat Vespa itself carries.
  */
 class VespaEventIndex(
     private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
@@ -71,14 +71,14 @@ class VespaEventIndex(
             .setConnectionsPerEndpoint(8)
             .setMaxStreamPerConnection(256)
             // The dynamic throttler STARTS at 2 x connections in flight and
-            // ramps by throughput probing — but a batched writer (putAll
-            // bursts with query gaps between chunks) never sustains the probe,
-            // so it idles at the floor: ~20 in flight x ~20ms/write ≈ 1k/s
-            // against an engine measured taking twice that. Start the window
-            // high instead; the throttler still adapts DOWN if the engine
-            // pushes back. (Impl-only knob — the API interface doesn't
-            // expose it, so apply reflectively and shrug it off if a future
-            // client version renames it.)
+            // ramps up by probing throughput. A batched writer never sustains
+            // that probe (putAll bursts with query gaps between chunks), so it
+            // idles at the floor: ~20 in flight x ~20ms/write is about 1k/s,
+            // against an engine measured at twice that. Start the window high
+            // instead. The throttler still adapts DOWN if the engine pushes
+            // back. This is an implementation-only knob the API interface
+            // doesn't expose, so apply it reflectively and ignore it if a
+            // future client version renames it.
             .apply {
                 runCatching {
                     javaClass.getMethod("setInitialInflightFactor", Int::class.java).invoke(this, 64)
@@ -144,9 +144,9 @@ class VespaEventIndex(
 
     /**
      * The document-API visit: a streaming scan with a selection expression and
-     * continuation tokens — no result cap, no ranking, exactly what a
-     * full-corpus id walk needs. Queries a selection can't express fall back
-     * to the (capped) search default.
+     * continuation tokens. It has no result cap and no ranking, which is
+     * exactly what a full-corpus id walk needs. Queries a selection can't
+     * express fall back to the (capped) search default.
      */
     override suspend fun visitIds(
         query: EventQuery,
@@ -199,9 +199,9 @@ class VespaEventIndex(
     }
 
     /**
-     * Run [query] against `/search/` (POST — a filter with hundreds of ids or
-     * authors builds YQL far past any sane URL length); null when it provably
-     * matches nothing (no YQL built).
+     * Run [query] against `/search/`. It POSTs because a filter with hundreds
+     * of ids or authors builds YQL far past any sane URL length. Returns null
+     * when the query provably matches nothing (no YQL built).
      */
     private suspend fun queryRoot(
         query: EventQuery,
@@ -223,7 +223,7 @@ class VespaEventIndex(
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build()
         // A busy engine sheds load transiently (504 "Summary data is
-        // incomplete" under heavy concurrent summary fills); one failed page
+        // incomplete" under heavy concurrent summary fills). One failed page
         // must not kill a whole multi-hour sync, so 5xx gets brief retries.
         val resp = sendRetrying(req)
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
@@ -245,8 +245,8 @@ class VespaEventIndex(
     /**
      * Send [req], briefly retrying transient 5xx (the engine sheds load under
      * heavy concurrent summary fills). Shared by the query, get, and visit
-     * paths — the full-corpus visit walk is exactly a place where one 504
-     * page must not abort the whole scan.
+     * paths. The full-corpus visit walk is exactly a place where one 504 page
+     * must not abort the whole scan.
      */
     private suspend fun sendRetrying(req: HttpRequest): HttpResponse<String> {
         var resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
@@ -260,14 +260,14 @@ class VespaEventIndex(
 
     /**
      * One-line feed-client health for status lines: cumulative acks, the LIVE
-     * in-flight window, and per-request HTTP latency — the numbers that tell
-     * "the engine is slow" from "the client isn't pushing" at a glance
-     * (a starved window shows tiny inflight at low latency; a saturated
-     * engine shows a big window at high latency).
+     * in-flight window, and per-request HTTP latency. Together these tell "the
+     * engine is slow" apart from "the client isn't pushing" at a glance. A
+     * starved window shows tiny inflight at low latency; a saturated engine
+     * shows a big window at high latency.
      */
     fun feedGauge(): String {
         val s = feed.stats()
-        // Non-2xx responses get retried and usually succeed — pushback, not
+        // Non-2xx responses get retried and usually succeed: pushback, not
         // loss (a big window ramping down shows a burst of 429s here). Only
         // transport exceptions are worth shouting about.
         val retried = s.responses() - s.successes()
@@ -291,10 +291,10 @@ class VespaEventIndex(
 
         /**
          * Per-operation feed deadline. The feed client's retry strategy handles
-         * transient errors, but a silently half-dead HTTP/2 connection (e.g.
-         * after an engine restart severs it) makes `await()` hang FOREVER with
-         * no deadline — which deadlocks the single-writer store behind it. A
-         * timeout turns that hang into a retryable failure.
+         * transient errors, but a silently half-dead HTTP/2 connection (for
+         * example, one severed by an engine restart) makes `await()` hang
+         * FOREVER with no deadline, which deadlocks the single-writer store
+         * behind it. A timeout turns that hang into a retryable failure.
          */
         fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))
     }

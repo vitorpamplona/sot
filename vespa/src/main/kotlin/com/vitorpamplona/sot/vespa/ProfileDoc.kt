@@ -31,15 +31,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.putJsonObject
 
 /**
- * One pubkey's ranking state — the `profile` GLOBAL parent document every
- * event references (`author_ref`) and imports for trust-weighted ranking.
- * NOT an event: the trust projection derives it from stored kind-30382s and
- * rewrites it whole on every change (recompute, not cell surgery), so it is
- * rebuildable from the event corpus at any time.
+ * One pubkey's ranking state: the `profile` GLOBAL parent document every event
+ * references (`author_ref`) and imports for trust-weighted ranking. It is NOT
+ * an event. The trust projection derives it from stored kind-30382s and
+ * rewrites it whole on every change (recompute, not cell surgery), so it can be
+ * rebuilt from the event corpus at any time.
  *
- * Tensor cells are keyed by OBSERVER pubkey (Brainstorm's shapes):
- * [qualityScores] = rank (influence*100, 0..100), [followerCounts] =
- * verified-follower count.
+ * Tensor cells are keyed by OBSERVER pubkey: [qualityScores] = rank
+ * (influence*100, 0..100), [followerCounts] = verified-follower count.
  */
 data class ProfileDoc(
     val pubkey: String,
@@ -76,7 +75,7 @@ data class ProfileDoc(
 
 /**
  * One score card's contribution to [subject]'s parent doc: the [observer]'s
- * cells, applied as a partial UPDATE — no read, no full-doc rewrite. Null
+ * cells, applied as a partial UPDATE with no read and no full-doc rewrite. Null
  * fields leave the corresponding tensor untouched.
  */
 data class ProfileCells(
@@ -100,11 +99,12 @@ interface ProfileIndex : AutoCloseable {
 
     /**
      * Upsert single tensor cells on the subjects' parents, creating missing
-     * parents — the insert path's ZERO-READ alternative to a full [put]
-     * (Vespa's tensor `add` update). The caller must only send values that
-     * are current-best for their (subject, observer) — the store's
-     * supersession provides exactly that at insert time. Same-subject updates
-     * apply in list order. Default: read-modify-write (the in-memory spec).
+     * parents. This is the insert path's ZERO-READ alternative to a full [put]
+     * (Vespa's tensor `add` update). The caller must only send values that are
+     * current-best for their (subject, observer); the store's supersession
+     * provides exactly that at insert time. Same-subject updates apply in list
+     * order. The default implementation is read-modify-write (the in-memory
+     * spec).
      */
     suspend fun updateCells(updates: List<ProfileCells>) =
         updates.forEach { u ->

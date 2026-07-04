@@ -93,10 +93,10 @@ class VespaProfileIndex(
     }
 
     /**
-     * Pipelined tensor-cell upserts (Vespa `add` update, create-if-missing):
-     * `add` overwrites an existing cell and creates absent ones, and the feed
-     * client keeps per-document ordering — so same-subject updates land in
-     * list order, exactly the [ProfileIndex.updateCells] contract.
+     * Pipelined tensor-cell upserts (Vespa `add` update, create-if-missing).
+     * `add` overwrites an existing cell and creates absent ones. The feed
+     * client keeps per-document ordering, so same-subject updates land in list
+     * order, which is exactly the [ProfileIndex.updateCells] contract.
      */
     override suspend fun updateCells(updates: List<ProfileCells>) {
         updates

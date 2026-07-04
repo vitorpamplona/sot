@@ -29,14 +29,14 @@ import com.vitorpamplona.sot.vespa.EventQuery
 
 /**
  * The NIP-85 observer-attribution map: `service key -> observer`, derived from
- * every stored kind-10040's `30382:rank` entries. A 30382 is SIGNED by a
- * service key but its score is credited to the OBSERVER — the 10040 author who
- * named that service — and this is the one place that link is resolved.
+ * every stored kind-10040's `30382:rank` entries. A 30382 is SIGNED by a service
+ * key, but its score is credited to the OBSERVER: the 10040 author who named that
+ * service. This is the one place that link is resolved.
  *
- * [get] is CACHED across a pass: the map only changes when a 10040 is written
- * or removed, so a run of single-30382 publishes (each re-deriving its subject)
- * pays the full 10040 scan ONCE, not per event. Every mutation path that
- * touches a 10040 [invalidate]s it. Safe as a plain @Volatile field: every
+ * [get] is CACHED across a pass. The map only changes when a 10040 is written or
+ * removed, so a run of single-30382 publishes (each re-deriving its subject) pays
+ * the full 10040 scan ONCE, not per event. Every mutation path that touches a
+ * 10040 [invalidate]s it. It is safe as a plain @Volatile field because every
  * caller runs under [TrustProjection]'s store single-writer lock.
  */
 internal class ProviderMap(

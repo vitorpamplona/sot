@@ -50,9 +50,10 @@ data class SyncOptions(
     val concurrency: Int = 64,
     /**
      * Force the authoritative silent-deletion pass on pages-only provider
-     * relays too (full enumeration + diff). Negentropy-capable relays detect
-     * silent deletions automatically on every full sync; this is only for
-     * providers whose relay can't reconcile. Costly — run on a slow cadence.
+     * relays too (full enumeration plus diff). Negentropy-capable relays detect
+     * silent deletions automatically on every full sync, so this is only for
+     * providers whose relay can't reconcile. It is costly, so run it on a slow
+     * cadence.
      */
     val reconcileScores: Boolean = false,
     /** Verify id + signature before storing. Test-only seam — leave on. */
@@ -61,9 +62,9 @@ data class SyncOptions(
 
 /**
  * The observer behind every unauthenticated search: a real user whose web of
- * trust defines the relay's default ranking. [relay] is their home relay —
- * where their FIRST 10002 is synced from, with no dependence on indexer
- * coverage; from there the standard chain runs.
+ * trust defines the relay's default ranking. [relay] is their home relay, where
+ * their FIRST 10002 is synced from, with no dependence on indexer coverage.
+ * From there the standard chain runs.
  */
 data class HouseAccount(
     val pubkey: HexKey,
@@ -72,9 +73,9 @@ data class HouseAccount(
 
 /**
  * The SCORES plane (docs/v2-sync-proposal.md, phase 1): per-observer trust
- * data, synced author-first in the one dependency order that keeps 10040s
- * authoritative — **10002 resolution precedes every per-author sync**,
- * because the freshest 10040 lives on the observer's own outbox relay:
+ * data, synced author-first. The dependency order keeps 10040s authoritative,
+ * so **10002 resolution precedes every per-author sync**, because the freshest
+ * 10040 lives on the observer's own outbox relay:
  *
  * ```
  * seed relays ──10040 hints──▶ store            (who the observers are)
@@ -85,12 +86,12 @@ data class HouseAccount(
  * ```
  *
  * Every step syncs INTO the store and reads the previous step's results back
- * OUT of the store — replaceable supersession is what makes "authoritative"
- * need no special code (whatever source a 10040 arrives from, the newest
- * wins; the outbox pass just makes sure the newest is actually seen).
- * Provider switches need no invalidation logic either: the sweep deletes any
- * provider's 30382s the moment no 10040 lists it, and the ranking projection
- * (`:profile`) re-derives the observer's cells from what remains.
+ * OUT of the store. Replaceable supersession is what makes "authoritative" need
+ * no special code: whatever source a 10040 arrives from, the newest wins, and
+ * the outbox pass just makes sure the newest is actually seen. Provider
+ * switches need no invalidation logic either. The sweep deletes any provider's
+ * 30382s the moment no 10040 lists it, and the ranking projection (`:profile`)
+ * re-derives the observer's cells from what remains.
  */
 class TrustSync(
     private val syncer: RelaySyncer,
@@ -117,12 +118,12 @@ class TrustSync(
     }
 
     /**
-     * Phase D — the stateless correctness backstop for provider switches:
-     * 30382s whose author (service key) NO stored 10040 lists for
-     * `30382:rank` anymore are stale — they pollute ranking — and are
-     * deleted. Catches every path to staleness (provider switch, observer
-     * removed, a 10040 deleted or vanished); the change-feed reactions only
-     * buy promptness, never correctness. The ranking projection re-derives
+     * Phase D: the stateless correctness backstop for provider switches. A
+     * 30382 is stale when no stored 10040 lists its author (the service key)
+     * for `30382:rank` anymore. Stale 30382s pollute ranking, so they are
+     * deleted. This catches every path to staleness (a provider switch, an
+     * observer removed, a 10040 deleted or vanished); the change-feed reactions
+     * only buy promptness, never correctness. The ranking projection re-derives
      * each observer's cells automatically from what remains.
      */
     private suspend fun sweepOrphanScores() {
@@ -131,8 +132,8 @@ class TrustSync(
                 .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
                 .flatMap { l -> l.rankProviders().map { it.pubkey } }
                 .toSet()
-        // Reference-grade enumeration; a Vespa grouping query (distinct 30382
-        // authors in one round trip) replaces this when the corpus grows.
+        // Full enumeration for now. A Vespa grouping query (distinct 30382
+        // authors in one round trip) will replace this when the corpus grows.
         val orphans =
             store
                 .query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND)))
@@ -153,8 +154,8 @@ internal const val AUTHORS_PER_FILTER = 500
 
 /**
  * What an observer's outbox owes the scores plane: their profile, a fresher
- * 10002, the AUTHORITATIVE 10040, and their own 5/62 (a deletion published
- * only to the author's outbox must still erase here — the store interprets both).
+ * 10002, the AUTHORITATIVE 10040, and their own 5/62. A deletion published only
+ * to the author's outbox must still erase here, and the store interprets both.
  */
 internal val OUTBOX_KINDS =
     listOf(

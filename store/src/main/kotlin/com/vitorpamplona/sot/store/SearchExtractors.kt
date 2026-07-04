@@ -89,29 +89,30 @@ import com.vitorpamplona.quartz.nipF4Podcasts.metadata.PodcastMetadataEvent
 import com.vitorpamplona.sot.vespa.SearchFields
 
 /**
- * Decomposes every Quartz [SearchableEvent] into the schema's search fields,
- * the way Brainstorm decomposed kind 0: title-like accessors -> the primary
- * tier, summary/description/hashtags -> secondary, the body -> tertiary.
+ * Decomposes every Quartz [SearchableEvent] into the schema's search fields by
+ * priority tier: title-like accessors go to the primary tier,
+ * summary/description/hashtags to the secondary, and the body to the tertiary.
  *
  * Each explicit branch splits exactly the accessors that kind's
- * `indexableContent()` concatenates (this file was derived from those
- * implementations — when Quartz adds fields to one, mirror it here). Kinds
- * whose indexableContent is a single string — plain-content kinds
- * (comments, chats, patches, zaps, statuses...) and single-accessor kinds —
- * ride the [SearchableEvent] fallback, which lands `indexableContent()` in
- * the tertiary tier: EVERY searchable kind Quartz knows, current or future,
- * is imported; the branches only add field-priority structure on top.
+ * `indexableContent()` concatenates. When Quartz adds a field to one of those,
+ * mirror it here.
  *
- * Non-searchable kinds return [SearchFields.NONE] and stay invisible to
- * NIP-50, exactly like SQLite's FTS table.
+ * Kinds whose indexableContent is a single string fall back to the
+ * [SearchableEvent] branch, which lands `indexableContent()` in the tertiary
+ * tier. This covers plain-content kinds (comments, chats, patches, zaps,
+ * statuses…) and single-accessor kinds. So EVERY searchable kind Quartz knows,
+ * current or future, is imported; the explicit branches only add field-priority
+ * structure on top.
+ *
+ * Non-searchable kinds return [SearchFields.NONE] and stay invisible to NIP-50.
  *
  * Extractors are derived data: changing one rolls out with
- * `reindexFullTextSearch`, no resync.
+ * `reindexFullTextSearch`, with no resync.
  */
 object SearchExtractors {
     fun extract(event: Event): SearchFields =
         when (event) {
-            // kind 0 -> the Brainstorm profile group, each field in its role.
+            // kind 0 -> the profile fields, each in its own role.
             is MetadataEvent -> {
                 val md = event.contactMetaData()
                 if (md == null) {

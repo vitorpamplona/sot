@@ -25,14 +25,14 @@ import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
 /**
- * Carries the ranking observer — the NIP-42-authenticated pubkey (or the
- * operator's default) whose web-of-trust weighs NIP-50 search hits — from the
- * relay session down to [VespaEventStore]'s queries.
+ * Carries the ranking observer from the relay session down to
+ * [VespaEventStore]'s queries. The observer is the NIP-42-authenticated pubkey
+ * (or the operator's default) whose web of trust weighs NIP-50 search hits.
  *
- * A coroutine-context element because the seam it crosses, Quartz's
- * `IEventStore`, has no per-caller parameter: the relay backend wraps each
+ * It is a coroutine-context element because the seam it crosses, Quartz's
+ * `IEventStore`, has no per-caller parameter. The relay backend wraps each
  * REQ/COUNT in `withContext(ObserverContext(pubkey))`, and the store reads it
- * back to stamp `EventQuery.observer`. Ranking context only — it never
+ * back to stamp `EventQuery.observer`. This is ranking context only; it never
  * changes which events match.
  */
 class ObserverContext(
@@ -45,12 +45,12 @@ class ObserverContext(
  * Carries the ORIGINAL request filters past Quartz's extension stripping.
  *
  * Quartz's `LiveEventStore` runs `strippingSearchExtensions` on every REQ's
- * filters before they reach the store — the right default for stores that
- * would otherwise match `key:value` tokens as text, but this store HONORS
- * the NIP-50 `sort:`/`filter:rank:`/`include:spam` extensions and must see
- * them. The relay backend stashes the pre-strip filters here; the store
- * restores each filter's `search` string positionally (same list, same
- * order — only the search field differs) before mapping to [EventQuery].
+ * filters before they reach the store. That is the right default for stores
+ * that would otherwise match `key:value` tokens as text, but this store HONORS
+ * the NIP-50 `sort:`/`filter:rank:`/`include:spam` extensions and must see them.
+ * The relay backend stashes the pre-strip filters here. The store then restores
+ * each filter's `search` string by position — it is the same list in the same
+ * order, only the search field differs — before mapping to [EventQuery].
  */
 class OriginalFilters(
     val filters: List<Filter>,

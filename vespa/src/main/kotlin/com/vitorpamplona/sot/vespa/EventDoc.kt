@@ -33,25 +33,24 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 
 /**
- * One live Nostr event as a Vespa `event` document — the unit of the relay
- * mirror (docid = [id]). The NIP-01 fields are held LOSSLESSLY: the signature
- * is over the canonical serialization of these exact values, so [toEventJson]
- * reconstructs a complete event clients can re-verify — no raw-blob duplicate.
+ * One live Nostr event as a Vespa `event` document (docid = [id]). The NIP-01
+ * fields are held LOSSLESSLY. The signature is over the canonical serialization
+ * of these exact values, so [toEventJson] can rebuild a complete event that
+ * clients re-verify. There is no separate raw-blob copy.
  *
- * [tags] is the exact tag array; the queryable `tag_index` field ([tagIndex])
- * is a derived, lossy view (single-letter tag names only, first value only)
- * used for `#x` filter recall and never for reconstruction.
+ * [tags] is the exact tag array. The queryable `tag_index` field ([tagIndex])
+ * is a derived, lossy view: single-letter tag names only, first value only. It
+ * is used for `#x` filter recall and never for reconstruction.
  *
- * Plain data, no Nostr library types: the store maps its events into this,
- * and verifies signatures BEFORE constructing one — everything in the index
- * is assumed already verified.
+ * This is plain data with no Nostr library types. The store maps its events
+ * into this and verifies signatures BEFORE constructing one, so everything in
+ * the index is assumed already verified.
  *
  * [owner] and [search] are DERIVED fields the store computes with Nostr
- * knowledge this module doesn't have: the owner is the pubkey Nostr semantics
- * key off (the gift-wrap recipient for kind 1059, else the author), and
- * [search] is the kind-specific decomposition of searchable kinds into the
- * schema's search fields (all-null = invisible to NIP-50 search, like
- * SQLite's FTS table).
+ * knowledge this module doesn't have. The owner is the pubkey Nostr semantics
+ * key off: the gift-wrap recipient for kind 1059, else the author. [search] is
+ * the kind-specific decomposition of searchable kinds into the schema's search
+ * fields. All-null means the event is invisible to NIP-50 search.
  */
 data class EventDoc(
     val id: String,
@@ -65,8 +64,8 @@ data class EventDoc(
     val search: SearchFields = SearchFields.NONE,
 ) {
     /**
-     * The queryable `"<letter>:<value>"` pairs: one per tag whose name is a
-     * single ASCII letter (the space NIP-01 `#x` filters can address) and that
+     * The queryable `"<letter>:<value>"` pairs. One per tag whose name is a
+     * single ASCII letter (the names NIP-01 `#x` filters can address) and that
      * has a value. Everything else still round-trips through [tags].
      */
     fun tagIndex(): List<String> =
@@ -98,12 +97,13 @@ data class EventDoc(
             put("content", content)
             put("sig", sig)
             put("owner", owner)
-            // The author's ranking state (the global profile parent) — how any
-            // kind ranks by the observer's trust in its author. Purely
-            // pubkey-derived, so it's stamped here, not by an extractor.
+            // Reference to the author's ranking state (the global profile
+            // parent), which controls how any kind ranks by the observer's
+            // trust in its author. It is purely pubkey-derived, so it's stamped
+            // here rather than by an extractor.
             put("author_ref", "id:profile:profile::$pubkey")
             for ((field, value) in search.fields()) put(field, value)
-            // Always written: an absent numeric attribute reads as 0 in Vespa,
+            // Always written. An absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
             put("expires_at", expiresAt() ?: NO_EXPIRATION)
         }
@@ -123,7 +123,7 @@ data class EventDoc(
     private fun tagsAsJson(): JsonArray = JsonArray(tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) })
 
     companion object {
-        /** The `expires_at` value of an event without a NIP-40 expiration: far enough to outlive every range check. */
+        /** The `expires_at` value for an event with no NIP-40 expiration: far enough out to outlive every range check. */
         const val NO_EXPIRATION = Long.MAX_VALUE
 
         /** Parse a raw NIP-01 event JSON into a doc. Throws on a malformed event. */

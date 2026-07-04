@@ -31,13 +31,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The NIP-42 first-contact concern, lifted out of the sync path: when an
- * [auth] signer is configured, the very first download to each relay must let
- * the AUTH challenge handshake (AUTH -> signed reply -> OK) settle first, or
- * the sync's opening REQs race it and come back empty. Idempotent per relay
- * (connections persist across the kinds a pass syncs), so [awaitOnFirstContact]
- * is a no-op after the first call — the syncer can call it before every
- * download without thinking about it.
+ * Handles the NIP-42 first-contact handshake, kept out of the sync path. When
+ * an [auth] signer is configured, the very first download to each relay must
+ * let the AUTH challenge handshake (AUTH -> signed reply -> OK) settle first.
+ * Otherwise the sync's opening REQs race it and come back empty. This is
+ * idempotent per relay, since connections persist across the kinds a pass
+ * syncs, so [awaitOnFirstContact] is a no-op after the first call. The syncer
+ * can call it before every download without worrying about it.
  */
 internal class NostrAuthHandshake(
     private val client: NostrClient,
@@ -47,11 +47,11 @@ internal class NostrAuthHandshake(
     private val authenticated = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
     /**
-     * First contact with [relay] when a NIP-42 signer is configured: open the
-     * connection with a throwaway probe and give the challenge handshake a
+     * First contact with [relay] when a NIP-42 signer is configured. Opens the
+     * connection with a throwaway probe and gives the challenge handshake a
      * bounded window. Without this, an auth-required relay rejects the sync's
-     * opening downloads — they race the handshake and come back empty. Relays
-     * that never challenge just cost the probe.
+     * opening downloads, because they race the handshake and come back empty.
+     * Relays that never challenge just pay for the probe.
      */
     suspend fun awaitOnFirstContact(relay: NormalizedRelayUrl) {
         if (auth === EmptyIAuthStatus || !authenticated.add(relay)) return
@@ -60,9 +60,9 @@ internal class NostrAuthHandshake(
                 client.fetchAllPages(relay, listOf(Filter(kinds = listOf(0), limit = 1)), timeoutMs = AUTH_PROBE_MS) { }
             }
         }
-        // "No auth pending" also describes the instant BEFORE the async challenge
-        // reply is recorded - so hold a short grace period unconditionally, then
-        // wait (bounded) for the recorded reply's OK.
+        // "No auth pending" also describes the moment BEFORE the async
+        // challenge reply is recorded. So hold a short grace period
+        // unconditionally, then wait (bounded) for the recorded reply's OK.
         val settleUntil = System.currentTimeMillis() + AUTH_GRACE_MS
         val deadline = System.currentTimeMillis() + AUTH_WAIT_MS
         while (System.currentTimeMillis() < deadline) {

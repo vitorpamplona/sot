@@ -29,15 +29,16 @@ import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.sot.vespa.EventDoc
 
 /*
- * Event <-> EventDoc and derived-field helpers: the exact stored form plus the
- * owner (gift-wrap recipient or author), the NIP-01 replaceable/addressable
- * address, and the doc-side d-tag reader. Pure, no store state.
+ * Event <-> EventDoc and derived-field helpers. Covers the exact stored form
+ * plus the owner (gift-wrap recipient or author), the NIP-01
+ * replaceable/addressable address, and the doc-side d-tag reader. Pure, with no
+ * store state.
  */
 
 /**
- * The event's exact stored form plus the two derived fields: [EventDoc.owner]
- * (gift-wrap recipient or author) and [EventDoc.search] (the kind-specific
- * decomposition from [SearchExtractors] — SQLite's FTS row, tiered).
+ * The event's exact stored form plus two derived fields: [EventDoc.owner] (the
+ * gift-wrap recipient or the author) and [EventDoc.search] (the kind-specific
+ * decomposition from [SearchExtractors]).
  */
 internal fun Event.toDoc(): EventDoc =
     EventDoc(
@@ -52,7 +53,7 @@ internal fun Event.toDoc(): EventDoc =
         search = SearchExtractors.extract(this),
     )
 
-/** The pubkey Nostr semantics key off (SQLite's pubkey_owner_hash): the gift-wrap recipient, else the author. */
+/** The pubkey Nostr semantics key off: the gift-wrap recipient, else the author. */
 internal fun Event.owner(): String = (this as? GiftWrapEvent)?.recipientPubKey() ?: pubKey
 
 /**

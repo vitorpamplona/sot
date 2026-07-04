@@ -27,10 +27,10 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * How many engine queries a batch stage keeps in flight. Serialized round
- * trips starve a batch, but UNBOUNDED fan-out is worse: a dozen concurrent
- * multi-thousand-summary queries time out proton's summary stage (`504
- * Summary data is incomplete`) — measured, not hypothetical.
+ * How many engine queries a batch stage keeps in flight. Serialized round trips
+ * starve a batch, but UNBOUNDED fan-out is worse: a dozen concurrent
+ * multi-thousand-summary queries time out proton's summary stage (`504 Summary
+ * data is incomplete`). This is measured, not hypothetical.
  */
 const val QUERY_FANOUT = 4
 

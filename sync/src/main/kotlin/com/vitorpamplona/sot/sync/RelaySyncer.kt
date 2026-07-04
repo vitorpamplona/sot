@@ -37,22 +37,22 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Syncs one (relay, filter) into the store using Quartz's generalized
- * `negentropySyncOrFetch`: it prefers NIP-77 negentropy (windowing around the
- * relay's `max_sync_events`, downloading reconciled ids through a bounded pool
- * of REQs) and transparently falls back to paginated fetch — with id-dedup — on
- * relays that can't reconcile.
+ * `negentropySyncOrFetch`. It prefers NIP-77 negentropy (windowing around the
+ * relay's `max_sync_events` and downloading reconciled ids through a bounded
+ * pool of REQs), and transparently falls back to paginated fetch, with
+ * id-dedup, on relays that can't reconcile.
  *
- * This class is the DOWNLOAD ORCHESTRATOR: it decides transport (negentropy vs
- * pages), judges completeness, and advances the persisted cursor. The
- * mechanics around it live in three collaborators, one responsibility each:
+ * This class is the download orchestrator. It decides transport (negentropy vs.
+ * pages), judges completeness, and advances the persisted cursor. The mechanics
+ * around it live in three collaborators, one responsibility each.
  * [EventStreamPipeline] streams a download into the store (bounded channel,
- * verify, batch insert, single-writer discipline); [NostrAuthHandshake] settles
- * the NIP-42 first-contact challenge; [CursorScope] maps a filter to its
+ * verify, batch insert, single-writer discipline). [NostrAuthHandshake] settles
+ * the NIP-42 first-contact challenge. [CursorScope] maps a filter to its
  * incremental `since` cursor.
  *
- * Incrementality is the persisted `since` cursor: each run scopes the filter to
- * `lastSync − slack`, so only new events transfer (the slack overlap absorbs
- * back-dated events). The cursor advances after every successful sync.
+ * Incrementality comes from the persisted `since` cursor: each run scopes the
+ * filter to `lastSync − slack`, so only new events transfer (the slack overlap
+ * absorbs back-dated events). The cursor advances after every successful sync.
  */
 class RelaySyncer(
     private val client: NostrClient,
@@ -60,17 +60,19 @@ class RelaySyncer(
     private val state: SyncState,
     private val log: (String) -> Unit,
     private val fetchBatch: Int = 500,
-    // Idle timeout: how long a download may hear NOTHING from the relay before we
-    // give up on it. Measured from the last message received (Quartz's negentropy
-    // uses a per-event IdleClock; the pages fallback a per-page wait), so it never
-    // fires while events are still streaming — or while we're busy verifying and
-    // inserting a chunk (that backpressures the socket, pausing the idle clock).
+    // Idle timeout: how long a download may hear NOTHING from the relay before
+    // we give up on it. Measured from the last message received (Quartz's
+    // negentropy uses a per-event IdleClock, the pages fallback a per-page
+    // wait), so it never fires while events are still streaming. It also
+    // doesn't fire while we're busy verifying and inserting a chunk, since that
+    // backpressures the socket and pauses the idle clock.
     private val idleTimeoutMs: Long = 10_000,
     private val slackSecs: Long = 3600,
-    // Verify each event's id + Schnorr signature before storing. A relay is
-    // untrusted input: without this, a forged kind:0/30382/10040 could
+    // Verify each event's id and Schnorr signature before storing. A relay is
+    // untrusted input: without this, a forged kind 0/30382/10040 could
     // impersonate a profile or poison the web-of-trust scores. Always on in
-    // production; the seam exists only so tests can feed unsigned fixtures.
+    // production; the parameter exists only so tests can feed unsigned
+    // fixtures.
     verifyEvents: Boolean = true,
     // Live counters for the pass's status line; silent by default (tests, tools).
     progress: SyncProgress = SyncProgress(log = { }),
@@ -78,9 +80,9 @@ class RelaySyncer(
     // the first contact with each relay waits for its challenge handshake, so
     // an auth-required relay doesn't reject the sync's opening downloads.
     auth: IAuthStatus = EmptyIAuthStatus,
-    // How many negentropy WINDOWS one session reconciles concurrently
-    // (Quartz default 1). The relay computes each window server-side, so at 1
-    // the socket idles for the full computation between streams; overlapping
+    // How many negentropy WINDOWS one session reconciles concurrently (Quartz
+    // default 1). The relay computes each window server-side, so at 1 the
+    // socket idles for the full computation between streams. Overlapping
     // windows hides that latency. Raise with care: it multiplies the relay's
     // concurrent NEG work per connection.
     private val reconcileConcurrency: Int = 1,
@@ -95,9 +97,10 @@ class RelaySyncer(
     )
 
     /**
-     * The outcome of [reconcile]: [relayIds] is the relay's complete current id
-     * set for the filter — non-null ONLY when the enumeration finished cleanly,
-     * so a diff against the store can safely treat missing ids as deleted.
+     * The outcome of [reconcile]. [relayIds] is the relay's complete current id
+     * set for the filter. It is non-null ONLY when the enumeration finished
+     * cleanly, so a diff against the store can safely treat missing ids as
+     * deleted.
      */
     data class ReconcileOutcome(
         val inserted: Int,
@@ -122,9 +125,10 @@ class RelaySyncer(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int = 0,
-        // Fires with each chunk of VERIFIED events as they stream in, before they
-        // hit the store. Discovery uses it to feed newly-advertised relays into
-        // its worker pool the moment they arrive — no store re-scan per relay.
+        // Fires with each chunk of VERIFIED events as they stream in, before
+        // they hit the store. Discovery uses it to feed newly-advertised relays
+        // into its worker pool the moment they arrive, with no store re-scan
+        // per relay.
         onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Outcome {
         handshake.awaitOnFirstContact(relay)
@@ -161,9 +165,10 @@ class RelaySyncer(
         } else if (usedNeg && neg.downloaded > 0 && state.relay(relay).negentropyCapable == null) {
             state.relay(relay).negentropyCapable = true
         } else if (neg.result?.pagedFallback == true && state.relay(relay).negentropyCapable == null) {
-            // The relay couldn't reconcile at all (Quartz already paged this filter
-            // as the fallback). Remember it: without this, every kind on every pass
-            // re-attempts negentropy and stalls out its idle timeout first.
+            // The relay couldn't reconcile at all (Quartz already paged this
+            // filter as the fallback). Remember it: without this, every kind on
+            // every pass re-attempts negentropy and stalls out its idle timeout
+            // first.
             state.relay(relay).negentropyCapable = false
             log("  [${relay.displayUrl()}] no negentropy - using pages from now on")
         }
@@ -173,10 +178,11 @@ class RelaySyncer(
     }
 
     /**
-     * A CLEAN negentropy run that still delivered fewer events than it reconciled
-     * (or nothing at all on a first sync) probably lost some — some relays
-     * advertise NIP-77 but serve it unreliably. A download that merely ran into
-     * the [maxEvents] cap is SUPPOSED to be short; that's not suspicion.
+     * A CLEAN negentropy run that still delivered fewer events than it
+     * reconciled (or nothing at all on a first sync) probably lost some. Some
+     * relays advertise NIP-77 but serve it unreliably. A download that merely
+     * ran into the [maxEvents] cap is SUPPOSED to be short, so that's not
+     * suspicious.
      */
     private fun looksIncomplete(
         neg: NegentropyStream,
@@ -191,18 +197,19 @@ class RelaySyncer(
     /**
      * Full-set sync that also returns the relay's complete current id set, so
      * the caller can DETECT silent deletions: events we hold that the relay no
-     * longer serves (a provider wiping rows without publishing a kind:5 leaves
-     * no other trace).
+     * longer serves. A provider wiping rows without publishing a kind 5 leaves
+     * no other trace.
      *
      * Always reconciles the whole set (no cursor). Quartz's negentropy sync
-     * reconciles against an EMPTY local set — it enumerates and downloads
-     * everything the relay matches — so the ids streaming past ARE the relay's
-     * full set; we just collect them. (The protocol's `haveCount` is always 0
-     * for the same reason — it can't detect deletions for us.) When negentropy
-     * isn't available the set is enumerated with pages instead — by default
-     * only when [forceEnumerate] asks, because a full page walk of a big
-     * provider is costly. [relayIds] is only returned when the download
-     * completed (a timeout must never be read as "everything else was deleted").
+     * reconciles against an EMPTY local set: it enumerates and downloads
+     * everything the relay matches, so the ids streaming past ARE the relay's
+     * full set, and we just collect them. (The protocol's `haveCount` is always
+     * 0 for the same reason, so it can't detect deletions for us.) When
+     * negentropy isn't available, the set is enumerated with pages instead. By
+     * default that only happens when [forceEnumerate] asks, because a full page
+     * walk of a big provider is costly. [relayIds] is only returned when the
+     * download completed, since a timeout must never be read as "everything
+     * else was deleted".
      */
     suspend fun reconcile(
         relay: NormalizedRelayUrl,
@@ -248,8 +255,8 @@ class RelaySyncer(
     suspend fun deleteFromStore(filter: Filter) = pipeline.deleteFromStore(filter)
 
     /**
-     * One negentropy-or-fetch download, streamed into the store. Quartz picks the
-     * transport (NIP-77 reconcile, or its own paged fallback); we track the
+     * One negentropy-or-fetch download, streamed into the store. Quartz picks
+     * the transport (NIP-77 reconcile, or its own paged fallback). We track the
      * reconciled `need` count so the heartbeat can show a target and [sync] can
      * judge completeness. A thrown failure is logged and surfaces as a null
      * [NegentropyStream.result].
@@ -297,23 +304,25 @@ class RelaySyncer(
     ): Streamed {
         val paged = if (maxEvents > 0) filter.copy(limit = maxEvents) else filter
         return pipeline.stream(relay, paged, collectIds, onVerified = onVerified) { onEvent ->
-            // NO outer wall-clock cap: a long-but-healthy download (many pages, each
-            // fast) must never be cut mid-stream. fetchAllPages' own per-page
-            // [idleTimeoutMs] watchdog is what stops a page that goes silent.
+            // NO outer wall-clock cap: a long-but-healthy download (many pages,
+            // each fast) must never be cut mid-stream. fetchAllPages' own
+            // per-page [idleTimeoutMs] watchdog is what stops a page that goes
+            // silent.
             //
-            // Tell a clean finish from an idle stall by the gap since the last event:
-            // a real end-of-stream returns right after its final page's events, while
-            // a stall returns ~idleTimeoutMs later having heard nothing. Only a clean
-            // finish may advance the cursor — a stall's missing tail must be retried.
+            // Tell a clean finish from an idle stall by the gap since the last
+            // event. A real end-of-stream returns right after its final page's
+            // events, while a stall returns ~idleTimeoutMs later having heard
+            // nothing. Only a clean finish may advance the cursor; a stall's
+            // missing tail must be retried.
             val lastEventMs = AtomicLong(System.currentTimeMillis())
             client.fetchAllPages(relay, listOf(paged), timeoutMs = idleTimeoutMs) { e ->
                 onEvent(e)
                 // Stamp AFTER onEvent, not before: onEvent blocks under
                 // backpressure (trySendBlocking while the consumer flushes a
                 // slow Vespa batch). Stamping before would count that ingest
-                // time as idle, so a clean finish whose last insert ran long
-                // would be misread as a timeout and the cursor would never
-                // advance — re-downloading the same window every pass.
+                // time as idle. Then a clean finish whose last insert ran long
+                // would be misread as a timeout, the cursor would never advance,
+                // and we would re-download the same window every pass.
                 lastEventMs.set(System.currentTimeMillis())
             }
             System.currentTimeMillis() - lastEventMs.get() < idleTimeoutMs
