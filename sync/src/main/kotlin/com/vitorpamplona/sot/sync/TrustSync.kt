@@ -58,6 +58,22 @@ data class SyncOptions(
     val reconcileScores: Boolean = false,
     /** Verify id + signature before storing. Test-only seam — leave on. */
     val verifyEvents: Boolean = true,
+    /**
+     * Sync the RECORDS plane too (the searchable content — every [IndexableKinds]
+     * kind — for the scored authors), not just the trust scores. Off by default:
+     * it is the full firehose (kind 1 dominates the corpus), so a deploy opts in
+     * once the scale path is proven. See [RecordsPass].
+     */
+    val syncRecords: Boolean = false,
+    /**
+     * Records plane: how many scored authors per score band. Authors sync in
+     * descending-score bands; within a band they batch by shared outbox relay.
+     * Wide enough that a band spans many relays (parallelism), narrow enough that
+     * trust order still governs what lands first.
+     */
+    val recordBandSize: Int = 2_000,
+    /** Records plane: cap on score bands per pass (the trust-ordered budget); 0 = all. */
+    val maxRecordBands: Int = 0,
 )
 
 /**
@@ -115,6 +131,14 @@ class TrustSync(
         progress.startPhase("chain", 0)
         BlendedPass(syncer, store, opts, progress, log, indexRelays, house).run(observers + setOfNotNull(house?.pubkey), seedRelays)
         sweepOrphanScores()
+
+        // The records plane rides on the scores just synced: the trusted authors
+        // are read back from the stored 30382s, so it always runs LAST.
+        if (opts.syncRecords) {
+            log("=== records: indexable content for scored authors ===")
+            progress.startPhase("records", 0)
+            RecordsPass(syncer, store, opts, progress, log, indexRelays).run()
+        }
     }
 
     /**

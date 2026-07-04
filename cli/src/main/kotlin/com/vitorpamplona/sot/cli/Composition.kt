@@ -131,7 +131,7 @@ internal fun syncService(
         // A house account without a usable home relay still syncs as a plain observer.
         extraObservers = setOfNotNull(pubkey.takeIf { house == null }),
         statePath = Config.syncStatePath,
-        opts = SyncOptions(),
+        opts = SyncOptions(syncRecords = Config.syncRecords, recordBandSize = Config.syncRecordBand),
         log = { println(styleLogLine(it)) },
         gauges = listOf(stack.feedGauge()),
     )
