@@ -20,11 +20,8 @@ bundled web UI is just another Nostr client speaking NIP-50 to it.
 Plain JVM (Kotlin 2.4, JDK 21). Docker runs only Vespa; every module is ordinary
 JVM, so you can point `VESPA_URL` at a remote Vespa and skip Docker.
 
-**`v1/` is the previous implementation** (SQLite store + Vespa projection),
-frozen as the working reference until the root modules are validated against a
-real Vespa deployment and real relays. Its modules build as `:v1:*`; no new work
-lands there; delete the folder once v2 is proven. `README.md` records the design
-decisions of the rewrite; `docs/` holds the proposals it grew from.
+`README.md` records the design decisions of the rewrite; `docs/` holds the
+proposals it grew from.
 
 ## Module map & dependency direction
 
@@ -127,7 +124,6 @@ sot status                      # Vespa/server up? per-kind event counts
 sot destroy                     # wipe sync cursors + Vespa's data volume
 
 ./gradlew :cli:uiDemo           # web-UI dev: in-memory relay + seeded demo events
-./gradlew :v1:cli:installDist   # the frozen v1 binary, if ever needed
 ```
 
 ## Configuration
@@ -141,7 +137,7 @@ identity + the identity's 10002), `SYNC_INTERVAL` (minutes; 0 = serve-only),
 `HOUSE_NPUB`/`HOUSE_RELAY` (the observer behind unauthenticated searches + where
 its first 10002 is synced from), `QUARTZ_LOG_LEVEL`, the NIP-11 identity
 `SERVER_NAME/DESCRIPTION/ICON/PUBKEY`, and `SERVER_NSEC` (the relay's OWN key;
-`sot init` generates it). Deliberately absent vs v1: no `EVENTS_DB` (Vespa is the
+`sot init` generates it). Deliberately absent: no `EVENTS_DB` (Vespa is the
 store), no `DEFAULT_OBSERVER` (the house account replaces it), no indexer-relay
 key — **the identity's stored kind-10086 IS the indexer list** (supersede it from
 any Nostr client; the sync reads the newest back).
@@ -158,8 +154,7 @@ any Nostr client; the sync reads the newest back).
 - **Quartz** (Amethyst's Nostr library) comes from JitPack, pinned by commit in the
   catalog (`quartz = "<commit>"`). Bumping it may need a JitPack build (first
   request can 4xx while it builds — retry).
-- Package root is `com.vitorpamplona.sot`; module = subpackage. (`v1/` keeps its
-  original unprefixed packages too — the two never share a classpath.)
+- Package root is `com.vitorpamplona.sot`; module = subpackage.
 
 ## Nostr / Vespa reference
 
@@ -203,5 +198,4 @@ any Nostr client; the sync reads the newest back).
 - Scale prerequisites for kind-1 volume are known and deferred (see
   `docs/v2-sync-proposal.md`): visit-based negentropy snapshots, a bulk-ingest
   fast path in `batchInsert`, `attribute: paged` on fat attributes.
-- More detail: `README.md` (the decisions), `docs/` (the proposals), `v1/`'s own
-  README for the legacy system.
+- More detail: `README.md` (the decisions), `docs/` (the proposals).
