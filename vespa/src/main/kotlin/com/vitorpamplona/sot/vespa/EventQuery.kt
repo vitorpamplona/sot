@@ -273,7 +273,11 @@ object EventYql {
 
     /** AND of the word's trigrams against about_gram (discriminative, unlike the OR nets). */
     private fun andAboutGramClause(word: String): String? {
-        val grams = trigrams(word)
+        // Lowercase like every other gram net (orGramClause): the *_gram fields
+        // are lowercase-indexed, so uppercased trigrams from a capitalized query
+        // word ("Vitor") would never match and this discriminative net would go
+        // silently dead for mixed-case input — the common case for names.
+        val grams = trigrams(word.lowercase())
         if (grams.isEmpty()) return null
         return grams.joinToString(" and ", prefix = "(", postfix = ")") { "about_gram contains \"$it\"" }
     }

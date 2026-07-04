@@ -125,10 +125,16 @@ class TrustProjection(
             val card = Event.fromJsonOrNull(doc.toEventJson()) as? ContactCardEvent ?: continue
             val quality = card.rank()
             val followers = card.followerCount()?.toDouble()
-            if (quality == null && followers == null) {
-                retracted += subject
-            } else {
+            if (quality != null && followers != null) {
                 updates += ProfileCells(subject, observer, quality, followers)
+            } else {
+                // A card MISSING either dimension can't take the zero-read cell
+                // update: updateCells only ADDS cells, so a null dimension would
+                // leave the OTHER tensor's prior cell stale (bulk would diverge
+                // from the single-doc derive, which drops it). Any partial or
+                // full retraction goes through the read-based recompute, which
+                // rebuilds the subject's whole doc from the newest stored cards.
+                retracted += subject
             }
         }
         IngestStats.timed("proj.write") { profiles.updateCells(updates) }

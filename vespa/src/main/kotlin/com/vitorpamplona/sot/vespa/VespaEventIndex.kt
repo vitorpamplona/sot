@@ -223,12 +223,7 @@ class VespaEventIndex(
         // A busy engine sheds load transiently (504 "Summary data is
         // incomplete" under heavy concurrent summary fills); one failed page
         // must not kill a whole multi-hour sync, so 5xx gets brief retries.
-        var resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
-        var attempt = 0
-        while (resp.statusCode() in 500..599 && attempt++ < QUERY_RETRIES) {
-            delay(500L * attempt)
-            resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
-        }
+        val resp = sendRetrying(req)
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return Json.parseToJsonElement(resp.body()).jsonObject["root"]?.jsonObject
     }
@@ -236,14 +231,29 @@ class VespaEventIndex(
     /** Grouping/meta children have no event fields; skip anything that doesn't parse as a doc. */
     private fun summaryOrNull(fields: JsonObject): EventDoc? = runCatching { EventDoc.fromSummary(fields) }.getOrNull()
 
-    private suspend fun send(url: String): HttpResponse<String> {
-        val req =
+    private suspend fun send(url: String): HttpResponse<String> =
+        sendRetrying(
             HttpRequest
                 .newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(30))
                 .GET()
-                .build()
-        return http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+                .build(),
+        )
+
+    /**
+     * Send [req], briefly retrying transient 5xx (the engine sheds load under
+     * heavy concurrent summary fills). Shared by the query, get, and visit
+     * paths — the full-corpus visit walk is exactly a place where one 504
+     * page must not abort the whole scan.
+     */
+    private suspend fun sendRetrying(req: HttpRequest): HttpResponse<String> {
+        var resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+        var attempt = 0
+        while (resp.statusCode() in 500..599 && attempt++ < QUERY_RETRIES) {
+            delay(500L * attempt)
+            resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+        }
+        return resp
     }
 
     /**

@@ -424,7 +424,10 @@ class VespaEventStore(
         maxEntries: Int?,
     ): List<IdAndTime> {
         val all = ArrayList<IdAndTime>()
-        for (q in filters.mapNotNull { it.toEventQuery() }) {
+        // Exclude already-expired events (NIP-40), exactly as query/count do —
+        // otherwise the negentropy set offers ids a plain REQ would never
+        // serve, and a peer keeps trying to reconcile events we refuse to return.
+        for (q in filters.mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs()) }) {
             if (q.search == null && q.limit == null) {
                 index.visitIds(q) { page -> page.forEach { all += IdAndTime(it.createdAt, it.id) } }
             } else {
@@ -512,10 +515,25 @@ class VespaEventStore(
      */
     private suspend fun currentVersions(event: Event): List<EventDoc> {
         if (!event.kind.isReplaceable() && !event.kind.isAddressable()) return emptyList()
-        val sameKindAuthor = index.search(EventQuery(kinds = listOf(event.kind), authors = listOf(event.pubKey)))
-        if (!event.kind.isAddressable()) return sameKindAuthor
+        if (!event.kind.isAddressable()) {
+            // Replaceable: one address per (kind, author); the query is exact.
+            return index.search(EventQuery(kinds = listOf(event.kind), authors = listOf(event.pubKey)))
+        }
         val d = event.tags.dTag()
-        return sameKindAuthor.filter { doc -> dTagOf(doc.tags) == d }
+        // Constrain by d in the QUERY when it's present, so a prolific author's
+        // OTHER addresses of this kind don't push the target version past the
+        // 10k search page (which would miss supersession — a real defect for
+        // trust providers with tens of thousands of 30382s). The empty/missing-d
+        // address can't use tag recall, so it keeps the broad (kind, author)
+        // query; an author with >10k empty-d addressables of one kind is not a
+        // real case. The doc-side d filter still normalizes missing == empty.
+        val docs =
+            if (d.isNullOrEmpty()) {
+                index.search(EventQuery(kinds = listOf(event.kind), authors = listOf(event.pubKey)))
+            } else {
+                index.search(EventQuery(kinds = listOf(event.kind), authors = listOf(event.pubKey), tags = mapOf("d" to listOf(d))))
+            }
+        return docs.filter { doc -> dTagOf(doc.tags) == d }
     }
 
     /**

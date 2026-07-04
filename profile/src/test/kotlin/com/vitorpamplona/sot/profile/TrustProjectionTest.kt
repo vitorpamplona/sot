@@ -211,6 +211,25 @@ class TrustProjectionTest {
         }
 
     /**
+     * A PARTIAL retraction through the bulk path — rank dropped, followers kept.
+     * The zero-read cell update can't express "clear the quality cell", so this
+     * must fall back to the read-based recompute; otherwise the stale quality
+     * cell survives (the bulk-vs-single divergence the audit caught).
+     */
+    @Test
+    fun `a partial retraction in a bulk batch drops the stale dimension`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 87, followers = 120, at = 100))
+            assertEquals(mapOf(observer to 87), profiles.get(subject)?.qualityScores)
+            // Newer card keeps followers but drops rank — via the bulk path.
+            store.batchInsert(listOf(card(rank = null, followers = 200, at = 200)))
+            val doc = profiles.get(subject)
+            assertEquals(emptyMap(), doc?.qualityScores, "the dropped rank must not linger")
+            assertEquals(mapOf(observer to 200.0), doc?.followerCounts, "followers updated")
+        }
+
+    /**
      * The bulk fast path (zero-read cell updates) must land the SAME tensors as
      * one-by-one inserts (full re-derivation), across supersession, multi-service
      * attribution, and retraction in one batch. The parity net for the

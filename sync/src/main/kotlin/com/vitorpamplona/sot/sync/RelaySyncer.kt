@@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -358,20 +359,32 @@ class RelaySyncer(
             val watch = progress.download(label(relay, filter))
             val consumer =
                 launch(Dispatchers.IO) {
-                    val chunk = ArrayList<Event>(CHUNK_SIZE)
+                    try {
+                        val chunk = ArrayList<Event>(CHUNK_SIZE)
 
-                    suspend fun flush() {
-                        if (chunk.isNotEmpty()) {
-                            inserted.addAndGet(insertBatch(chunk, relay, filter, onVerified))
-                            chunk.clear()
+                        suspend fun flush() {
+                            if (chunk.isNotEmpty()) {
+                                inserted.addAndGet(insertBatch(chunk, relay, filter, onVerified))
+                                chunk.clear()
+                            }
                         }
+                        for (e in channel) {
+                            progress.onDequeued()
+                            chunk.add(e)
+                            if (chunk.size >= CHUNK_SIZE) flush()
+                        }
+                        flush()
+                    } finally {
+                        // If the consumer stops for ANY reason — cancellation of
+                        // the pass, or an insert/verify exception — close the
+                        // channel for SEND so a producer parked in the
+                        // (non-cancellable) trySendBlocking unblocks immediately
+                        // instead of deadlocking on a full channel forever. This
+                        // is the fix for the tail-wedge: without it, "producer
+                        // closes the channel" only holds while the consumer keeps
+                        // draining, which a dead consumer doesn't.
+                        channel.cancel()
                     }
-                    for (e in channel) {
-                        progress.onDequeued()
-                        chunk.add(e)
-                        if (chunk.size >= CHUNK_SIZE) flush()
-                    }
-                    flush()
                 }
             val completed =
                 try {
@@ -379,7 +392,10 @@ class RelaySyncer(
                         collectIds?.add(e.id)
                         progress.onEvent()
                         watch.tick(received.incrementAndGet(), needHint())
-                        channel.trySendBlocking(e)
+                        // A failed send means the consumer closed the channel
+                        // (died/cancelled) — stop feeding promptly rather than
+                        // draining the rest of the relay download into the void.
+                        if (channel.trySendBlocking(e).isFailure) throw CancellationException("consumer stopped; aborting download")
                         progress.onQueued()
                     }
                 } finally {

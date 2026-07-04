@@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
@@ -188,7 +189,15 @@ class TrustSync(
             repeat(opts.concurrency.coerceAtLeast(1)) {
                 launch {
                     for (job in queue) {
-                        runCatching { job() }.onFailure { log("  ! chain unit failed: ${it.message}") }
+                        // Rethrow cancellation so a torn-down pass actually unwinds;
+                        // only real unit failures are logged-and-skipped.
+                        try {
+                            job()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            log("  ! chain unit failed: ${e.message}")
+                        }
                         unitDone()
                     }
                 }
@@ -452,7 +461,14 @@ internal suspend fun <T> forEachParallel(
         .map { item ->
             launch {
                 gate.withPermit {
-                    runCatching { body(item) }
+                    // One item's failure doesn't stop the rest — but cancellation must propagate.
+                    try {
+                        body(item)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // swallowed: the pass tolerates a single unit failing
+                    }
                 }
             }
         }.joinAll()
