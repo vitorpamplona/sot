@@ -67,6 +67,3 @@ internal fun Event.addressOrNull(): String? =
         kind.isAddressable() -> Address.assemble(kind, pubKey, tags.dTag())
         else -> null
     }
-
-/** The doc-side twin of Quartz's TagArray.dTag() — EventDoc tags are plain lists, not TagArrays. */
-internal fun dTagOf(tags: List<List<String>>): String = tags.firstOrNull { it.size >= 2 && it[0] == "d" }?.get(1) ?: ""

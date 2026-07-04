@@ -374,7 +374,7 @@ class VespaEventStore(
             } else {
                 index.search(EventQuery(kinds = listOf(event.kind), authors = listOf(event.pubKey), tags = mapOf("d" to listOf(d))))
             }
-        return docs.filter { doc -> dTagOf(doc.tags) == d }
+        return docs.filter { doc -> doc.dTagOrEmpty() == d }
     }
 
     /**
@@ -397,7 +397,7 @@ class VespaEventStore(
             index
                 .search(EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt))
                 // Replaceable kinds have ONE address regardless of the a-tag's d part.
-                .filter { !address.kind.isAddressable() || dTagOf(it.tags) == address.dTag }
+                .filter { !address.kind.isAddressable() || it.dTagOrEmpty() == address.dTag }
                 .forEach { index.remove(it.id) }
         }
     }

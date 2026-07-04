@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.vespa
 
+import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -41,9 +42,9 @@ import kotlinx.serialization.json.putJsonObject
  * (influence*100, 0..100), [followerCounts] = verified-follower count.
  */
 data class ProfileDoc(
-    val pubkey: String,
-    val qualityScores: Map<String, Int> = emptyMap(),
-    val followerCounts: Map<String, Double> = emptyMap(),
+    val pubkey: HexKey,
+    val qualityScores: Map<HexKey, Int> = emptyMap(),
+    val followerCounts: Map<HexKey, Double> = emptyMap(),
 ) {
     /** No cells at all — the projection removes the doc instead of storing it. */
     fun isEmpty(): Boolean = qualityScores.isEmpty() && followerCounts.isEmpty()

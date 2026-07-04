@@ -210,7 +210,7 @@ internal class BulkInsert(
                 versionQueries.mapBounded(QUERY_FANOUT) { q -> index.search(q) }
             }.forEach { docs ->
                 docs.forEach { doc ->
-                    val d = if (doc.kind.isAddressable()) dTagOf(doc.tags) else null
+                    val d = if (doc.kind.isAddressable()) doc.dTagOrEmpty() else null
                     existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
                 }
             }
