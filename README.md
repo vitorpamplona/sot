@@ -102,6 +102,66 @@ primary field, the `content` as the body. Any remaining kind Quartz can parse is
 still indexed, by its full text content. The authoritative mapping is
 [`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/sot/store/SearchExtractors.kt).
 
+## How the sync fills the store
+
+The relay can only rank what it holds, so a background sync pulls two different
+things from the Nostr network — always in this order, because the second depends
+on the first:
+
+1. **The trust** — who trusts whom, and by how much. This is what ranks results.
+2. **The content** — the actual notes, articles, and profiles people search for.
+
+Both passes verify every signature on the way in, and both only download what's
+new since last time — each source remembers a cursor. Trust is small and always
+runs; content is the firehose and is **off by default** (`SYNC_RECORDS=true`
+turns it on). When content is on, both run on every pass.
+
+### Pass 1 — the trust
+
+Trust data is chased down a chain, each step feeding the next. The key rule: a
+person's authoritative trust list lives on their own relays, so we have to find
+their relays before we can believe their list.
+
+1. **Find the observers.** Sweep the seed relays for trust lists (`kind 10040`).
+   Whoever published one is an **observer** — someone whose web of trust can rank
+   a search. The house account and anyone who logs in join this set too.
+2. **Find each observer's relays.** Ask the well-known index relays where that
+   observer keeps their events (their `kind 10002` relay list).
+3. **Read their real trust list.** Go to those relays and download the observer's
+   own `kind 10040` — the authoritative one — along with their profile and any
+   deletions. Whatever a seed relay hinted earlier, this version wins.
+4. **Download the scores.** Each trust list names scoring services and the relay
+   to fetch them from. Pull those services' score events (`kind 30382`) — the
+   actual trust numbers ranking uses.
+5. **Sweep the leftovers.** Delete any score whose scoring service no trust list
+   points to anymore (a provider was swapped out, an observer left). Ranking
+   re-derives itself from what remains.
+
+### Pass 2 — the content
+
+Now that trust exists, the store knows which authors are worth indexing: exactly
+the ones the scores in Pass 1 vouch for. Their content is pulled
+highest-trust-first, so the index fills from the top down — the authors most
+likely to rank at the top of a search land first.
+
+1. **Rank the authors.** Take everyone the trust scores mention, sorted by their
+   best score, and split them into bands — highest scores first.
+2. **Find their relays, spread the load.** Look up each author's outbox relays.
+   An author's posts sit on all their relays, so we fetch each author from just
+   one — the least busy of theirs. That turns the overlap between authors into a
+   way to spread work across many relays at once, which is what makes it fast:
+   any single relay only serves a few thousand events a second, so the more
+   relays streaming in parallel, the better.
+3. **One request per relay, everything at once.** Authors that share a relay are
+   fetched together — a single request pulls every searchable kind for a whole
+   batch of them, plus their deletions.
+
+Deletions here must be explicit (a `kind 5` delete or `kind 62` vanish): an
+author's relay is one copy among many, so a missing note just means "not on this
+copy," never "deleted." Trust scores in Pass 1 are the opposite — there, the
+scoring service's relay is the single source of truth, so a score that vanishes
+from it *is* a deletion.
+
 ## Running it
 
 Everything is plain JVM (Kotlin, JDK 21). Docker is only used to run Vespa; you
@@ -140,7 +200,7 @@ where they save re-implementing the same thing.
 | `:store` | `VespaEventStore` — the one event store, enforcing all Nostr rules on the way in: newer replaceable events supersede older ones, deletions (kind 5) and tombstones, account vanish (kind 62), expiry (NIP-40), gift-wrap ownership. It maps Nostr filters to `EventQuery`, extracts searchable text per event kind (`SearchExtractors`), and offers a batched fast path (`BulkInsert`) for high-volume sync. |
 | `:profile` | Keeps trust scores up to date. `TrustProjection` wraps the store's index and, whenever a trust assertion (kind 30382 / 10040) is added or removed, recomputes the subject's trust tensors on their `profile` document — so every insert and delete path updates ranking with no special-case code. |
 | `:relay` | `SotRelayServer` — the Nostr protocol engine (built on Quartz's relay base) over the store: full filter subscriptions, live updates, publish gating, COUNT (NIP-45), server-side sync (NIP-77), the NIP-11 info document, mounted on a Ktor websocket. NIP-42 login switches the ranking observer for that connection. |
-| `:sync` | Downloads trust data from the network. `RelaySyncer` orchestrates the download (negentropy or paged fallback, per-source cursors) and streams verified events into the store. `Identity` is the relay's own key and first-run self-publish. `TrustSync` / `BlendedPass` walk the trust chain in the right order (find each observer's relays, then their trust lists, then the individual assertions) and clean up assertions that no longer apply. `SyncService` runs it once or on a loop and enrolls newly-logged-in users. |
+| `:sync` | Downloads from the network in two planes (see [How the sync fills the store](#how-the-sync-fills-the-store)). `RelaySyncer` orchestrates each download (negentropy or paged fallback, per-source cursors) and streams verified events into the store. `Identity` is the relay's own key and first-run self-publish. `TrustSync` / `BlendedPass` walk the trust chain in the right order (find each observer's relays, then their trust lists, then the individual assertions) and clean up assertions that no longer apply; `RecordsPass` then pulls the searchable content for the scored authors, highest-trust-first (off unless `SYNC_RECORDS=true`). `SyncService` runs it once or on a loop and enrolls newly-logged-in users. |
 | `:cli` | The `sot` binary and the composition root that wires everything together. Commands: `init` (interactive setup), `serve`, `index` (one sync pass), `status`, and `up` / `down` / `deploy` / `destroy` for the local Vespa. |
 | `web/` | `index.html` — the search UI, itself a Nostr client. It opens a websocket to the server that served it and speaks NIP-50 directly: kind chips are filters, the sort menu and "unranked too" checkbox map to NIP-50 options, and "Search as me" is the NIP-07 → NIP-42 login that makes the results ranked by you. |
 
