@@ -34,7 +34,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.net.URI
-import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -63,6 +62,11 @@ class VespaEventIndex(
     private val feed: FeedClient =
         FeedClientBuilder
             .create(URI.create(baseUrl))
+            // Bulk ingest keeps thousands of puts in flight; the defaults
+            // (one connection, a slow-ramping throttle window) cap effective
+            // concurrency in the single digits and starve a local engine.
+            .setConnectionsPerEndpoint(8)
+            .setMaxStreamPerConnection(256)
             .setRetryStrategy(
                 object : FeedClient.RetryStrategy {
                     // Bounded: a dead Vespa should surface as failed ops, not a hang.
@@ -96,6 +100,18 @@ class VespaEventIndex(
             ).await()
     }
 
+    /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
+    override suspend fun putAll(docs: List<EventDoc>) {
+        docs
+            .map { doc ->
+                feed.put(
+                    DocumentId.of(NAMESPACE, DOCTYPE, doc.id),
+                    buildJsonObject { put("fields", doc.indexFields()) }.toString(),
+                    OperationParameters.empty(),
+                )
+            }.forEach { it.await() }
+    }
+
     override suspend fun remove(id: String) {
         feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), OperationParameters.empty()).await()
     }
@@ -117,21 +133,31 @@ class VespaEventIndex(
             ?.int ?: 0
     }
 
-    /** Run [query] against `/search/`; null when it provably matches nothing (no YQL built). */
+    /**
+     * Run [query] against `/search/` (POST — a filter with hundreds of ids or
+     * authors builds YQL far past any sane URL length); null when it provably
+     * matches nothing (no YQL built).
+     */
     private suspend fun queryRoot(
         query: EventQuery,
         hits: Int,
     ): JsonObject? {
         val vq = EventYql.build(query) ?: return null
-        val params =
-            buildMap {
+        val body =
+            buildJsonObject {
                 put("yql", vq.yql)
                 put("hits", hits.toString())
                 put("ranking", vq.ranking)
-                putAll(vq.params)
-            }
-        val url = "$baseUrl/search/?" + params.entries.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }
-        val resp = send(url)
+                vq.params.forEach { (k, v) -> put(k, v) }
+            }.toString()
+        val req =
+            HttpRequest
+                .newBuilder(URI.create("$baseUrl/search/"))
+                .timeout(Duration.ofSeconds(60))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build()
+        val resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return Json.parseToJsonElement(resp.body()).jsonObject["root"]?.jsonObject
     }

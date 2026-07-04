@@ -34,6 +34,14 @@
         <memory>0.92</memory>
       </resource-limits>
     </tuning>
+
+    <!-- Bulk ingest is the workload (a full trust-provider sync feeds
+         millions of docs); let proton use every core for feeding. -->
+    <config name="vespa.config.search.core.proton">
+      <feeding>
+        <concurrency>1.0</concurrency>
+      </feeding>
+    </config>
   </content>
 
 </services>

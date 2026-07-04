@@ -83,6 +83,41 @@ class TrustProjection(
         react(doc)
     }
 
+    /**
+     * The bulk path: one provider-map read for the whole batch, the touched
+     * subjects' score docs fetched back in CHUNKED queries (hundreds of
+     * subjects per round trip, not one), every parent derived locally, and
+     * the results written through one pipelined [ProfileIndex.putAll] — a
+     * million-score sync costs a handful of engine calls per chunk instead
+     * of two per subject.
+     */
+    override suspend fun putAll(docs: List<EventDoc>) {
+        inner.putAll(docs)
+        // Provider lists first: they change the map the scores attribute through.
+        docs.filter { it.kind == TrustProviderListEvent.KIND }.forEach { recomputeSubjectsOf(it) }
+        val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
+        if (subjects.isEmpty()) return
+        val serviceToObserver = providerMap()
+        val bySubject = HashMap<String, MutableList<EventDoc>>(subjects.size * 2)
+        subjects.chunked(FETCH_CHUNK).forEach { chunk ->
+            val wanted = chunk.toHashSet()
+            inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))).forEach { doc ->
+                subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
+            }
+        }
+        val puts = ArrayList<ProfileDoc>(subjects.size)
+        for (subject in subjects) {
+            val profile = derive(subject, bySubject[subject].orEmpty(), serviceToObserver)
+            // No parent-doc REMOVE on the insert path: adding cards can only
+            // grow a derivation, so an empty one was empty before this batch
+            // too — the doc doesn't exist. (A corpus signed by unmapped
+            // providers would otherwise flood the engine with no-op deletes.)
+            // Removal flows through the single-doc react path (deletions).
+            if (!profile.isEmpty()) puts += profile
+        }
+        profiles.putAll(puts)
+    }
+
     override suspend fun remove(id: String) {
         // The doomed doc says what the removal invalidates — read before deleting.
         val doc = inner.get(id)
@@ -98,18 +133,32 @@ class TrustProjection(
     }
 
     /** Re-derive [subject]'s whole parent doc from the stored 30382s about them. */
-    suspend fun recompute(subject: String) {
-        val serviceToObserver = providerMap()
+    suspend fun recompute(subject: String) = recompute(subject, providerMap())
+
+    private suspend fun recompute(
+        subject: String,
+        serviceToObserver: Map<String, String>,
+    ) {
+        val docs = inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(subject))))
+        val profile = derive(subject, docs, serviceToObserver)
+        if (profile.isEmpty()) profiles.remove(subject) else profiles.put(profile)
+    }
+
+    /** [subject]'s parent doc from its score docs — pure derivation, no I/O. */
+    private fun derive(
+        subject: String,
+        docs: List<EventDoc>,
+        serviceToObserver: Map<String, String>,
+    ): ProfileDoc {
         val quality = LinkedHashMap<String, Int>()
         val followers = LinkedHashMap<String, Double>()
-        for (doc in inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(subject))))) {
+        for (doc in docs) {
             val card = Event.fromJsonOrNull(doc.toEventJson()) as? ContactCardEvent ?: continue
             val observer = serviceToObserver[card.pubKey] ?: continue
             card.rank()?.let { quality[observer] = it }
             card.followerCount()?.let { followers[observer] = it.toDouble() }
         }
-        val profile = ProfileDoc(subject, quality, followers)
-        if (profile.isEmpty()) profiles.remove(subject) else profiles.put(profile)
+        return ProfileDoc(subject, quality, followers)
     }
 
     /** service key -> observer, from every stored 10040's `30382:rank` entries. */
@@ -158,4 +207,9 @@ class TrustProjection(
             .firstOrNull { it.size >= 2 && it[0] == "d" }
             ?.get(1)
             ?.takeIf { it.isNotEmpty() }
+
+    private companion object {
+        // Subjects per batched score-fetch query — well under the engine's page cap.
+        const val FETCH_CHUNK = 400
+    }
 }

@@ -76,5 +76,8 @@ interface ProfileIndex : AutoCloseable {
 
     suspend fun put(profile: ProfileDoc)
 
+    /** Bulk [put]; implementations may pipeline (see [EventIndex.putAll]). */
+    suspend fun putAll(profiles: List<ProfileDoc>) = profiles.forEach { put(it) }
+
     suspend fun remove(pubkey: String)
 }

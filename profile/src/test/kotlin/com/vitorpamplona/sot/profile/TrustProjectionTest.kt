@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.profile
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -163,5 +164,19 @@ class TrustProjectionTest {
 
             projection.rebuildAll()
             assertEquals(mapOf(observer to 87), profiles.get(subject)?.qualityScores)
+        }
+
+    /** The BULK path: one store batch of scores builds every subject's parent doc. */
+    @Test
+    fun `a bulk batch of scores projects one parent doc per subject`() =
+        runBlocking {
+            store.insert(list10040())
+            val subjects = (1..40).map { it.toString(16).padStart(64, 'f') }
+            val batch = subjects.map { s -> card(about = s, rank = 10, followers = null) }
+            val outcomes = store.batchInsert(batch)
+            assertEquals(40, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
+            subjects.forEach { s ->
+                assertEquals(mapOf(observer to 10), profiles.docs.getValue(s).qualityScores, "subject ${'$'}s")
+            }
         }
 }

@@ -99,16 +99,48 @@ class VespaEventStore(
 
     override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
 
+    /**
+     * Batches take the BULK fast path: the per-event path costs 3–5 index
+     * round-trips each (dup probe, tombstone probe, vanish probe,
+     * supersession), which caps ingest in the low thousands per second —
+     * useless against a million-event sync. Bulk runs the same rules with
+     * chunked queries and one pipelined [EventIndex.putAll].
+     *
+     * Kind 5 and kind 62 keep the exact sequential path: they MUTATE the
+     * store, and order against their neighbors matters (a deletion inside the
+     * batch may target an event earlier in it). The batch is processed as
+     * plain-event runs separated by those events; tiny runs just loop
+     * [insertLocked].
+     */
     override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> =
         writes.withLock {
-            events.map { event ->
-                try {
-                    insertLocked(event)
-                    IEventStore.InsertOutcome.Accepted
-                } catch (e: Exception) {
-                    IEventStore.InsertOutcome.Rejected(e.message ?: "insert failed")
+            val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
+            var i = 0
+            while (i < events.size) {
+                if (events[i] is DeletionEvent || events[i] is RequestToVanishEvent) {
+                    outcomes[i] = tryInsertLocked(events[i])
+                    i++
+                    continue
                 }
+                var j = i
+                while (j < events.size && events[j] !is DeletionEvent && events[j] !is RequestToVanishEvent) j++
+                val run = events.subList(i, j)
+                if (run.size < BULK_MIN) {
+                    run.forEachIndexed { k, ev -> outcomes[i + k] = tryInsertLocked(ev) }
+                } else {
+                    bulkInsertRun(run).forEachIndexed { k, o -> outcomes[i + k] = o }
+                }
+                i = j
             }
+            outcomes.map { it ?: IEventStore.InsertOutcome.Rejected("insert failed") }
+        }
+
+    private suspend fun tryInsertLocked(event: Event): IEventStore.InsertOutcome =
+        try {
+            insertLocked(event)
+            IEventStore.InsertOutcome.Accepted
+        } catch (e: Exception) {
+            IEventStore.InsertOutcome.Rejected(e.message ?: "insert failed")
         }
 
     /** No rollback: buffered inserts apply in order; the first rejection propagates and aborts the rest. */
@@ -137,6 +169,158 @@ class VespaEventStore(
             else -> supersedeOlder(event)
         }
         index.put(event.toDoc())
+    }
+
+    /**
+     * One run of plain events (no kind 5/62), the same rules as
+     * [insertLocked] with batched I/O. Stages: local checks (ephemeral,
+     * expired, intra-run duplicate ids) -> one `id in (…)` duplicate query per
+     * [CHECK_CHUNK] -> per-owner tombstone/vanish guards (one query each; an
+     * owner with a guard set too large for one page falls back to the exact
+     * per-event probes) -> per-address supersession resolved IN RUN ORDER
+     * (existing versions fetched in chunked queries; losers inside the run
+     * are Accepted-then-superseded, exactly as sequential inserts would end
+     * up) -> one pipelined putAll of the survivors.
+     */
+    private suspend fun bulkInsertRun(events: List<Event>): List<IEventStore.InsertOutcome> {
+        val outcome = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
+
+        fun alive() = events.indices.filter { outcome[it] == null }
+
+        // Stage A — no I/O: ephemeral accepted-not-stored, expired rejected,
+        // later copies of an id already in this run rejected as duplicates.
+        val seen = HashSet<String>()
+        events.forEachIndexed { i, e ->
+            when {
+                e.kind.isEphemeral() -> outcome[i] = IEventStore.InsertOutcome.Accepted
+                e.isExpired() -> outcome[i] = IEventStore.InsertOutcome.Rejected("blocked: Cannot insert an expired event")
+                !seen.add(e.id) -> outcome[i] = IEventStore.InsertOutcome.Rejected("duplicate: already have this event")
+            }
+        }
+
+        // Stage B — ids already stored.
+        val stored = HashSet<String>()
+        alive().map { events[it].id }.chunked(CHECK_CHUNK).forEach { chunk ->
+            index.search(EventQuery(ids = chunk)).forEach { stored += it.id }
+        }
+        alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected("duplicate: already have this event") }
+
+        // Stage C — tombstone + vanish guards, one pass per distinct owner.
+        for ((owner, idxs) in alive().groupBy { events[it].owner() }) {
+            val tombs = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner)))
+            val vanishes = index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner)))
+            if (tombs.size >= GUARD_PAGE || vanishes.size >= GUARD_PAGE) {
+                // Guard set larger than a page: the batched view could miss one.
+                // Exactness over speed — run these events through the per-event probes.
+                for (i in idxs) {
+                    outcome[i] =
+                        try {
+                            rejectIfDeleted(events[i])
+                            rejectIfVanished(events[i])
+                            null
+                        } catch (e: Exception) {
+                            IEventStore.InsertOutcome.Rejected(e.message ?: "blocked")
+                        }
+                }
+                continue
+            }
+            // target -> the newest guarding tombstone's created_at.
+            val byId = HashMap<String, Long>()
+            val byAddress = HashMap<String, Long>()
+            tombs.forEach { doc ->
+                doc.tags.forEach { t ->
+                    if (t.size > 1) {
+                        when (t[0]) {
+                            "e" -> byId.merge(t[1], doc.createdAt, ::maxOf)
+                            "a" -> byAddress.merge(t[1], doc.createdAt, ::maxOf)
+                        }
+                    }
+                }
+            }
+            val vanishAt =
+                vanishes
+                    .mapNotNull { doc -> (Event.fromJsonOrNull(doc.toEventJson()) as? RequestToVanishEvent)?.takeIf { it.shouldVanishFrom(relay) }?.createdAt }
+                    .maxOrNull() ?: Long.MIN_VALUE
+            for (i in idxs) {
+                val e = events[i]
+                val guard = maxOf(byId[e.id] ?: Long.MIN_VALUE, e.addressOrNull()?.let { byAddress[it] } ?: Long.MIN_VALUE)
+                if (guard >= e.createdAt) {
+                    outcome[i] = IEventStore.InsertOutcome.Rejected("blocked: a deletion event exists")
+                } else if (e.createdAt <= vanishAt) {
+                    outcome[i] = IEventStore.InsertOutcome.Rejected("blocked: a request to vanish event exists")
+                }
+            }
+        }
+
+        // Stage D — supersession per replaceable address, resolved in run order.
+        val toPut = LinkedHashMap<String, Event>() // id -> event scheduled for storage
+        val groups = LinkedHashMap<Triple<Int, String, String?>, MutableList<Int>>()
+        alive().forEach { i ->
+            val e = events[i]
+            if (e.kind.isReplaceable() || e.kind.isAddressable()) {
+                val d = if (e.kind.isAddressable()) e.tags.dTag() else null
+                groups.getOrPut(Triple(e.kind, e.pubKey, d)) { mutableListOf() } += i
+            } else {
+                toPut[e.id] = e
+            }
+        }
+        // Existing versions for every touched address, chunked: replaceables by
+        // (kind, authors…); addressables by (kind, authors…, d-tags…) via
+        // tag_index recall, bucketed doc-side (the d filter is exact there).
+        val existing = HashMap<Triple<Int, String, String?>, MutableList<EventDoc>>()
+        val addressable = groups.keys.filter { it.third != null }
+        val replaceable = groups.keys.filter { it.third == null }
+        for ((kind, keys) in replaceable.groupBy { it.first }) {
+            keys.map { it.second }.distinct().chunked(CHECK_CHUNK).forEach { authors ->
+                index.search(EventQuery(kinds = listOf(kind), authors = authors)).forEach { doc ->
+                    existing.getOrPut(Triple(kind, doc.pubkey, null)) { mutableListOf() } += doc
+                }
+            }
+        }
+        for ((kind, keys) in addressable.groupBy { it.first }) {
+            keys.chunked(CHECK_CHUNK).forEach { chunk ->
+                val authors = chunk.map { it.second }.distinct()
+                val ds = chunk.mapNotNull { it.third }.distinct()
+                index.search(EventQuery(kinds = listOf(kind), authors = authors, tags = mapOf("d" to ds))).forEach { doc ->
+                    existing.getOrPut(Triple(kind, doc.pubkey, dTagOf(doc.tags))) { mutableListOf() } += doc
+                }
+            }
+        }
+        val removeFromStore = ArrayList<String>()
+        for ((key, idxs) in groups) {
+            val versions = existing[key].orEmpty()
+            // The run competes against the store's best; every stored version
+            // strictly older than the final winner is swept, like supersedeOlder.
+            var bestDocId: String? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })?.id
+            var bestAt = versions.maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE
+            var bestId = versions.filter { it.createdAt == bestAt }.minOfOrNull { it.id }
+            var bestInRun: Int? = null
+            for (i in idxs) {
+                val e = events[i]
+                val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId!! < e.id))
+                if (lost) {
+                    outcome[i] = IEventStore.InsertOutcome.Rejected("replaced: a newer version exists")
+                } else {
+                    // The previous best is superseded: an in-run best stays
+                    // Accepted but never lands; a stored best is removed.
+                    bestInRun?.let { toPut.remove(events[it].id) }
+                    bestDocId?.let { removeFromStore += it }
+                    bestDocId = null
+                    bestInRun = i
+                    bestAt = e.createdAt
+                    bestId = e.id
+                    toPut[e.id] = e
+                }
+            }
+            // Older stored versions beyond the single best also fall (drift repair).
+            versions.forEach { doc -> if (doc.id != bestDocId && doc.id !in removeFromStore) removeFromStore += doc.id }
+        }
+        removeFromStore.distinct().forEach { index.remove(it) }
+
+        // Stage E — one pipelined write for everything that survived.
+        index.putAll(toPut.values.map { it.toDoc() })
+        alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
+        return outcome.map { it ?: IEventStore.InsertOutcome.Rejected("insert failed") }
     }
 
     // ---- queries ------------------------------------------------------------
@@ -368,6 +552,17 @@ class VespaEventStore(
         // Page-sized rounds; a page of results per round means a runaway sweep
         // still terminates loudly rather than spinning forever.
         const val MAX_SWEEP_ROUNDS = 10_000
+
+        // Runs at least this long take the bulk path; smaller ones aren't
+        // worth the setup and stay on the per-event path.
+        const val BULK_MIN = 16
+
+        // Ids/authors/d-tags per check query — well under the engine's page cap.
+        const val CHECK_CHUNK = 500
+
+        // A tombstone/vanish guard set this big may have been page-capped by
+        // the engine; those owners fall back to the exact per-event probes.
+        const val GUARD_PAGE = 10_000
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
     }
 }

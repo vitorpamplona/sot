@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.eclipse.jetty.http.HttpHeader
 import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory
@@ -150,6 +151,13 @@ class MockVespaEngine {
 
             method == "GET" && path == "/search/" -> {
                 search(params(rawQuery.orEmpty()))
+            }
+
+            // The real client POSTs its queries (URL-length safety); the body is
+            // a flat JSON object of the same request parameters.
+            method == "POST" && path == "/search/" -> {
+                val json = Json.parseToJsonElement(body).jsonObject
+                search(json.mapValues { (_, v) -> v.jsonPrimitive.content })
             }
 
             else -> {

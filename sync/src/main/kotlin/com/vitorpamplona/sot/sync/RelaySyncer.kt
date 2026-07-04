@@ -33,6 +33,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.coroutineScope
@@ -451,15 +453,27 @@ class RelaySyncer(
         return filter.copy(since = since)
     }
 
-    /** Drop events whose id or Schnorr signature doesn't verify — relays are untrusted input. */
-    private fun dropForged(
+    /**
+     * Drop events whose id or Schnorr signature doesn't verify — relays are
+     * untrusted input. Verification is CPU-bound (~0.2ms each) and the chunks
+     * are large, so it fans out across cores; order is preserved.
+     */
+    private suspend fun dropForged(
         events: List<Event>,
         relay: NormalizedRelayUrl,
         filter: Filter,
     ): List<Event> {
         if (!verifyEvents) return events
-        val (ok, forged) = events.partition { runCatching { it.verify() }.getOrDefault(false) }
-        if (forged.isNotEmpty()) log("  ! [${relay.url}] dropped ${forged.size} event(s) with invalid id/signature (kind ${filter.kinds?.firstOrNull()})")
+        val ok =
+            coroutineScope {
+                events
+                    .chunked(VERIFY_CHUNK)
+                    .map { chunk -> async(Dispatchers.Default) { chunk.filter { runCatching { it.verify() }.getOrDefault(false) } } }
+                    .awaitAll()
+                    .flatten()
+            }
+        val forged = events.size - ok.size
+        if (forged > 0) log("  ! [${relay.url}] dropped $forged event(s) with invalid id/signature (kind ${filter.kinds?.firstOrNull()})")
         return ok
     }
 
@@ -468,6 +482,9 @@ class RelaySyncer(
     private companion object {
         // Verify + insert in chunks of this many events as they stream in.
         const val CHUNK_SIZE = 5_000
+
+        // Signature checks fan out across cores in slices this size.
+        const val VERIFY_CHUNK = 256
 
         // First-contact NIP-42 handshake: probe REQ bound, settle grace for the
         // async challenge reply to be recorded, total wait for its OK.

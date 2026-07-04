@@ -36,6 +36,13 @@ interface EventIndex : AutoCloseable {
 
     suspend fun put(doc: EventDoc)
 
+    /**
+     * Bulk [put]: same contract (all acked and visible on return), but an
+     * implementation may pipeline the writes — the real client keeps them all
+     * in flight at once, which is what makes million-event ingest feasible.
+     */
+    suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
     suspend fun remove(id: String)
 
     /** Docs matching [query]: newest first (`created_at` desc, id asc tiebreak) unless ranked by a search term. */

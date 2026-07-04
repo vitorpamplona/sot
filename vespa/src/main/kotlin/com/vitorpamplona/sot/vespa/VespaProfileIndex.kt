@@ -43,6 +43,11 @@ class VespaProfileIndex(
     private val feed: FeedClient =
         FeedClientBuilder
             .create(URI.create(baseUrl))
+            // Bulk ingest keeps thousands of puts in flight; the defaults
+            // (one connection, a slow-ramping throttle window) cap effective
+            // concurrency in the single digits and starve a local engine.
+            .setConnectionsPerEndpoint(8)
+            .setMaxStreamPerConnection(256)
             .setRetryStrategy(
                 object : FeedClient.RetryStrategy {
                     override fun retries() = 5
@@ -78,6 +83,18 @@ class VespaProfileIndex(
                 buildJsonObject { put("fields", profile.indexFields()) }.toString(),
                 OperationParameters.empty(),
             ).await()
+    }
+
+    /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
+    override suspend fun putAll(profiles: List<ProfileDoc>) {
+        profiles
+            .map { profile ->
+                feed.put(
+                    DocumentId.of(NAMESPACE, DOCTYPE, profile.pubkey),
+                    buildJsonObject { put("fields", profile.indexFields()) }.toString(),
+                    OperationParameters.empty(),
+                )
+            }.forEach { it.await() }
     }
 
     override suspend fun remove(pubkey: String) {

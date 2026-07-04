@@ -44,3 +44,25 @@ tasks.register<JavaExec>("uiDemo") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("com.vitorpamplona.sot.cli.UiDemoServer")
 }
+
+// `gradle :cli:loadTest [-Prelay=…]` — full-corpus 30382 sync into the local
+// Vespa through the production ingest path (see LoadTest in the test sources).
+tasks.register<JavaExec>("benchPut") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.sot.cli.BenchPut")
+    args((project.findProperty("n") as String?) ?: "100")
+}
+
+tasks.register<JavaExec>("loadTest") {
+    group = "verification"
+    description = "Negentropy-sync a provider relay's whole kind-30382 corpus into Vespa"
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.sot.cli.LoadTest")
+    jvmArgs("-Xmx5g")
+    args(
+        (project.findProperty("relay") as String?) ?: "wss://nip85.nosfabrica.com",
+        (project.findProperty("service") as String?) ?: "",
+        (project.findProperty("max") as String?) ?: "0",
+        (project.findProperty("slices") as String?) ?: "1",
+    )
+}
