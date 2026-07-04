@@ -23,18 +23,17 @@ package com.vitorpamplona.sot.cli
 /*
  * The one place the sot CLI turns raw log text into something worth looking at.
  *
- * Everything the long-running commands emit — sync phase headers, per-relay
- * progress, the live status line, warnings — flows through here on its way to
- * the terminal, so the whole app speaks with one visual voice. The `:indexer`
- * stays presentation-free: it emits plain, greppable strings in a consistent
- * vocabulary (`=== ... ===` headers, `[n/total]` progress, `  ! ...` trouble,
- * `~ ...` the live gauge, `DONE - ...`), and [styleLogLine] recognizes that
- * vocabulary and paints it.
+ * Everything the long-running commands emit (sync phase headers, per-relay
+ * progress, the live status line, warnings) flows through here on its way to
+ * the terminal, so the whole app speaks with one visual voice. The `:sync`
+ * module stays presentation-free: it emits plain, greppable strings in a
+ * consistent vocabulary (`=== ... ===` headers, `[n/total]` progress,
+ * `  ! ...` trouble, `~ ...` the live gauge, `DONE - ...`), and [styleLogLine]
+ * recognizes that vocabulary and paints it.
  *
- * Hard rule: colour is applied ONLY on an interactive terminal (and never when
- * NO_COLOR is set). Piped or redirected output is byte-for-byte what it was
- * before this file existed — logs stay greppable and diffs stay clean. Toggle
- * the guess with SOT_COLOR=always|never.
+ * Hard rule: colour is applied ONLY on an interactive terminal, and never when
+ * NO_COLOR is set. Piped or redirected output stays plain text, so logs stay
+ * greppable and diffs stay clean. Toggle the guess with SOT_COLOR=always|never.
  */
 
 /** ANSI palette + the "should we even colour?" decision, resolved once at startup. */
@@ -42,10 +41,11 @@ internal object Ansi {
     private const val ESC = "["
     const val RESET = "${ESC}0m"
 
-    // Honour the de-facto standard NO_COLOR (https://no-color.org) and an explicit
-    // SOT_COLOR override; otherwise colour only when stdout is a real terminal
-    // (System.console() is null under pipes, redirects, and CI — exactly when we
-    // want plain text). Computed once: the tty-ness of stdout can't change mid-run.
+    // Honour the de-facto standard NO_COLOR (https://no-color.org) and an
+    // explicit SOT_COLOR override. Otherwise colour only when stdout is a real
+    // terminal (System.console() is null under pipes, redirects, and CI, which
+    // is exactly when we want plain text). Computed once, since the tty-ness of
+    // stdout can't change mid-run.
     val enabled: Boolean =
         when (System.getenv("SOT_COLOR")?.lowercase()) {
             "always", "1", "true", "yes" -> true
@@ -83,10 +83,11 @@ internal object Ansi {
 }
 
 /*
- * One-shot lines for the short commands (init, up, destroy, ...). These aren't
- * timestamped log output — they're the CLI talking to you — but they share the
- * log path's glyph vocabulary so the whole tool reads as one thing. On a pipe or
- * with NO_COLOR the glyphs fall back to plain ASCII, keeping output greppable.
+ * One-shot lines for the short commands (init, up, destroy, and so on). These
+ * aren't timestamped log output; they're the CLI talking to you. But they share
+ * the log path's glyph vocabulary so the whole tool reads as one thing. On a
+ * pipe or with NO_COLOR the glyphs fall back to plain ASCII, keeping output
+ * greppable.
  */
 
 /** A red-✗ failure line (falls back to `! ` when colour is off). */
@@ -119,10 +120,11 @@ private val GAUGE_RATE = Regex("\\((\\S+/s)\\)")
 private val GAUGE_IDLE = Regex("\\(idle ([^)]+)\\)")
 
 /**
- * Turn one raw log message into its terminal-ready form. A no-op (returns [msg]
- * unchanged) unless [Ansi.enabled] — so redirected logs never gain a stray glyph
- * or escape code. Recognizes the `:indexer`'s emit vocabulary; anything it doesn't
- * recognize is left as plain informational text with a subtle gutter.
+ * Turn one raw log message into its terminal-ready form. It is a no-op (returns
+ * [msg] unchanged) unless [Ansi.enabled], so redirected logs never gain a stray
+ * glyph or escape code. Recognizes the `:sync` module's emit vocabulary;
+ * anything it doesn't recognize is left as plain informational text with a
+ * subtle gutter.
  */
 internal fun styleLogLine(msg: String): String {
     if (!Ansi.enabled) return msg

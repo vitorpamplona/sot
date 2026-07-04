@@ -38,8 +38,8 @@ internal fun run(vararg cmd: String): Int {
 
 /**
  * Refuse to start a command that needs Vespa when it isn't up. `--up` runs the
- * `sot up` sequence first when the engine is the local docker one; a remote
- * VESPA_URL never gets docker side effects (its lifecycle isn't ours).
+ * `sot up` sequence first when the engine is the local docker one. A remote
+ * VESPA_URL never gets docker side effects, since its lifecycle isn't ours.
  */
 internal fun ensureVespaIsUp(args: List<String>) {
     val statusUrl = "${Config.vespaUrl}/ApplicationStatus"
@@ -106,8 +106,8 @@ internal fun deploy(args: List<String>): Int {
 
 /**
  * `sot destroy` — wipe local sot state for a from-scratch run: the sync-state
- * cursors and Vespa's data volume (the events live THERE — no local db).
- * Asks before deleting unless `--yes`.
+ * cursors and Vespa's data volume. The events live in that volume; there is no
+ * local db. Asks before deleting unless `--yes`.
  */
 internal fun destroy(args: List<String>) {
     val state = File(Config.syncStatePath)

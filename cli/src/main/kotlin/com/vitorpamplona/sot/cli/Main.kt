@@ -30,8 +30,8 @@ import com.vitorpamplona.quartz.utils.LogLevel
  * [up]/[down]/[deploy]/[destroy] (Vespa.kt).
  */
 fun main(argv: Array<String>) {
-    // Quartz narrates every oddity it meets (garbage relay urls in 10002s, ...)
-    // to stderr; errors-only by default keeps sync output readable.
+    // Quartz narrates every oddity it meets (garbage relay urls in 10002s, and
+    // so on) to stderr. Errors-only by default keeps sync output readable.
     Log.minLevel = runCatching { LogLevel.valueOf(Config.quartzLogLevel.uppercase()) }.getOrDefault(LogLevel.ERROR)
 
     val args = argv.toList()

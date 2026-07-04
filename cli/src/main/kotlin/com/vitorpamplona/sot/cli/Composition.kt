@@ -35,7 +35,7 @@ import com.vitorpamplona.sot.vespa.VespaProfileIndex
 import kotlin.system.exitProcess
 
 /*
- * The v2 composition root: how the pieces plug together, in one place.
+ * The composition root: how the pieces plug together, in one place.
  *
  *   VespaEventIndex  (events over Vespa HTTP)
  *        └─ TrustProjection            (:profile — watches 30382/10040 puts
@@ -44,8 +44,8 @@ import kotlin.system.exitProcess
  *        ├─ SotRelayServer             (:relay — serves it)
  *        └─ SyncService                (:sync — fills it)
  *
- * Because the projection sits UNDER the store, every insert path — a sync
- * download, a relay publish, a kind-5 — updates ranking with no extra wiring.
+ * Because the projection sits UNDER the store, every insert path (a sync
+ * download, a relay publish, a kind-5) updates ranking with no extra wiring.
  */
 
 /** The wired storage stack: the store to use, plus the raw engine client for health gauges. */

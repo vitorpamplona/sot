@@ -24,10 +24,10 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * `sot index` — ONE pass of the trust-sync chain (seed hints -> observer
- * 10002s -> outboxes -> providers -> orphan sweep) into Vespa, then exit.
- * The first run also self-publishes the identity's kind 0/10002/10086.
- * Don't run it while `sot serve` is mid-pass against the same Vespa — two
- * writers double-download; semantics stay correct but bandwidth doesn't.
+ * 10002s -> outboxes -> providers -> orphan sweep) into Vespa, then exit. The
+ * first run also self-publishes the identity's kind 0/10002/10086. Don't run it
+ * while `sot serve` is mid-pass against the same Vespa: two writers
+ * double-download. Semantics stay correct, but bandwidth is wasted.
  */
 internal fun index(args: List<String>) {
     ensureVespaIsUp(args)

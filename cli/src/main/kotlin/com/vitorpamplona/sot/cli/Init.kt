@@ -28,12 +28,12 @@ import com.vitorpamplona.sot.sync.Identity
 import java.io.File
 
 /**
- * `sot init` — an INTERACTIVE walkthrough that writes the `.env`: every
+ * `sot init` — an INTERACTIVE walkthrough that writes the `.env`. Every
  * question shows its default (Enter accepts it), inputs are validated and
  * re-asked, and the relay's identity key is generated on the spot when the
  * operator doesn't paste one. `--yes` skips the questions and takes every
- * default (still generating a fresh identity); `--force` overwrites an
- * existing file; `--path <file>` writes elsewhere.
+ * default (still generating a fresh identity). `--force` overwrites an existing
+ * file. `--path <file>` writes elsewhere.
  *
  * [readLine] is injectable so tests can script the session.
  */
@@ -114,11 +114,11 @@ private fun validRelay(raw: String): String? = RelayUrlNormalizer.normalizeOrNul
 
 /**
  * The question loop. [invoke] prints `name [default]:`, reads a line, and
- * validates: blank takes the default, a validator returning null re-asks (with
- * the validator's chance to normalize — npub -> hex, url -> normalized). EOF
- * (a scripted session running dry, a closed stdin) falls back to the default,
- * so `sot init < /dev/null` still completes. [assumeDefaults] (`--yes`) skips
- * the terminal entirely.
+ * validates it. Blank takes the default, and a validator returning null
+ * re-asks (the validator also gets to normalize: npub -> hex, url ->
+ * normalized). EOF (a scripted session running dry, or a closed stdin) falls
+ * back to the default, so `sot init < /dev/null` still completes.
+ * [assumeDefaults] (`--yes`) skips the terminal entirely.
  */
 internal class Prompter(
     private val readLine: () -> String?,

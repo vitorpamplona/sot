@@ -41,17 +41,17 @@ import kotlin.time.Duration.Companion.minutes
 
 /*
  * `sot serve` — THE long-running process: one Ktor app on one port
- * ([Config.serverPort]) —
+ * ([Config.serverPort]).
  *   WS   /  -> the NIP-50 relay (:relay; full filters, search, COUNT, NIP-77)
  *   GET  /  -> NIP-11 (Accept: application/nostr+json), else the web UI
- * plus, unless SYNC_INTERVAL=0, the background sync loop (:sync). Relay and
- * sync share the ONE Vespa-backed store, and the trust projection sits under
- * it — so a user who NIP-42-authenticates gets enrolled as an observer, their
- * trust chain syncs on the next pass, and their searches rank by it.
+ * Unless SYNC_INTERVAL=0, it also runs the background sync loop (:sync). Relay
+ * and sync share the ONE Vespa-backed store, and the trust projection sits
+ * under it. So a user who NIP-42-authenticates gets enrolled as an observer,
+ * their trust chain syncs on the next pass, and their searches rank by it.
  *
- * The web UI (bundled from `web/index.html`) is itself a Nostr client: it
- * talks NIP-50 to the SAME websocket endpoint, so there is no http search API
- * to serve — the relay is the API.
+ * The web UI (bundled from `web/index.html`) is itself a Nostr client: it talks
+ * NIP-50 to the SAME websocket endpoint. There is no http search API to serve;
+ * the relay is the API.
  */
 private val WEB_UI: String? by lazy {
     Thread
