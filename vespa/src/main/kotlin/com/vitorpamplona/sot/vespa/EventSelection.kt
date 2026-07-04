@@ -56,6 +56,4 @@ object EventSelection {
         if (hexes.any { !HEX64.matches(it) }) return null
         return hexes.distinct().joinToString(" or ", "(", ")") { "event.$field==\"$it\"" }
     }
-
-    private val HEX64 = Regex("^[0-9a-f]{64}$")
 }

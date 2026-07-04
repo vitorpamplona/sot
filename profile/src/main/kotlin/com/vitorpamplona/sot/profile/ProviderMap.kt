@@ -45,15 +45,8 @@ internal class ProviderMap(
     @Volatile private var cached: Map<String, String>? = null
 
     suspend fun get(): Map<String, String> =
-        cached ?: inner
-            .search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND)))
-            .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) as? TrustProviderListEvent }
-            .flatMap { list ->
-                list
-                    .serviceProviders()
-                    .filter { it.service == ProviderTypes.rank }
-                    .map { it.pubkey to list.pubKey }
-            }.toMap()
+        cached ?: rankProviders(inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND))))
+            .toMap()
             .also { cached = it }
 
     /** Drop the cache; the next [get] rebuilds. Call after any 10040 write/remove. */
@@ -62,11 +55,13 @@ internal class ProviderMap(
     }
 
     companion object {
-        /** The distinct rank-service keys named across a batch of 10040 lists. */
-        fun rankServicesOf(listDocs: List<EventDoc>): List<String> =
+        /** Every 10040 doc's `30382:rank` entries as `service key -> observer (the 10040 author)` pairs. */
+        private fun rankProviders(listDocs: List<EventDoc>): List<Pair<String, String>> =
             listDocs
                 .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) as? TrustProviderListEvent }
-                .flatMap { it.serviceProviders().filter { p -> p.service == ProviderTypes.rank }.map { p -> p.pubkey } }
-                .distinct()
+                .flatMap { list -> list.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to list.pubKey } }
+
+        /** The distinct rank-service keys named across a batch of 10040 lists. */
+        fun rankServicesOf(listDocs: List<EventDoc>): List<String> = rankProviders(listDocs).map { it.first }.distinct()
     }
 }

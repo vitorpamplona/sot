@@ -129,7 +129,7 @@ class TrustSync(
         val referenced =
             store
                 .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
-                .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey } }
+                .flatMap { l -> l.rankProviders().map { it.pubkey } }
                 .toSet()
         // Reference-grade enumeration; a Vespa grouping query (distinct 30382
         // authors in one round trip) replaces this when the corpus grows.
@@ -143,9 +143,10 @@ class TrustSync(
         log("[sweep] ${orphans.size} orphaned score provider(s) - deleting their 30382s")
         orphans.chunked(100).forEach { syncer.deleteFromStore(Filter(kinds = listOf(ContactCardEvent.KIND), authors = it)) }
     }
-
-    private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""
 }
+
+/** The rank-scoring providers a 10040 nominates (service key + its relay) — the one place that rule lives. */
+internal fun TrustProviderListEvent.rankProviders() = serviceProviders().filter { it.service == ProviderTypes.rank }
 
 /** Relays reject filters with unboundedly many authors; fold author sets into batches this size. */
 internal const val AUTHORS_PER_FILTER = 500

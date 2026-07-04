@@ -78,8 +78,6 @@ data class SearchFields(
     companion object {
         val NONE = SearchFields()
 
-        private val WHITESPACE = Regex("\\s+")
-
         /** Rebuild from a doc field map (the [fields] shape). */
         fun fromFields(get: (String) -> String?): SearchFields =
             SearchFields(

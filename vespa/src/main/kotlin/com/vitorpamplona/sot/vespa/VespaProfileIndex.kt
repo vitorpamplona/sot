@@ -76,25 +76,20 @@ class VespaProfileIndex(
         return ProfileDoc.fromSummary(fields)
     }
 
+    private fun putOp(profile: ProfileDoc) =
+        feed.put(
+            DocumentId.of(NAMESPACE, DOCTYPE, profile.pubkey),
+            buildJsonObject { put("fields", profile.indexFields()) }.toString(),
+            feedParams(),
+        )
+
     override suspend fun put(profile: ProfileDoc) {
-        feed
-            .put(
-                DocumentId.of(NAMESPACE, DOCTYPE, profile.pubkey),
-                buildJsonObject { put("fields", profile.indexFields()) }.toString(),
-                feedParams(),
-            ).await()
+        putOp(profile).await()
     }
 
     /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
     override suspend fun putAll(profiles: List<ProfileDoc>) {
-        profiles
-            .map { profile ->
-                feed.put(
-                    DocumentId.of(NAMESPACE, DOCTYPE, profile.pubkey),
-                    buildJsonObject { put("fields", profile.indexFields()) }.toString(),
-                    feedParams(),
-                )
-            }.forEach { it.await() }
+        profiles.map { putOp(it) }.forEach { it.await() }
     }
 
     /**

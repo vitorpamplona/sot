@@ -39,10 +39,10 @@ fun relayInfoJson(
 ): String =
     relayInformation {
         this.name = name
-        description?.takeIf { it.isNotBlank() }?.let { this.description = it }
-        icon?.takeIf { it.isNotBlank() }?.let { this.icon = it }
-        contactPubkey?.takeIf { it.isNotBlank() }?.let { pubkey = it } // admin contact
-        selfPubkey?.takeIf { it.isNotBlank() }?.let { self = it } // the relay's OWN key
+        description.ifSet { this.description = it }
+        icon.ifSet { this.icon = it }
+        contactPubkey.ifSet { pubkey = it } // admin contact
+        selfPubkey.ifSet { self = it } // the relay's OWN key
         software = SOFTWARE
         version = VERSION
         // 01 filters+publishes, 09 deletion, 11 this doc, 40 expiration,
@@ -55,3 +55,6 @@ fun relayInfoJson(
             restrictedWrites = false // VerifyPolicy-gated EVENT publishes go to the store
         }
     }.toJson()
+
+/** Run [set] with this string only when it's present and non-blank. */
+private inline fun String?.ifSet(set: (String) -> Unit) = this?.takeIf(String::isNotBlank)?.let(set)

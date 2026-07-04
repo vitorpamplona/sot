@@ -109,8 +109,6 @@ object EventYql {
         )
     }
 
-    private val WHITESPACE = Regex("\\s+")
-
     /**
      * One tag constraint: values joined with [op] ("or" = NIP-01 tags, "and" =
      * tagsAll). Null when it can't match: tag_index only holds single-letter
@@ -121,7 +119,7 @@ object EventYql {
         values: List<String>,
         op: String,
     ): String? {
-        if (name.length != 1 || (name[0] !in 'a'..'z' && name[0] !in 'A'..'Z')) return null
+        if (!isSingleLetterTagName(name)) return null
         if (values.isEmpty()) return null
         return values.joinToString(" $op ", prefix = "(", postfix = ")") { v -> "tag_index contains ${quote("$name:$v")}" }
     }
@@ -150,6 +148,4 @@ object EventYql {
                 .replace("\r", "\\r")
                 .replace("\t", "\\t") +
             "\""
-
-    private val HEX64 = Regex("^[0-9a-f]{64}$")
 }

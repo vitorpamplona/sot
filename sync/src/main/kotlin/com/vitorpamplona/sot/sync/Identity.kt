@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.hexToByteArray
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -114,7 +115,7 @@ class Identity(
 
     private suspend fun insert(
         store: IEventStore,
-        event: com.vitorpamplona.quartz.nip01Core.core.Event,
+        event: Event,
     ) {
         // A concurrent writer beating us to it is fine — the stored one rules.
         runCatching { store.insert(event) }

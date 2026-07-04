@@ -30,6 +30,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.put
 
 /**
  * One live Nostr event as a Vespa `event` document — the unit of the relay
@@ -72,7 +73,7 @@ data class EventDoc(
         tags.mapNotNull { tag ->
             val name = tag.getOrNull(0) ?: return@mapNotNull null
             val value = tag.getOrNull(1) ?: return@mapNotNull null
-            if (name.length == 1 && (name[0] in 'a'..'z' || name[0] in 'A'..'Z')) "$name:$value" else null
+            if (isSingleLetterTagName(name)) "$name:$value" else null
         }
 
     /** The NIP-40 expiration timestamp, derived from the exact tags; null = never expires. */
@@ -88,35 +89,35 @@ data class EventDoc(
     /** The document's field map — one shape for both feeding and summary parsing ([fromSummary]). */
     fun indexFields(): JsonObject =
         buildJsonObject {
-            put("id", JsonPrimitive(id))
-            put("pubkey", JsonPrimitive(pubkey))
-            put("created_at", JsonPrimitive(createdAt))
-            put("kind", JsonPrimitive(kind))
-            put("tags", JsonPrimitive(tagsAsJson().toString()))
+            put("id", id)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("kind", kind)
+            put("tags", tagsAsJson().toString())
             put("tag_index", JsonArray(tagIndex().map(::JsonPrimitive)))
-            put("content", JsonPrimitive(content))
-            put("sig", JsonPrimitive(sig))
-            put("owner", JsonPrimitive(owner))
+            put("content", content)
+            put("sig", sig)
+            put("owner", owner)
             // The author's ranking state (the global profile parent) — how any
             // kind ranks by the observer's trust in its author. Purely
             // pubkey-derived, so it's stamped here, not by an extractor.
-            put("author_ref", JsonPrimitive("id:profile:profile::$pubkey"))
-            for ((field, value) in search.fields()) put(field, JsonPrimitive(value))
+            put("author_ref", "id:profile:profile::$pubkey")
+            for ((field, value) in search.fields()) put(field, value)
             // Always written: an absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
-            put("expires_at", JsonPrimitive(expiresAt() ?: NO_EXPIRATION))
+            put("expires_at", expiresAt() ?: NO_EXPIRATION)
         }
 
     /** The complete NIP-01 event JSON, rebuilt from the exact stored values. */
     fun toEventJson(): String =
         buildJsonObject {
-            put("id", JsonPrimitive(id))
-            put("pubkey", JsonPrimitive(pubkey))
-            put("created_at", JsonPrimitive(createdAt))
-            put("kind", JsonPrimitive(kind))
+            put("id", id)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("kind", kind)
             put("tags", tagsAsJson())
-            put("content", JsonPrimitive(content))
-            put("sig", JsonPrimitive(sig))
+            put("content", content)
+            put("sig", sig)
         }.toString()
 
     private fun tagsAsJson(): JsonArray = JsonArray(tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) })

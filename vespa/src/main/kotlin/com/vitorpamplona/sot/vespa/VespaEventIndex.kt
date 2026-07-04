@@ -107,34 +107,31 @@ class VespaEventIndex(
         return EventDoc.fromSummary(fields)
     }
 
+    private fun putOp(doc: EventDoc) =
+        feed.put(
+            DocumentId.of(NAMESPACE, DOCTYPE, doc.id),
+            buildJsonObject { put("fields", doc.indexFields()) }.toString(),
+            feedParams(),
+        )
+
+    private fun removeOp(id: String) = feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), feedParams())
+
     override suspend fun put(doc: EventDoc) {
-        feed
-            .put(
-                DocumentId.of(NAMESPACE, DOCTYPE, doc.id),
-                buildJsonObject { put("fields", doc.indexFields()) }.toString(),
-                feedParams(),
-            ).await()
+        putOp(doc).await()
     }
 
     /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
     override suspend fun putAll(docs: List<EventDoc>) {
-        docs
-            .map { doc ->
-                feed.put(
-                    DocumentId.of(NAMESPACE, DOCTYPE, doc.id),
-                    buildJsonObject { put("fields", doc.indexFields()) }.toString(),
-                    feedParams(),
-                )
-            }.forEach { it.await() }
+        docs.map { putOp(it) }.forEach { it.await() }
     }
 
     override suspend fun remove(id: String) {
-        feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), feedParams()).await()
+        removeOp(id).await()
     }
 
     /** All removes in flight together over HTTP/2, like [putAll]. */
     override suspend fun removeAll(ids: List<String>) {
-        ids.map { feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, it), feedParams()) }.forEach { it.await() }
+        ids.map { removeOp(it) }.forEach { it.await() }
     }
 
     override suspend fun search(query: EventQuery): List<EventDoc> {

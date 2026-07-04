@@ -42,6 +42,16 @@ class RejectedException(
     message: String,
 ) : Exception(message)
 
+/** The insert-rejection reasons, shared by the per-event and bulk paths so the two can never drift. */
+internal object Rejections {
+    const val EXPIRED = "blocked: Cannot insert an expired event"
+    const val DUPLICATE = "duplicate: already have this event"
+    const val DELETED = "blocked: a deletion event exists"
+    const val VANISHED = "blocked: a request to vanish event exists"
+    const val REPLACED = "replaced: a newer version exists"
+    const val INSERT_FAILED = "insert failed"
+}
+
 /**
  * The bulk insert fast path: one run of plain events (no kind 5/62), the same
  * Nostr rules the per-event [VespaEventStore] path enforces but with BATCHED
@@ -77,8 +87,8 @@ internal class BulkInsert(
         events.forEachIndexed { i, e ->
             when {
                 e.kind.isEphemeral() -> outcome[i] = IEventStore.InsertOutcome.Accepted
-                e.isExpired() -> outcome[i] = IEventStore.InsertOutcome.Rejected("blocked: Cannot insert an expired event")
-                !seen.add(e.id) -> outcome[i] = IEventStore.InsertOutcome.Rejected("duplicate: already have this event")
+                e.isExpired() -> outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
+                !seen.add(e.id) -> outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
             }
         }
 
@@ -94,7 +104,7 @@ internal class BulkInsert(
                 .mapBounded(QUERY_FANOUT) { chunk -> index.search(EventQuery(ids = chunk)) }
                 .forEach { docs -> docs.forEach { stored += it.id } }
         }
-        alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected("duplicate: already have this event") }
+        alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
 
         // Stage C — tombstone + vanish guards, one pass per distinct owner;
         // the guard reads fan out (bounded) across owners.
@@ -149,9 +159,9 @@ internal class BulkInsert(
                 val e = events[i]
                 val guard = maxOf(byId[e.id] ?: Long.MIN_VALUE, e.addressOrNull()?.let { byAddress[it] } ?: Long.MIN_VALUE)
                 if (guard >= e.createdAt) {
-                    outcome[i] = IEventStore.InsertOutcome.Rejected("blocked: a deletion event exists")
+                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DELETED)
                 } else if (e.createdAt <= vanishAt) {
-                    outcome[i] = IEventStore.InsertOutcome.Rejected("blocked: a request to vanish event exists")
+                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.VANISHED)
                 }
             }
         }
@@ -215,7 +225,7 @@ internal class BulkInsert(
                 val e = events[i]
                 val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId!! < e.id))
                 if (lost) {
-                    outcome[i] = IEventStore.InsertOutcome.Rejected("replaced: a newer version exists")
+                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
                 } else {
                     // The previous best is superseded: an in-run best stays
                     // Accepted but never lands; a stored best is removed.
@@ -238,7 +248,7 @@ internal class BulkInsert(
         // into write / proj.fetch / proj.write.)
         index.putAll(toPut.values.map { it.toDoc() })
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
-        return outcome.map { it ?: IEventStore.InsertOutcome.Rejected("insert failed") }
+        return outcome.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
     }
 
     private companion object {

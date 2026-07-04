@@ -134,7 +134,7 @@ class VespaEventStore(
                 }
                 i = j
             }
-            outcomes.map { it ?: IEventStore.InsertOutcome.Rejected("insert failed") }
+            outcomes.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
         }
 
     private suspend fun tryInsertLocked(event: Event): IEventStore.InsertOutcome =
@@ -148,7 +148,7 @@ class VespaEventStore(
             // PROPAGATE — swallowing it as "Rejected" would silently DROP a
             // valid event and let the sync cursor advance past it. This matches
             // the bulk path, which already throws on engine failures.
-            IEventStore.InsertOutcome.Rejected(e.message ?: "insert failed")
+            IEventStore.InsertOutcome.Rejected(e.message ?: Rejections.INSERT_FAILED)
         }
 
     /** No rollback: buffered inserts apply in order; the first rejection propagates and aborts the rest. */
@@ -166,27 +166,29 @@ class VespaEventStore(
         // Accepted but never persisted (NIP-01): an ObservableEventStore wrapper
         // still broadcasts the insert to live subscribers.
         if (event.kind.isEphemeral()) return
-        if (event.isExpired()) throw RejectedException("blocked: Cannot insert an expired event")
-        if (index.get(event.id) != null) throw RejectedException("duplicate: already have this event")
+        if (event.isExpired()) throw RejectedException(Rejections.EXPIRED)
+        if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
         rejectIfDeleted(event)
         rejectIfVanished(event)
-        rejectIfSuperseded(event)
         when (event) {
             is DeletionEvent -> applyDeletion(event)
             is RequestToVanishEvent -> applyVanish(event)
-            else -> supersedeOlder(event)
+            else -> supersede(event)
         }
         index.put(event.toDoc())
     }
 
     // ---- queries ------------------------------------------------------------
 
+    /** Map a filter to an [EventQuery] stamped with the current expiry cutoff (NIP-40) and, for searches, the ranking observer. */
+    private fun Filter.toExpiryQuery(observer: String? = null): EventQuery? = toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer)
+
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
         val observer = coroutineContext[ObserverContext]?.pubkey
-        val queries = restoreSearches(filters).mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer) }
+        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(observer) }
         val docs = searchDocs(queries)
         // NIP-50: a searching query's results stay in the engine's RELEVANCE
         // order "instead of the usual created_at ordering" — re-sorting here
@@ -214,14 +216,14 @@ class VespaEventStore(
         onEach: (T) -> Unit,
     ) = query<T>(filters).forEach(onEach)
 
-    override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toEventQuery()?.let { index.count(it.copy(notExpiredAt = nowSecs())) } ?: 0
+    override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.count(it) } ?: 0
 
     override suspend fun count(filters: List<Filter>): Int {
         // Multi-filter counts need cross-filter id dedup (engine count can't),
         // but they don't need the events materialized — recall the docs and
         // count distinct ids, skipping the per-doc Event reconstruction.
         if (filters.size == 1) return count(filters[0])
-        val queries = restoreSearches(filters).mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs()) }
+        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery() }
         return searchDocs(queries).size
     }
 
@@ -264,7 +266,7 @@ class VespaEventStore(
         // Exclude already-expired events (NIP-40), exactly as query/count do —
         // otherwise the negentropy set offers ids a plain REQ would never
         // serve, and a peer keeps trying to reconcile events we refuse to return.
-        for (q in filters.mapNotNull { it.toEventQuery()?.copy(notExpiredAt = nowSecs()) }) {
+        for (q in filters.mapNotNull { it.toExpiryQuery() }) {
             if (q.search == null && q.limit == null) {
                 index.visitIds(q) { page ->
                     page.forEach { all += IdAndTime(it.createdAt, it.id) }
@@ -315,11 +317,14 @@ class VespaEventStore(
         // request to vanish has no effect — they are immune to kind-5 tombstones.
         if (event is DeletionEvent || event is RequestToVanishEvent) return
         val owner = event.owner()
-        val byId = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner), tags = mapOf("e" to listOf(event.id)), since = event.createdAt, limit = 1))
-        if (byId.isNotEmpty()) throw RejectedException("blocked: a deletion event exists")
+
+        suspend fun deletionExists(
+            tagKey: String,
+            value: String,
+        ): Boolean = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner), tags = mapOf(tagKey to listOf(value)), since = event.createdAt, limit = 1)).isNotEmpty()
+        if (deletionExists("e", event.id)) throw RejectedException(Rejections.DELETED)
         val address = event.addressOrNull() ?: return
-        val byAddress = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner), tags = mapOf("a" to listOf(address)), since = event.createdAt, limit = 1))
-        if (byAddress.isNotEmpty()) throw RejectedException("blocked: a deletion event exists")
+        if (deletionExists("a", address)) throw RejectedException(Rejections.DELETED)
     }
 
     /** NIP-62: a stored vanish request by this event's OWNER covering [relay] blocks their events up to its time. */
@@ -329,21 +334,21 @@ class VespaEventStore(
             vanishes.any { doc ->
                 (Event.fromJsonOrNull(doc.toEventJson()) as? RequestToVanishEvent)?.shouldVanishFrom(relay) == true
             }
-        if (blocked) throw RejectedException("blocked: a request to vanish event exists")
+        if (blocked) throw RejectedException(Rejections.VANISHED)
     }
 
-    /** Reject a replaceable/addressable that LOST the version comparison (created_at, lowest id wins ties). */
-    private suspend fun rejectIfSuperseded(event: Event) {
-        val newer =
-            currentVersions(event).any {
-                it.createdAt > event.createdAt || (it.createdAt == event.createdAt && it.id < event.id)
-            }
-        if (newer) throw RejectedException("replaced: a newer version exists")
-    }
-
-    /** Delete the strictly-older versions this insert supersedes (the sqlite trigger's DELETE). */
-    private suspend fun supersedeOlder(event: Event) {
-        currentVersions(event).forEach {
+    /**
+     * Replaceable/addressable version resolution, in ONE query: fetch the stored
+     * versions once, reject this insert if any of them wins the (created_at,
+     * lowest id wins ties) comparison, otherwise delete the strictly-older ones
+     * it supersedes (the sqlite trigger's reject + DELETE, merged).
+     */
+    private suspend fun supersede(event: Event) {
+        val versions = currentVersions(event)
+        if (versions.any { it.createdAt > event.createdAt || (it.createdAt == event.createdAt && it.id < event.id) }) {
+            throw RejectedException(Rejections.REPLACED)
+        }
+        versions.forEach {
             if (it.createdAt < event.createdAt || (it.createdAt == event.createdAt && it.id > event.id)) index.remove(it.id)
         }
     }

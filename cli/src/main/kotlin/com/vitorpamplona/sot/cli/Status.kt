@@ -36,7 +36,7 @@ internal fun status(args: List<String>) {
     val store = openStore()
     try {
         runBlocking {
-            fun countOf(kind: Int) = runBlocking { store.count(Filter(kinds = listOf(kind))) }
+            suspend fun countOf(kind: Int) = store.count(Filter(kinds = listOf(kind)))
             println("  events:    ${store.count(Filter())}")
             println("  profiles:  ${countOf(0)} (kind 0)")
             println("  relaylists:${countOf(10002)} (kind 10002)")

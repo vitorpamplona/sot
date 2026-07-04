@@ -99,7 +99,7 @@ class RelaySyncer(
      * set for the filter — non-null ONLY when the enumeration finished cleanly,
      * so a diff against the store can safely treat missing ids as deleted.
      */
-    class ReconcileOutcome(
+    data class ReconcileOutcome(
         val inserted: Int,
         val relayIds: Set<String>?,
         val usedNegentropy: Boolean,
@@ -213,7 +213,6 @@ class RelaySyncer(
         val scope = CursorScope.of(filter)
         val ids = Collections.synchronizedSet(HashSet<String>())
         var inserted = 0
-        var usedNeg = false
 
         if (state.relay(relay).negentropyCapable != false) {
             val neg = negentropyStream(relay, filter, maxEvents = 0, collectIds = ids)
@@ -238,10 +237,11 @@ class RelaySyncer(
         inserted += pages.inserted
         if (!pages.completed) {
             log("  ! ${relay.displayUrl()} enumeration timed out - skipping the deletion diff")
-            return ReconcileOutcome(inserted, relayIds = null, usedNegentropy = usedNeg)
+            return ReconcileOutcome(inserted, relayIds = null, usedNegentropy = false)
         }
         state.markSynced(relay, scope, nowSecs())
-        return ReconcileOutcome(inserted, HashSet(ids), usedNeg)
+        // Authoritative enumeration goes through pages, never negentropy.
+        return ReconcileOutcome(inserted, HashSet(ids), usedNegentropy = false)
     }
 
     /** Store deletions share the single-writer lock with inserts. */

@@ -77,9 +77,9 @@ internal object Ansi {
 
     fun gray(s: String) = sgr("90", s)
 
-    fun boldCyan(s: String) = if (enabled) "${ESC}1;96m$s$RESET" else s
+    fun boldCyan(s: String) = sgr("1;96", s)
 
-    fun boldGreen(s: String) = if (enabled) "${ESC}1;92m$s$RESET" else s
+    fun boldGreen(s: String) = sgr("1;92", s)
 }
 
 /*

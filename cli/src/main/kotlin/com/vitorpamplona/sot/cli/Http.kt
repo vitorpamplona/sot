@@ -29,29 +29,25 @@ import java.time.Duration
 /** Small HTTP helpers for component health checks (status + `up` readiness polling). */
 private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
+/** GET [url] with an optional Accept header; null if the request throws. */
+private fun get(
+    url: String,
+    accept: String? = null,
+): HttpResponse<String>? =
+    runCatching {
+        val b = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(3)).GET()
+        if (accept != null) b.header("Accept", accept)
+        http.send(b.build(), HttpResponse.BodyHandlers.ofString())
+    }.getOrNull()
+
 /** GET [url]; true if it answers < 400. [accept] sets an Accept header (e.g. NIP-11). */
 internal fun ping(
     url: String,
     accept: String? = null,
-): Boolean =
-    runCatching {
-        val b = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(3)).GET()
-        if (accept != null) b.header("Accept", accept)
-        http.send(b.build(), HttpResponse.BodyHandlers.ofString()).statusCode() < 400
-    }.getOrDefault(false)
+): Boolean = get(url, accept).let { it != null && it.statusCode() < 400 }
 
 /** GET [url] and return the body on 2xx, else null. */
-internal fun httpGet(url: String): String? =
-    runCatching {
-        val req =
-            HttpRequest
-                .newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(3))
-                .GET()
-                .build()
-        val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
-        if (resp.statusCode() < 400) resp.body() else null
-    }.getOrNull()
+internal fun httpGet(url: String): String? = get(url)?.takeIf { it.statusCode() < 400 }?.body()
 
 /** Poll [url] until it answers < 400 or [tries] attempts elapse, printing dots. */
 internal fun waitUntil(

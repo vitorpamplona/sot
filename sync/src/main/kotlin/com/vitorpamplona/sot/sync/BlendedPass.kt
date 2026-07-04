@@ -27,7 +27,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
@@ -245,7 +244,7 @@ internal class BlendedPass(
         log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${authors.size} observer(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         store
             .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND), authors = authors))
-            .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
+            .flatMap { l -> l.rankProviders().map { it.pubkey to it.relayUrl } }
             .forEach { (service, relayHint) -> enqueueProvider(service, relayHint) }
     }
 
@@ -350,7 +349,7 @@ internal class BlendedPass(
     private suspend fun storedProviderPairs(): List<Pair<HexKey, NormalizedRelayUrl?>> =
         store
             .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
-            .flatMap { l -> l.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to it.relayUrl } }
+            .flatMap { l -> l.rankProviders().map { it.pubkey to it.relayUrl } }
             .distinct()
 
     private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""
