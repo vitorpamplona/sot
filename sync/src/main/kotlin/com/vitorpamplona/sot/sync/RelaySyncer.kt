@@ -21,7 +21,6 @@
 package com.vitorpamplona.sot.sync
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyOrFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
@@ -32,21 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.trySendBlocking
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
-import java.time.LocalDate
 import java.util.Collections
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -57,12 +42,13 @@ import java.util.concurrent.atomic.AtomicLong
  * of REQs) and transparently falls back to paginated fetch — with id-dedup — on
  * relays that can't reconcile.
  *
- * Events STREAM into the store: the download callback feeds a bounded channel,
- * and a consumer verifies + batch-inserts in [CHUNK_SIZE] chunks as they arrive.
- * A multi-million-event relay never sits in memory (the old whole-download
- * buffer was multiple GB for one big relay), the projection starts working
- * during the download, and a full channel backpressures the socket instead of
- * growing the heap.
+ * This class is the DOWNLOAD ORCHESTRATOR: it decides transport (negentropy vs
+ * pages), judges completeness, and advances the persisted cursor. The
+ * mechanics around it live in three collaborators, one responsibility each:
+ * [EventStreamPipeline] streams a download into the store (bounded channel,
+ * verify, batch insert, single-writer discipline); [NostrAuthHandshake] settles
+ * the NIP-42 first-contact challenge; [CursorScope] maps a filter to its
+ * incremental `since` cursor.
  *
  * Incrementality is the persisted `since` cursor: each run scopes the filter to
  * `lastSync − slack`, so only new events transfer (the slack overlap absorbs
@@ -70,7 +56,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class RelaySyncer(
     private val client: NostrClient,
-    private val store: IEventStore,
+    store: IEventStore,
     private val state: SyncState,
     private val log: (String) -> Unit,
     private val fetchBatch: Int = 500,
@@ -85,13 +71,13 @@ class RelaySyncer(
     // untrusted input: without this, a forged kind:0/30382/10040 could
     // impersonate a profile or poison the web-of-trust scores. Always on in
     // production; the seam exists only so tests can feed unsigned fixtures.
-    private val verifyEvents: Boolean = true,
+    verifyEvents: Boolean = true,
     // Live counters for the pass's status line; silent by default (tests, tools).
-    private val progress: SyncProgress = SyncProgress(log = { }),
+    progress: SyncProgress = SyncProgress(log = { }),
     // NIP-42 auth status (a RelayAuthenticator on the same client). When set,
     // the first contact with each relay waits for its challenge handshake, so
     // an auth-required relay doesn't reject the sync's opening downloads.
-    private val auth: IAuthStatus = EmptyIAuthStatus,
+    auth: IAuthStatus = EmptyIAuthStatus,
     // How many negentropy WINDOWS one session reconciles concurrently
     // (Quartz default 1). The relay computes each window server-side, so at 1
     // the socket idles for the full computation between streams; overlapping
@@ -119,13 +105,6 @@ class RelaySyncer(
         val usedNegentropy: Boolean,
     )
 
-    /** What one streamed download did: [received] events seen, [inserted] newly accepted. */
-    private class Streamed(
-        val inserted: Int,
-        val received: Int,
-        val completed: Boolean,
-    )
-
     /** A [Streamed] negentropy-or-fetch download plus the protocol's own result. */
     private class NegentropyStream(
         val streamed: Streamed,
@@ -136,37 +115,8 @@ class RelaySyncer(
         val downloaded get() = result?.downloaded ?: 0
     }
 
-    // Relay syncs run in parallel, but the store stays a single writer.
-    private val storeWrites = Mutex()
-
-    // Relays whose NIP-42 first contact already ran (connections persist across kinds).
-    private val authenticated = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
-    /**
-     * First contact with [relay] when a NIP-42 signer is configured: open the
-     * connection with a throwaway probe and give the challenge handshake
-     * (AUTH -> signed reply -> OK) a bounded window. Without this, an
-     * auth-required relay rejects the sync's opening downloads — they race
-     * the handshake and come back empty. Relays that never challenge just
-     * cost the probe.
-     */
-    private suspend fun awaitAuthOnFirstContact(relay: NormalizedRelayUrl) {
-        if (auth === EmptyIAuthStatus || !authenticated.add(relay)) return
-        runCatching {
-            withTimeoutOrNull(AUTH_PROBE_MS + 500) {
-                client.fetchAllPages(relay, listOf(Filter(kinds = listOf(0), limit = 1)), timeoutMs = AUTH_PROBE_MS) { }
-            }
-        }
-        // "No auth pending" also describes the instant BEFORE the async challenge
-        // reply is recorded - so hold a short grace period unconditionally, then
-        // wait (bounded) for the recorded reply's OK.
-        val settleUntil = System.currentTimeMillis() + AUTH_GRACE_MS
-        val deadline = System.currentTimeMillis() + AUTH_WAIT_MS
-        while (System.currentTimeMillis() < deadline) {
-            if (System.currentTimeMillis() >= settleUntil && auth.hasFinishedAuthentication(relay)) return
-            delay(50)
-        }
-    }
+    private val pipeline = EventStreamPipeline(store, log, progress, verifyEvents)
+    private val handshake = NostrAuthHandshake(client, auth)
 
     suspend fun sync(
         relay: NormalizedRelayUrl,
@@ -177,10 +127,10 @@ class RelaySyncer(
         // its worker pool the moment they arrive — no store re-scan per relay.
         onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Outcome {
-        awaitAuthOnFirstContact(relay)
-        val scope = cursorScope(filter)
+        handshake.awaitOnFirstContact(relay)
+        val scope = CursorScope.of(filter)
         val firstSync = state.cursor(relay, scope) == null
-        val scoped = sinceCursor(filter, relay, scope)
+        val scoped = CursorScope.since(filter, state.cursor(relay, scope), slackSecs)
 
         if (state.relay(relay).negentropyCapable == false) {
             val pages = pagesStream(relay, scoped, maxEvents, onVerified = onVerified)
@@ -259,8 +209,8 @@ class RelaySyncer(
         filter: Filter,
         forceEnumerate: Boolean = false,
     ): ReconcileOutcome {
-        awaitAuthOnFirstContact(relay)
-        val scope = cursorScope(filter)
+        handshake.awaitOnFirstContact(relay)
+        val scope = CursorScope.of(filter)
         val ids = Collections.synchronizedSet(HashSet<String>())
         var inserted = 0
         var usedNeg = false
@@ -295,7 +245,7 @@ class RelaySyncer(
     }
 
     /** Store deletions share the single-writer lock with inserts. */
-    suspend fun deleteFromStore(filter: Filter) = storeWrites.withLock { store.delete(filter) }
+    suspend fun deleteFromStore(filter: Filter) = pipeline.deleteFromStore(filter)
 
     /**
      * One negentropy-or-fetch download, streamed into the store. Quartz picks the
@@ -314,7 +264,7 @@ class RelaySyncer(
         val need = AtomicInteger(0)
         var result: NegentropyOrFetchResult? = null
         val streamed =
-            streamEvents(relay, filter, collectIds = collectIds, needHint = need::get, onVerified = onVerified) { onEvent ->
+            pipeline.stream(relay, filter, collectIds = collectIds, needHint = need::get, onVerified = onVerified) { onEvent ->
                 result =
                     runCatching {
                         client.negentropySyncOrFetch(
@@ -337,103 +287,6 @@ class RelaySyncer(
         return NegentropyStream(streamed, result, need.get())
     }
 
-    /**
-     * The streaming core: [producer] runs the relay download, handing every event
-     * to the callback; a consumer coroutine verifies + inserts them in
-     * [CHUNK_SIZE] chunks as they arrive. The bounded channel backpressures the
-     * download (the callback blocks a socket thread briefly) instead of buffering
-     * the whole set. [producer] returns whether the download COMPLETED (vs timed out).
-     */
-    private suspend fun streamEvents(
-        relay: NormalizedRelayUrl,
-        filter: Filter,
-        collectIds: MutableSet<String>? = null,
-        needHint: () -> Int = { 0 },
-        onVerified: (suspend (List<Event>) -> Unit)? = null,
-        producer: suspend (onEvent: (Event) -> Unit) -> Boolean,
-    ): Streamed =
-        coroutineScope {
-            val channel = Channel<Event>(2 * CHUNK_SIZE)
-            val received = AtomicInteger(0)
-            val inserted = AtomicInteger(0)
-            val watch = progress.download(label(relay, filter))
-            val consumer =
-                launch(Dispatchers.IO) {
-                    try {
-                        val chunk = ArrayList<Event>(CHUNK_SIZE)
-
-                        suspend fun flush() {
-                            if (chunk.isNotEmpty()) {
-                                inserted.addAndGet(insertBatch(chunk, relay, filter, onVerified))
-                                chunk.clear()
-                            }
-                        }
-                        for (e in channel) {
-                            progress.onDequeued()
-                            chunk.add(e)
-                            if (chunk.size >= CHUNK_SIZE) flush()
-                        }
-                        flush()
-                    } finally {
-                        // If the consumer stops for ANY reason — cancellation of
-                        // the pass, or an insert/verify exception — close the
-                        // channel for SEND so a producer parked in the
-                        // (non-cancellable) trySendBlocking unblocks immediately
-                        // instead of deadlocking on a full channel forever. This
-                        // is the fix for the tail-wedge: without it, "producer
-                        // closes the channel" only holds while the consumer keeps
-                        // draining, which a dead consumer doesn't.
-                        channel.cancel()
-                    }
-                }
-            val completed =
-                try {
-                    producer { e ->
-                        collectIds?.add(e.id)
-                        progress.onEvent()
-                        watch.tick(received.incrementAndGet(), needHint())
-                        // A failed send means the consumer closed the channel
-                        // (died/cancelled) — stop feeding promptly rather than
-                        // draining the rest of the relay download into the void.
-                        if (channel.trySendBlocking(e).isFailure) throw CancellationException("consumer stopped; aborting download")
-                        progress.onQueued()
-                    }
-                } finally {
-                    watch.done()
-                    channel.close()
-                    consumer.join()
-                }
-            Streamed(inserted.get(), received.get(), completed)
-        }
-
-    /**
-     * The download's slot name in the status line: relay, kind, (for provider
-     * syncs) the author, and (for time-sliced syncs) the slice's date window —
-     * without it, parallel slices of the same filter are indistinguishable and
-     * a stalled one can't be identified.
-     */
-    private fun label(
-        relay: NormalizedRelayUrl,
-        filter: Filter,
-    ): String {
-        val kind = filter.kinds?.firstOrNull()?.let { " k$it" } ?: ""
-        val author =
-            filter.authors
-                ?.firstOrNull()
-                ?.take(8)
-                ?.let { " $it" } ?: ""
-        val window =
-            if (filter.since != null || filter.until != null) {
-                " ${day(filter.since)}..${day(filter.until)}"
-            } else {
-                ""
-            }
-        return "${relay.displayUrl()}$kind$author$window"
-    }
-
-    /** Epoch seconds -> "MM-dd" (status-line dates); open bounds render as "…". */
-    private fun day(t: Long?): String = t?.let { LocalDate.ofEpochDay(it / 86_400).toString().substring(5) } ?: "…"
-
     /** Paginated `since` fetch — works on every relay. [maxEvents] caps ingest via Filter.limit. */
     private suspend fun pagesStream(
         relay: NormalizedRelayUrl,
@@ -443,7 +296,7 @@ class RelaySyncer(
         onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Streamed {
         val paged = if (maxEvents > 0) filter.copy(limit = maxEvents) else filter
-        return streamEvents(relay, paged, collectIds, onVerified = onVerified) { onEvent ->
+        return pipeline.stream(relay, paged, collectIds, onVerified = onVerified) { onEvent ->
             // NO outer wall-clock cap: a long-but-healthy download (many pages, each
             // fast) must never be cut mid-stream. fetchAllPages' own per-page
             // [idleTimeoutMs] watchdog is what stops a page that goes silent.
@@ -467,88 +320,5 @@ class RelaySyncer(
         }
     }
 
-    private suspend fun insertBatch(
-        events: List<Event>,
-        relay: NormalizedRelayUrl,
-        filter: Filter,
-        onVerified: (suspend (List<Event>) -> Unit)? = null,
-    ): Int {
-        // Stage-timed for the status line's bottleneck dial: signature CPU vs
-        // waiting on the single writer vs the store insert itself.
-        val t0 = System.nanoTime()
-        val valid = dropForged(events, relay, filter)
-        onVerified?.invoke(valid)
-        val t1 = System.nanoTime()
-        val accepted =
-            storeWrites
-                .withLock {
-                    val t2 = System.nanoTime()
-                    store.batchInsert(valid).also { progress.onBatchTimings(t1 - t0, t2 - t1, System.nanoTime() - t2) }
-                }.count { it is IEventStore.InsertOutcome.Accepted }
-        progress.onInserted(accepted)
-        return accepted
-    }
-
-    /**
-     * Cursor scope key: ALL the filter's kinds, plus authors so per-provider 30382
-     * syncs don't share a cursor. Joining every kind (not just the first) keeps a
-     * multi-kind filter's cursor distinct from any single-kind one — a single-kind
-     * filter still scopes to exactly its kind, so existing per-kind cursors are
-     * byte-identical.
-     */
-    private fun cursorScope(filter: Filter): String {
-        val kinds = filter.kinds?.joinToString(",") ?: "-1"
-        val authors = filter.authors?.let { ":" + it.joinToString(",") } ?: ""
-        return "$kinds$authors"
-    }
-
-    /** Scope [filter] to the persisted cursor — minus slack to absorb back-dated events — if one exists. */
-    private fun sinceCursor(
-        filter: Filter,
-        relay: NormalizedRelayUrl,
-        scope: String,
-    ): Filter {
-        val since = state.cursor(relay, scope)?.minus(slackSecs) ?: return filter
-        return filter.copy(since = since)
-    }
-
-    /**
-     * Drop events whose id or Schnorr signature doesn't verify — relays are
-     * untrusted input. Verification is CPU-bound (~0.2ms each) and the chunks
-     * are large, so it fans out across cores; order is preserved.
-     */
-    private suspend fun dropForged(
-        events: List<Event>,
-        relay: NormalizedRelayUrl,
-        filter: Filter,
-    ): List<Event> {
-        if (!verifyEvents) return events
-        val ok =
-            coroutineScope {
-                events
-                    .chunked(VERIFY_CHUNK)
-                    .map { chunk -> async(Dispatchers.Default) { chunk.filter { runCatching { it.verify() }.getOrDefault(false) } } }
-                    .awaitAll()
-                    .flatten()
-            }
-        val forged = events.size - ok.size
-        if (forged > 0) log("  ! [${relay.url}] dropped $forged event(s) with invalid id/signature (kind ${filter.kinds?.firstOrNull()})")
-        return ok
-    }
-
     private fun nowSecs() = System.currentTimeMillis() / 1000
-
-    private companion object {
-        // Verify + insert in chunks of this many events as they stream in.
-        const val CHUNK_SIZE = 5_000
-
-        // Signature checks fan out across cores in slices this size.
-        const val VERIFY_CHUNK = 256
-
-        // First-contact NIP-42 handshake: probe REQ bound, settle grace for the
-        // async challenge reply to be recorded, total wait for its OK.
-        const val AUTH_PROBE_MS = 1_500L
-        const val AUTH_GRACE_MS = 500L
-        const val AUTH_WAIT_MS = 5_000L
-    }
 }
