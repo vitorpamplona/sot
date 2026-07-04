@@ -58,7 +58,7 @@ tasks.register<JavaExec>("loadTest") {
     description = "Negentropy-sync a provider relay's whole kind-30382 corpus into Vespa"
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("com.vitorpamplona.sot.cli.LoadTest")
-    jvmArgs("-Xmx5g")
+    jvmArgs("-Xmx4g")
     args(
         (project.findProperty("relay") as String?) ?: "wss://nip85.nosfabrica.com",
         (project.findProperty("service") as String?) ?: "",

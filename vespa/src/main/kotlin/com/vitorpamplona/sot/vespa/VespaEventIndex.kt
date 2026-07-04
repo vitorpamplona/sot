@@ -69,7 +69,20 @@ class VespaEventIndex(
             // concurrency in the single digits and starve a local engine.
             .setConnectionsPerEndpoint(8)
             .setMaxStreamPerConnection(256)
-            .setRetryStrategy(
+            // The dynamic throttler STARTS at 2 x connections in flight and
+            // ramps by throughput probing — but a batched writer (putAll
+            // bursts with query gaps between chunks) never sustains the probe,
+            // so it idles at the floor: ~20 in flight x ~20ms/write ≈ 1k/s
+            // against an engine measured taking twice that. Start the window
+            // high instead; the throttler still adapts DOWN if the engine
+            // pushes back. (Impl-only knob — the API interface doesn't
+            // expose it, so apply reflectively and shrug it off if a future
+            // client version renames it.)
+            .apply {
+                runCatching {
+                    javaClass.getMethod("setInitialInflightFactor", Int::class.java).invoke(this, 64)
+                }
+            }.setRetryStrategy(
                 object : FeedClient.RetryStrategy {
                     // Bounded: a dead Vespa should surface as failed ops, not a hang.
                     override fun retries() = 5
