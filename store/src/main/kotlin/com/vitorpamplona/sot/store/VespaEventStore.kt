@@ -41,6 +41,7 @@ import com.vitorpamplona.sot.vespa.EventDoc
 import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
 import com.vitorpamplona.sot.vespa.EventYql
+import com.vitorpamplona.sot.vespa.IngestStats
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
 import com.vitorpamplona.sot.vespa.SearchFields
 import com.vitorpamplona.sot.vespa.mapBounded
@@ -205,26 +206,30 @@ class VespaEventStore(
         // starve the batch, but unbounded fan-out measurably 504s the engine's
         // summary stage).
         val stored = HashSet<String>()
-        alive()
-            .map { events[it].id }
-            .chunked(CHECK_CHUNK)
-            .mapBounded(QUERY_FANOUT) { chunk -> index.search(EventQuery(ids = chunk)) }
-            .forEach { docs -> docs.forEach { stored += it.id } }
+        IngestStats.timed("dedup") {
+            alive()
+                .map { events[it].id }
+                .chunked(CHECK_CHUNK)
+                .mapBounded(QUERY_FANOUT) { chunk -> index.search(EventQuery(ids = chunk)) }
+                .forEach { docs -> docs.forEach { stored += it.id } }
+        }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected("duplicate: already have this event") }
 
         // Stage C — tombstone + vanish guards, one pass per distinct owner;
         // the guard reads fan out (bounded) across owners.
         val owners = alive().groupBy { events[it].owner() }
         val guards =
-            owners.keys
-                .toList()
-                .mapBounded(QUERY_FANOUT) { owner ->
-                    owner to
-                        Pair(
-                            index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner))),
-                            index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner))),
-                        )
-                }.toMap()
+            IngestStats.timed("guards") {
+                owners.keys
+                    .toList()
+                    .mapBounded(QUERY_FANOUT) { owner ->
+                        owner to
+                            Pair(
+                                index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner))),
+                                index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner))),
+                            )
+                    }.toMap()
+            }
         for ((owner, idxs) in owners) {
             val (tombs, vanishes) = guards.getValue(owner)
             if (tombs.size >= GUARD_PAGE || vanishes.size >= GUARD_PAGE) {
@@ -308,12 +313,15 @@ class VespaEventStore(
                     }
                 }
             }
-        versionQueries.mapBounded(QUERY_FANOUT) { q -> index.search(q) }.forEach { docs ->
-            docs.forEach { doc ->
-                val d = if (doc.kind.isAddressable()) dTagOf(doc.tags) else null
-                existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
+        IngestStats
+            .timed("versions") {
+                versionQueries.mapBounded(QUERY_FANOUT) { q -> index.search(q) }
+            }.forEach { docs ->
+                docs.forEach { doc ->
+                    val d = if (doc.kind.isAddressable()) dTagOf(doc.tags) else null
+                    existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
+                }
             }
-        }
         val removeFromStore = ArrayList<String>()
         for ((key, idxs) in groups) {
             val versions = existing[key].orEmpty()
@@ -345,7 +353,9 @@ class VespaEventStore(
         }
         removeFromStore.distinct().forEach { index.remove(it) }
 
-        // Stage E — one pipelined write for everything that survived.
+        // Stage E — one pipelined write for everything that survived. (Timing
+        // is booked by the layers below: the projection decorator splits it
+        // into write / proj.fetch / proj.write.)
         index.putAll(toPut.values.map { it.toDoc() })
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
         return outcome.map { it ?: IEventStore.InsertOutcome.Rejected("insert failed") }

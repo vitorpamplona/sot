@@ -28,6 +28,7 @@ import com.vitorpamplona.sot.vespa.DocRef
 import com.vitorpamplona.sot.vespa.EventDoc
 import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
+import com.vitorpamplona.sot.vespa.IngestStats
 import com.vitorpamplona.sot.vespa.ProfileDoc
 import com.vitorpamplona.sot.vespa.ProfileIndex
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
@@ -101,7 +102,7 @@ class TrustProjection(
      * of two per subject.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
-        inner.putAll(docs)
+        IngestStats.timed("write") { inner.putAll(docs) }
         // Provider lists first: they change the map the scores attribute through.
         docs.filter { it.kind == TrustProviderListEvent.KIND }.forEach { recomputeSubjectsOf(it) }
         val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
@@ -129,10 +130,12 @@ class TrustProjection(
     ) {
         val bySubject = HashMap<String, MutableList<EventDoc>>(subjects.size * 2)
         val wanted = subjects.toHashSet()
-        subjects
-            .chunked(FETCH_CHUNK)
-            .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) }
-            .forEach { docs ->
+        IngestStats
+            .timed("proj.fetch") {
+                subjects
+                    .chunked(FETCH_CHUNK)
+                    .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) }
+            }.forEach { docs ->
                 docs.forEach { doc ->
                     subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
                 }
@@ -147,8 +150,10 @@ class TrustProjection(
                 removes += subject
             }
         }
-        profiles.putAll(puts)
-        removes.mapBounded(QUERY_FANOUT) { profiles.remove(it) }
+        IngestStats.timed("proj.write") {
+            profiles.putAll(puts)
+            removes.mapBounded(QUERY_FANOUT) { profiles.remove(it) }
+        }
     }
 
     override suspend fun remove(id: String) {
