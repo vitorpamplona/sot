@@ -83,9 +83,9 @@ object EventYql {
                 .filter { it.isNotEmpty() }
                 .take(MAX_QUERY_WORDS)
         if (words.isNotEmpty()) {
-            clauses += searchGroup(words, params)
+            clauses += BrainstormWordGroup.clause(words, params)
             // Short queries lean harder on the trigram safety net (Brainstorm vespa.py).
-            params["ranking.features.query(w_gram)"] = if (words.minOf { it.length } <= 3) "8.0" else "2.0"
+            params["ranking.features.query(w_gram)"] = if (BrainstormWordGroup.leansOnGrams(words)) "8.0" else "2.0"
         }
 
         val ranking = q.ranking ?: if (words.isEmpty()) RANK_UNRANKED else RANK_SEARCH
@@ -108,154 +108,6 @@ object EventYql {
             ranking = ranking,
         )
     }
-
-    // ---- the search group: Brainstorm's per-word fuzzy recall --------------
-    // Port of brainstorm_server vespa_query.py build_query()/_word_group(),
-    // extended with the generic tier fields. One OR group per query word
-    // (each word matching ANY field recalls the doc; ranking sorts it out),
-    // plus a joined-CamelCase variant (≥2 words: "John Carvalho" finds
-    // @johncarvalho) and adjacent-pair concatenations (≥3 words). Words go
-    // out-of-band as @w0..@w5 / @wj / @wp0.. query parameters.
-
-    /** All word groups OR'd into one parenthesized clause, filling [params]. */
-    private fun searchGroup(
-        words: List<String>,
-        params: MutableMap<String, String>,
-    ): String {
-        val groups = ArrayList<String>()
-        words.forEachIndexed { i, word ->
-            params["w$i"] = word
-            groups += wordGroup("@w$i", word, withGrams = true)
-        }
-        if (words.size >= 2) {
-            val joined = words.joinToString("")
-            params["wj"] = joined
-            groups += wordGroup("@wj", joined, withGrams = false)
-        }
-        if (words.size >= 3) {
-            for (i in 0 until words.size - 1) {
-                val pair = words[i] + words[i + 1]
-                params["wp$i"] = pair
-                groups += wordGroup("@wp$i", pair, withGrams = false)
-            }
-        }
-        return "(${groups.joinToString(" or ")})"
-    }
-
-    /** One word's match clauses across every search field, plus its trigram safety net. */
-    private fun wordGroup(
-        param: String,
-        literal: String,
-        withGrams: Boolean,
-    ): String {
-        val maxEdits = wordMaxEdits(literal)
-        val clauses = ArrayList<String>()
-        for (field in SEARCH_FIELDS) clauses += fieldClauses(field, param, maxEdits, roleOf(field))
-        if (withGrams) {
-            for (gramField in OR_GRAM_FIELDS) orGramClause(literal, gramField)?.let { clauses += it }
-            andAboutGramClause(literal)?.let { clauses += it }
-        }
-        return "(${clauses.joinToString(" or ")})"
-    }
-
-    /**
-     * Match clauses for one (field, word): exact, prefix, and the
-     * length-gated fuzzy tiers (Meilisearch's typo budget: <4 chars exact
-     * or prefix only, ≥4 one edit, ≥9 two; prefixLength:2 = the first two
-     * characters must match exactly). Labels feed the schema's match_quality
-     * ladder on primary-role fields (known-inert today; kept verbatim).
-     */
-    private fun fieldClauses(
-        field: String,
-        param: String,
-        maxEdits: Int,
-        role: Role,
-    ): List<String> {
-        fun ann(
-            extra: String?,
-            label: String?,
-        ): String {
-            val parts = ArrayList<String>(3)
-            parts += "defaultIndex:\"$field\""
-            extra?.let { parts += it }
-            label?.let { parts += "label:\"$it\"" }
-            return parts.joinToString(",", prefix = "{", postfix = "}")
-        }
-
-        val exactLabel =
-            if (role == Role.PRIMARY) {
-                "mtch_exact"
-            } else if (role == Role.AFFILIATION) {
-                "mtch_affil"
-            } else {
-                null
-            }
-        val clauses = ArrayList<String>(4)
-        clauses += "(${ann(null, exactLabel)}userInput($param))"
-        clauses += "(${ann("prefix:true", if (role == Role.PRIMARY) "mtch_prefix" else null)}userInput($param))"
-        if (maxEdits >= 1) {
-            clauses += "(${ann("fuzzy:{maxEditDistance:1,prefixLength:2}", if (role == Role.PRIMARY) "mtch_fz1" else null)}userInput($param))"
-        }
-        if (maxEdits >= 2) {
-            clauses += "(${ann("fuzzy:{maxEditDistance:2,prefixLength:2}", if (role == Role.PRIMARY) "mtch_fz2" else null)}userInput($param))"
-        }
-        return clauses
-    }
-
-    /** OR of the word's trigrams against a gram field — the recall safety net. */
-    private fun orGramClause(
-        word: String,
-        gramField: String,
-    ): String? {
-        val grams = trigrams(word.lowercase()).distinct().sorted()
-        if (grams.isEmpty()) return null
-        return grams.joinToString(" or ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
-    }
-
-    /** AND of the word's trigrams against about_gram (discriminative, unlike the OR nets). */
-    private fun andAboutGramClause(word: String): String? {
-        // Lowercase like every other gram net (orGramClause): the *_gram fields
-        // are lowercase-indexed, so uppercased trigrams from a capitalized query
-        // word ("Vitor") would never match and this discriminative net would go
-        // silently dead for mixed-case input — the common case for names.
-        val grams = trigrams(word.lowercase())
-        if (grams.isEmpty()) return null
-        return grams.joinToString(" and ", prefix = "(", postfix = ")") { "about_gram contains \"$it\"" }
-    }
-
-    /** Alphanumeric-only trigrams — safe to embed in YQL without escaping. */
-    private fun trigrams(word: String): List<String> =
-        (0..word.length - 3)
-            .map { word.substring(it, it + 3) }
-            .filter { gram -> gram.all(Char::isLetterOrDigit) }
-
-    private fun wordMaxEdits(word: String): Int =
-        when {
-            word.length >= 9 -> 2
-            word.length >= 4 -> 1
-            else -> 0
-        }
-
-    private enum class Role { PRIMARY, AFFILIATION, RECALL }
-
-    /**
-     * Field roles (vespa_query.py): primary = the name-tier fields whose
-     * clauses carry the match-quality labels (nip05/lud16 are @-address
-     * identity fields; search_primary is the tier twin), affiliation =
-     * bio + website (exact clause labeled mtch_affil), recall = everything
-     * that matches without labeling.
-     */
-    private fun roleOf(field: String): Role =
-        when (field) {
-            "name", "display_name", "nip05", "lud16", "search_primary" -> Role.PRIMARY
-            "about", "website" -> Role.AFFILIATION
-            else -> Role.RECALL
-        }
-
-    private val SEARCH_FIELDS =
-        listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text")
-
-    private val OR_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
 
     private val WHITESPACE = Regex("\\s+")
 
