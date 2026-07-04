@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.4.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-quartz = "4e895c20dd"
+quartz = "b8d3791ea3"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
