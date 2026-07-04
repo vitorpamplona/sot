@@ -30,7 +30,7 @@
          instead of leaning on this. -->
     <tuning>
       <resource-limits>
-        <disk>0.96</disk>
+        <disk>0.985</disk>
         <memory>0.92</memory>
       </resource-limits>
     </tuning>
