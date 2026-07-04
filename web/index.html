@@ -461,7 +461,7 @@
       </div>`;
   }
 
-  /** kind 0 — the profile card (v1's card, minus the server-side numbers). */
+  /** kind 0 — the profile card (rendered purely from the event, no server-side numbers). */
   function profileCard(ev) {
     const p = parseProfile(ev);
     const name = p.name || p.display_name || ev.pubkey.slice(0, 12) + "…";

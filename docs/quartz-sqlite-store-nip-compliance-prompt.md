@@ -1,10 +1,10 @@
 # Prompt: fix four NIP-compliance gaps in Quartz's SQLite EventStore
 
-> Status: **open — send upstream.** Found while auditing sot's v2
+> Status: **open — send upstream.** Found while auditing sot's
 > `VespaEventStore` (which reimplements the SQLite store's semantics) against
 > the spec texts in `nostr-protocol/nips`. The Vespa store already ships the
 > spec-correct behavior with a test per finding
-> (`v2/store/src/test/.../VespaEventStoreTest.kt`); this prompt asks for the
+> (`store/src/test/.../VespaEventStoreTest.kt`); this prompt asks for the
 > same fixes in Quartz. Findings verified against Quartz commit `4a66435263`.
 
 Paste the section below to an agent working in the **Amethyst / Quartz**
