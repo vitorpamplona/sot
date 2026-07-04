@@ -108,16 +108,29 @@ object LoadTest {
             val stack = openStack()
             val store = stack.store
             val observer = Identity.signerFromSecret("11".repeat(32))!!
-            log("[load] observer ${observer.pubKey} trusts ${serviceKeys.size} service key(s) via a synthetic 10040")
-            runCatching {
-                store.insert(
-                    observer.sign<TrustProviderListEvent>(
-                        TimeUtils.now(),
-                        TrustProviderListEvent.KIND,
-                        serviceKeys.map { arrayOf("30382:rank", it, relayUrl.url) }.toTypedArray(),
-                        "",
-                    ),
-                )
+            // Insert the synthetic 10040 ONLY when the observer doesn't already
+            // map these services. A re-run against a store that still holds the
+            // prior run's scores would otherwise re-publish an identical 10040,
+            // and the projection would walk the ENTIRE existing 30382 corpus to
+            // re-attribute it (correct, but O(corpus) under the write lock —
+            // it stalls the sync behind a multi-million-doc reprojection). The
+            // scores project incrementally as they stream in regardless.
+            val existing = store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(observer.pubKey)))
+            val alreadyMapped = existing.flatMap { it.serviceProviders().map { p -> p.pubkey } }.toSet()
+            if (alreadyMapped.containsAll(serviceKeys)) {
+                log("[load] observer ${observer.pubKey} already maps ${serviceKeys.size} service key(s) - skipping 10040 re-insert (avoids a full reprojection walk)")
+            } else {
+                log("[load] observer ${observer.pubKey} trusts ${serviceKeys.size} service key(s) via a synthetic 10040")
+                runCatching {
+                    store.insert(
+                        observer.sign<TrustProviderListEvent>(
+                            TimeUtils.now(),
+                            TrustProviderListEvent.KIND,
+                            serviceKeys.map { arrayOf("30382:rank", it, relayUrl.url) }.toTypedArray(),
+                            "",
+                        ),
+                    )
+                }
             }
 
             val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))

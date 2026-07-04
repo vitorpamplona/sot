@@ -112,7 +112,7 @@ class VespaEventIndex(
             .put(
                 DocumentId.of(NAMESPACE, DOCTYPE, doc.id),
                 buildJsonObject { put("fields", doc.indexFields()) }.toString(),
-                OperationParameters.empty(),
+                feedParams(),
             ).await()
     }
 
@@ -123,13 +123,13 @@ class VespaEventIndex(
                 feed.put(
                     DocumentId.of(NAMESPACE, DOCTYPE, doc.id),
                     buildJsonObject { put("fields", doc.indexFields()) }.toString(),
-                    OperationParameters.empty(),
+                    feedParams(),
                 )
             }.forEach { it.await() }
     }
 
     override suspend fun remove(id: String) {
-        feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), OperationParameters.empty()).await()
+        feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), feedParams()).await()
     }
 
     override suspend fun search(query: EventQuery): List<EventDoc> {
@@ -276,5 +276,14 @@ class VespaEventIndex(
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
+
+        /**
+         * Per-operation feed deadline. The feed client's retry strategy handles
+         * transient errors, but a silently half-dead HTTP/2 connection (e.g.
+         * after an engine restart severs it) makes `await()` hang FOREVER with
+         * no deadline — which deadlocks the single-writer store behind it. A
+         * timeout turns that hang into a retryable failure.
+         */
+        fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))
     }
 }

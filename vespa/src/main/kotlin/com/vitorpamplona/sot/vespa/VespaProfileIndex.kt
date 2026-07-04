@@ -81,7 +81,7 @@ class VespaProfileIndex(
             .put(
                 DocumentId.of(NAMESPACE, DOCTYPE, profile.pubkey),
                 buildJsonObject { put("fields", profile.indexFields()) }.toString(),
-                OperationParameters.empty(),
+                feedParams(),
             ).await()
     }
 
@@ -92,7 +92,7 @@ class VespaProfileIndex(
                 feed.put(
                     DocumentId.of(NAMESPACE, DOCTYPE, profile.pubkey),
                     buildJsonObject { put("fields", profile.indexFields()) }.toString(),
-                    OperationParameters.empty(),
+                    feedParams(),
                 )
             }.forEach { it.await() }
     }
@@ -119,13 +119,13 @@ class VespaProfileIndex(
                 feed.update(
                     DocumentId.of(NAMESPACE, DOCTYPE, u.subject),
                     buildJsonObject { put("fields", fields) }.toString(),
-                    OperationParameters.empty().createIfNonExistent(true),
+                    feedParams().createIfNonExistent(true),
                 )
             }.forEach { it.await() }
     }
 
     override suspend fun remove(pubkey: String) {
-        feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), OperationParameters.empty()).await()
+        feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams()).await()
     }
 
     override fun close() = feed.close(true)
@@ -133,5 +133,8 @@ class VespaProfileIndex(
     private companion object {
         const val NAMESPACE = "profile"
         const val DOCTYPE = "profile"
+
+        /** Per-op deadline so a half-dead HTTP/2 connection fails instead of hanging the writer forever (see VespaEventIndex). */
+        fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))
     }
 }
