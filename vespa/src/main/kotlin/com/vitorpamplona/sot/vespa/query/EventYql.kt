@@ -62,38 +62,10 @@ object EventYql {
     const val MAX_QUERY_WORDS = 6
 
     fun build(q: EventQuery): VespaQuery? {
-        val clauses = ArrayList<String>()
-
-        if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
-        if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
-        if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
-        if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
-        for ((name, values) in q.tags) {
-            clauses += tagClause(name, values, "or") ?: return null
-        }
-        for ((name, values) in q.tagsAll) {
-            clauses += tagClause(name, values, "and") ?: return null
-        }
-        q.since?.let { clauses += "created_at >= $it" }
-        q.until?.let { clauses += "created_at <= $it" }
-        q.expiresBefore?.let { clauses += "expires_at < $it" }
-        q.notExpiredAt?.let { clauses += "expires_at > $it" }
-
         val params = LinkedHashMap<String, String>()
-        val words =
-            q.search
-                ?.trim()
-                .orEmpty()
-                .split(WHITESPACE)
-                .filter { it.isNotEmpty() }
-                .take(MAX_QUERY_WORDS)
-        if (words.isNotEmpty()) {
-            clauses += BrainstormWordGroup.clause(words, params)
-            // Short queries lean harder on the trigram safety net.
-            params["ranking.features.query(w_gram)"] = if (BrainstormWordGroup.leansOnGrams(words)) "8.0" else "2.0"
-        }
+        val clauses = filterClauses(q, params) ?: return null
 
-        val ranking = q.ranking ?: if (words.isEmpty()) RANK_UNRANKED else RANK_SEARCH
+        val ranking = q.ranking ?: if (q.search.isNullOrBlank()) RANK_UNRANKED else RANK_SEARCH
         if (ranking != RANK_UNRANKED) {
             q.observer
                 ?.lowercase()
@@ -112,6 +84,64 @@ object EventYql {
             params = params,
             ranking = ranking,
         )
+    }
+
+    /**
+     * An EXACT-count query: the same filters, a grouping `count()`, and NO
+     * `order by`. Sorting by an attribute trips Vespa's match-phase on a large
+     * corpus (it stops after a slice), which caps the reported `totalCount` — so
+     * [build]'s recency `order by` would undercount by 10x+. Grouping count over
+     * the full, unranked match set is exact.
+     */
+    fun buildCount(q: EventQuery): VespaQuery? {
+        // A present limit <= 0 is the "matches nothing" sentinel (as in [build]);
+        // a positive limit is about hits, not the count, so grouping ignores it.
+        if (q.limit != null && q.limit <= 0) return null
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
+        return VespaQuery(
+            yql = "select * from event where $where limit 0 | all(output(count()))",
+            params = params,
+            ranking = RANK_UNRANKED,
+        )
+    }
+
+    /** The shared WHERE clauses (filters + optional search term); null when the filter provably matches nothing. */
+    private fun filterClauses(
+        q: EventQuery,
+        params: MutableMap<String, String>,
+    ): List<String>? {
+        val clauses = ArrayList<String>()
+
+        if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
+        if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
+        if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
+        if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
+        for ((name, values) in q.tags) {
+            clauses += tagClause(name, values, "or") ?: return null
+        }
+        for ((name, values) in q.tagsAll) {
+            clauses += tagClause(name, values, "and") ?: return null
+        }
+        q.since?.let { clauses += "created_at >= $it" }
+        q.until?.let { clauses += "created_at <= $it" }
+        q.expiresBefore?.let { clauses += "expires_at < $it" }
+        q.notExpiredAt?.let { clauses += "expires_at > $it" }
+
+        val words =
+            q.search
+                ?.trim()
+                .orEmpty()
+                .split(WHITESPACE)
+                .filter { it.isNotEmpty() }
+                .take(MAX_QUERY_WORDS)
+        if (words.isNotEmpty()) {
+            clauses += BrainstormWordGroup.clause(words, params)
+            // Short queries lean harder on the trigram safety net.
+            params["ranking.features.query(w_gram)"] = if (BrainstormWordGroup.leansOnGrams(words)) "8.0" else "2.0"
+        }
+        return clauses
     }
 
     /**

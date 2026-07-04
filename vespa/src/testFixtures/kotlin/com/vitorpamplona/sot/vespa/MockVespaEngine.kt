@@ -178,9 +178,24 @@ class MockVespaEngine {
     private fun search(params: Map<String, String>): Reply {
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
         val hits = params["hits"]?.toIntOrNull() ?: 10
-        val query = MockYql.parse(yql, params)
+        // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
+        // Grouping counts the FULL match set, so ignore the hit-limiting `limit 0`.
+        val isCount = yql.contains("all(output(count()))")
+        val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (isCount) it.copy(limit = null) else it }
         val matches = runBlocking { inner.search(query) }
-        val children = JsonArray(matches.take(hits).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
+        val children =
+            if (isCount) {
+                JsonArray(
+                    listOf(
+                        buildJsonObject {
+                            put("id", JsonPrimitive("group:root:0"))
+                            put("fields", buildJsonObject { put("count()", JsonPrimitive(matches.size)) })
+                        },
+                    ),
+                )
+            } else {
+                JsonArray(matches.take(hits).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
+            }
         val root =
             buildJsonObject {
                 put(

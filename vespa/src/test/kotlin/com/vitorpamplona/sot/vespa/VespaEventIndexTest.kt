@@ -130,7 +130,7 @@ class VespaEventIndexTest {
     }
 
     @Test
-    fun `count reads totalCount past the hits page`() =
+    fun `count returns the full match set past the hits page`() =
         runBlocking {
             seed(*(1..7).map { doc(kind = 7) }.toTypedArray())
             assertEquals(7, index.count(EventQuery(kinds = listOf(7))))

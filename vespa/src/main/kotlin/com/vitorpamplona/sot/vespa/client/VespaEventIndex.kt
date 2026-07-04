@@ -27,6 +27,7 @@ import com.vitorpamplona.sot.vespa.doc.EventDoc
 import com.vitorpamplona.sot.vespa.query.EventQuery
 import com.vitorpamplona.sot.vespa.query.EventSelection
 import com.vitorpamplona.sot.vespa.query.EventYql
+import com.vitorpamplona.sot.vespa.query.VespaQuery
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
@@ -58,8 +59,11 @@ import java.util.concurrent.Executors
  * must allow it). A full-corpus walk goes through [visitIds] instead: the
  * document API's visit, which streams past any cap.
  *
- * Counts read `totalCount`: exact for attribute-only recall, approximate under
- * a weakAnd search term. That is the same caveat Vespa itself carries.
+ * Counts use a grouping `count()` over the full match set (see
+ * [EventYql.buildCount]) — NOT `root.totalCount`, which the recency `order by`'s
+ * match-phase caps on a large corpus (a 10x+ undercount). Exact for
+ * attribute-only recall; still approximate under a weakAnd search term, the same
+ * caveat Vespa itself carries.
  */
 class VespaEventIndex(
     private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
@@ -138,7 +142,8 @@ class VespaEventIndex(
     }
 
     override suspend fun search(query: EventQuery): List<EventDoc> {
-        val root = queryRoot(query, hits = query.limit ?: maxHits) ?: return emptyList()
+        val vq = EventYql.build(query) ?: return emptyList()
+        val root = queryRoot(vq, hits = query.limit ?: maxHits) ?: return emptyList()
         return root["children"]
             ?.jsonArray
             ?.mapNotNull { child -> child.jsonObject["fields"]?.jsonObject?.let(::summaryOrNull) }
@@ -195,24 +200,30 @@ class VespaEventIndex(
     }
 
     override suspend fun count(query: EventQuery): Int {
-        val root = queryRoot(query, hits = 0) ?: return 0
-        return root["fields"]
-            ?.jsonObject
-            ?.get("totalCount")
-            ?.jsonPrimitive
-            ?.int ?: 0
+        // A grouping count() over the full match set — NOT root.totalCount, which
+        // Vespa caps under the recency `order by`'s match-phase (a 10x+ undercount
+        // on large kinds). See [EventYql.buildCount].
+        val root = queryRoot(EventYql.buildCount(query) ?: return 0, hits = 0) ?: return 0
+        return root["children"]
+            ?.jsonArray
+            ?.firstNotNullOfOrNull {
+                it.jsonObject["fields"]
+                    ?.jsonObject
+                    ?.get("count()")
+                    ?.jsonPrimitive
+                    ?.int
+            }
+            ?: 0
     }
 
     /**
-     * Run [query] against `/search/`. It POSTs because a filter with hundreds
-     * of ids or authors builds YQL far past any sane URL length. Returns null
-     * when the query provably matches nothing (no YQL built).
+     * Run [vq] against `/search/`. It POSTs because a filter with hundreds of
+     * ids or authors builds YQL far past any sane URL length.
      */
     private suspend fun queryRoot(
-        query: EventQuery,
+        vq: VespaQuery,
         hits: Int,
     ): JsonObject? {
-        val vq = EventYql.build(query) ?: return null
         val body =
             buildJsonObject {
                 put("yql", vq.yql)
