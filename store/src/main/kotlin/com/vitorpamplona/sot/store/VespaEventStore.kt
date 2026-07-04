@@ -373,18 +373,28 @@ class VespaEventStore(
         }
     }
 
-    /** (created_at, id) pairs straight off the docs — no Event materialization. */
+    /**
+     * (created_at, id) pairs straight off the docs — no Event materialization,
+     * and no result cap: plain filters walk the corpus through the engine's
+     * visit ([com.vitorpamplona.sot.vespa.EventIndex.visitIds]), so a
+     * negentropy session (or a sync reconcile diff) sees the COMPLETE match
+     * set even when it dwarfs the search page limit. Searching or limit'd
+     * filters keep the search path — their semantics live there.
+     */
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
         maxEntries: Int?,
     ): List<IdAndTime> {
-        val all =
-            filters
-                .mapNotNull { it.toEventQuery() }
-                .flatMap { index.search(it) }
-                .distinctBy { it.id }
-                .map { IdAndTime(it.createdAt, it.id) }
-        return if (maxEntries != null && all.size > maxEntries + 1) all.subList(0, maxEntries + 1) else all
+        val all = ArrayList<IdAndTime>()
+        for (q in filters.mapNotNull { it.toEventQuery() }) {
+            if (q.search == null && q.limit == null) {
+                index.visitIds(q) { page -> page.forEach { all += IdAndTime(it.createdAt, it.id) } }
+            } else {
+                index.search(q).forEach { all += IdAndTime(it.createdAt, it.id) }
+            }
+        }
+        val unique = if (filters.size > 1) all.distinctBy { it.id } else all
+        return if (maxEntries != null && unique.size > maxEntries + 1) unique.subList(0, maxEntries + 1) else unique
     }
 
     // ---- deletes ------------------------------------------------------------

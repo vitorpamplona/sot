@@ -256,7 +256,10 @@ class TrustSync(
                 // deletion here (the relay is authoritative for this scope).
                 val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores)
                 if (r.relayIds != null) {
-                    val stale = store.query<ContactCardEvent>(scores).map { it.id }.filterNot { it in r.relayIds }
+                    // The visit-backed snapshot, not query(): the diff must see
+                    // EVERY stored id for these providers — a capped page would
+                    // read the truncated remainder as "deleted on the relay".
+                    val stale = store.snapshotIdsForNegentropy(listOf(scores)).map { it.id }.filterNot { it in r.relayIds }
                     if (stale.isNotEmpty()) {
                         log("[reconcile] ${services.size} provider(s) @ ${relay.displayUrl()}: ${stale.size} score event(s) no longer served - deleting")
                         stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }

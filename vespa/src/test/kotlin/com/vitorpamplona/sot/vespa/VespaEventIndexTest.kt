@@ -141,4 +141,34 @@ class VespaEventIndexTest {
             assertEquals(emptyList(), index.search(EventQuery(authors = listOf("not-hex"))))
             assertEquals(0, index.count(EventQuery(limit = 0)))
         }
+
+    /** The visit walk: the complete match set, across MULTIPLE continuation pages. */
+    @Test
+    fun `visitIds streams every match through continuation tokens`() =
+        runBlocking {
+            val bob = "b2".repeat(32)
+            seed(*(1..20).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
+            seed(doc(kind = 1, pubkey = bob), doc(kind = 30382)) // outside the selection
+            val pages = ArrayList<List<DocRef>>()
+            index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) { pages += it }
+            // The mock caps pages far below the requested size, so a full walk
+            // proves the client actually follows continuation tokens.
+            assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
+            val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
+            assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
+        }
+
+    /** A selection-inexpressible query (tags) still walks correctly via the search fallback. */
+    @Test
+    fun `visitIds falls back to search for tag queries`() =
+        runBlocking {
+            seed(
+                doc(kind = 30382, tags = listOf(listOf("d", "x"))),
+                doc(kind = 30382, tags = listOf(listOf("d", "y"))),
+            )
+            val got = ArrayList<DocRef>()
+            index.visitIds(EventQuery(kinds = listOf(30382), tags = mapOf("d" to listOf("x")))) { got += it }
+            val expected = reference.search(EventQuery(kinds = listOf(30382), tags = mapOf("d" to listOf("x")))).map { DocRef(it.id, it.createdAt) }
+            assertEquals(expected, got)
+        }
 }

@@ -48,5 +48,25 @@ interface EventIndex : AutoCloseable {
     /** Docs matching [query]: newest first (`created_at` desc, id asc tiebreak) unless ranked by a search term. */
     suspend fun search(query: EventQuery): List<EventDoc>
 
+    /**
+     * Stream EVERY match's (id, created_at) — the full-corpus walk behind
+     * negentropy snapshots and sync reconcile diffs. Unlike [search] there is
+     * no result cap: the real client pages through Vespa's document-API visit
+     * (a streaming scan, not a query), calling [onPage] per page; order across
+     * pages is engine-defined, and callers must not assume recency. This
+     * default rides [search] and is only complete where search is uncapped
+     * (the in-memory reference).
+     */
+    suspend fun visitIds(
+        query: EventQuery,
+        onPage: suspend (List<DocRef>) -> Unit,
+    ) = onPage(search(query).map { DocRef(it.id, it.createdAt) })
+
     suspend fun count(query: EventQuery): Int
 }
+
+/** The (id, created_at) projection [EventIndex.visitIds] streams — all a sync diff needs. */
+data class DocRef(
+    val id: String,
+    val createdAt: Long,
+)

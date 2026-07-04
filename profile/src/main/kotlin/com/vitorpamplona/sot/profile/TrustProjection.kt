@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.vespa.DocRef
 import com.vitorpamplona.sot.vespa.EventDoc
 import com.vitorpamplona.sot.vespa.EventIndex
 import com.vitorpamplona.sot.vespa.EventQuery
@@ -70,6 +71,11 @@ class TrustProjection(
     override suspend fun get(id: String): EventDoc? = inner.get(id)
 
     override suspend fun search(query: EventQuery): List<EventDoc> = inner.search(query)
+
+    override suspend fun visitIds(
+        query: EventQuery,
+        onPage: suspend (List<DocRef>) -> Unit,
+    ) = inner.visitIds(query, onPage)
 
     override suspend fun count(query: EventQuery): Int = inner.count(query)
 

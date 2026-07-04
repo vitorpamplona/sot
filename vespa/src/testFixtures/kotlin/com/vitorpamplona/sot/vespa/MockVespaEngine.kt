@@ -149,6 +149,11 @@ class MockVespaEngine {
                 }
             }
 
+            // The visit walk: /document/v1/…/docid (no doc id) with a selection.
+            method == "GET" && path == docPrefix.removeSuffix("/") -> {
+                visit(params(rawQuery.orEmpty()))
+            }
+
             method == "GET" && path == "/search/" -> {
                 search(params(rawQuery.orEmpty()))
             }
@@ -185,6 +190,38 @@ class MockVespaEngine {
         return Reply(200, root.toString())
     }
 
+    /**
+     * The document-API visit, paged: the selection is PARSED back into an
+     * [EventQuery] (same drift alarm as the YQL side), and pages are kept
+     * deliberately small so clients must actually follow continuation tokens
+     * — real Vespa also returns fewer documents than asked for.
+     */
+    private fun visit(params: Map<String, String>): Reply {
+        val selection = params["selection"] ?: return Reply(400, """{"message":"missing selection"}""")
+        val query = MockSelection.parse(selection)
+        val all = runBlocking { inner.search(query) }
+        val offset = params["continuation"]?.toIntOrNull() ?: 0
+        val wanted = params["wantedDocumentCount"]?.toIntOrNull() ?: 1
+        val page = all.drop(offset).take(minOf(wanted, VISIT_PAGE_CAP))
+        val body =
+            buildJsonObject {
+                put("pathId", JsonPrimitive("/document/v1/event/event/docid"))
+                put(
+                    "documents",
+                    JsonArray(
+                        page.map { doc ->
+                            buildJsonObject {
+                                put("id", JsonPrimitive("id:event:event::${doc.id}"))
+                                put("fields", buildJsonObject { put("created_at", JsonPrimitive(doc.createdAt)) })
+                            }
+                        },
+                    ),
+                )
+                if (offset + page.size < all.size) put("continuation", JsonPrimitive((offset + page.size).toString()))
+            }
+        return Reply(200, body.toString())
+    }
+
     private fun params(rawQuery: String): Map<String, String> =
         rawQuery
             .split("&")
@@ -194,6 +231,102 @@ class MockVespaEngine {
                 val v = URLDecoder.decode(part.substringAfter("=", ""), "UTF-8")
                 k to v
             }
+
+    private companion object {
+        /** Max docs per visit response — small enough that tests always cross a page boundary. */
+        const val VISIT_PAGE_CAP = 7
+    }
+}
+
+/**
+ * Parses exactly the document-selection grammar [EventSelection] emits back
+ * into an [EventQuery] — the visit-side twin of [MockYql], and the same drift
+ * alarm: an unparseable selection means builder and spec disagree.
+ */
+object MockSelection {
+    fun parse(selection: String): EventQuery {
+        if (selection == "true") return EventQuery()
+        var q = EventQuery()
+        for (clause in splitTopLevel(selection)) {
+            when {
+                clause.startsWith("(event.kind==") -> {
+                    q = q.copy(kinds = orGroup(clause, "event.kind==").map { it.toInt() })
+                }
+
+                clause.startsWith("(event.pubkey==") -> {
+                    q = q.copy(authors = orGroup(clause, "event.pubkey==").map(::unquote))
+                }
+
+                clause.startsWith("(event.owner==") -> {
+                    q = q.copy(owners = orGroup(clause, "event.owner==").map(::unquote))
+                }
+
+                clause.startsWith("event.created_at>=") -> {
+                    q = q.copy(since = clause.removePrefix("event.created_at>=").toLong())
+                }
+
+                clause.startsWith("event.created_at<=") -> {
+                    q = q.copy(until = clause.removePrefix("event.created_at<=").toLong())
+                }
+
+                clause.startsWith("event.expires_at>") -> {
+                    q = q.copy(notExpiredAt = clause.removePrefix("event.expires_at>").toLong())
+                }
+
+                else -> {
+                    error("unparseable selection clause: $clause")
+                }
+            }
+        }
+        return q
+    }
+
+    /** Split on ` and ` at parenthesis depth zero. */
+    private fun splitTopLevel(s: String): List<String> {
+        val parts = ArrayList<String>()
+        var depth = 0
+        var start = 0
+        var i = 0
+        while (i < s.length) {
+            when {
+                s[i] == '(' -> {
+                    depth++
+                }
+
+                s[i] == ')' -> {
+                    depth--
+                }
+
+                depth == 0 && s.startsWith(" and ", i) -> {
+                    parts += s.substring(start, i)
+                    i += 5
+                    start = i
+                    continue
+                }
+            }
+            i++
+        }
+        parts += s.substring(start)
+        return parts
+    }
+
+    /** `(event.f==v1 or event.f==v2 …)` -> the raw values. */
+    private fun orGroup(
+        clause: String,
+        prefix: String,
+    ): List<String> =
+        clause
+            .removeSurrounding("(", ")")
+            .split(" or ")
+            .map {
+                require(it.startsWith(prefix)) { "mixed or-group: $clause" }
+                it.removePrefix(prefix)
+            }
+
+    private fun unquote(s: String): String {
+        require(s.length >= 2 && s.first() == '"' && s.last() == '"') { "expected quoted value: $s" }
+        return s.substring(1, s.length - 1)
+    }
 }
 
 /**

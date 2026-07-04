@@ -32,8 +32,10 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -49,8 +51,8 @@ import java.util.concurrent.Executors
  * async sends on virtual threads.
  *
  * Unlimited queries are capped at [maxHits] (the app package's query profile
- * must allow it); a full-corpus walk should use the document API's visit,
- * which lands together with the sync module.
+ * must allow it); a full-corpus walk goes through [visitIds] — the document
+ * API's visit, which streams past any cap.
  *
  * Counts read `totalCount`: exact for attribute-only recall, approximate under
  * a weakAnd search term — same caveat Vespa itself carries.
@@ -124,6 +126,43 @@ class VespaEventIndex(
             ?: emptyList()
     }
 
+    /**
+     * The document-API visit: a streaming scan with a selection expression and
+     * continuation tokens — no result cap, no ranking, exactly what a
+     * full-corpus id walk needs. Queries a selection can't express fall back
+     * to the (capped) search default.
+     */
+    override suspend fun visitIds(
+        query: EventQuery,
+        onPage: suspend (List<DocRef>) -> Unit,
+    ) {
+        val selection = EventSelection.build(query) ?: return super.visitIds(query, onPage)
+        val base =
+            "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+                "&wantedDocumentCount=$VISIT_PAGE&fieldSet=$DOCTYPE:created_at"
+        var continuation: String? = null
+        while (true) {
+            val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
+            require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
+            val json = Json.parseToJsonElement(resp.body()).jsonObject
+            val page =
+                json["documents"]?.jsonArray?.mapNotNull { d ->
+                    val obj = d.jsonObject
+                    val id = obj["id"]?.jsonPrimitive?.content?.substringAfterLast(":") ?: return@mapNotNull null
+                    val at =
+                        obj["fields"]
+                            ?.jsonObject
+                            ?.get("created_at")
+                            ?.jsonPrimitive
+                            ?.long ?: return@mapNotNull null
+                    DocRef(id, at)
+                } ?: emptyList()
+            if (page.isNotEmpty()) onPage(page)
+            continuation = json["continuation"]?.jsonPrimitive?.content ?: return
+        }
+    }
+
     override suspend fun count(query: EventQuery): Int {
         val root = queryRoot(query, hits = 0) ?: return 0
         return root["fields"]
@@ -181,5 +220,8 @@ class VespaEventIndex(
     private companion object {
         const val NAMESPACE = "event"
         const val DOCTYPE = "event"
+
+        /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
+        const val VISIT_PAGE = 1024
     }
 }
