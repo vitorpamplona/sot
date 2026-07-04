@@ -198,7 +198,18 @@ class MockVespaEngine {
      */
     private fun visit(params: Map<String, String>): Reply {
         val selection = params["selection"] ?: return Reply(400, """{"message":"missing selection"}""")
-        val withTagIndex = params["fieldSet"].orEmpty().contains("tag_index")
+        val fieldSet = params["fieldSet"].orEmpty()
+        // Drift alarm: real Vespa's fieldSet is "<doctype>:<field>,<field>,…" — the
+        // doctype prefixes the list ONCE. A repeated "event:" on a later field (the
+        // classic bug) is ILLEGAL_PARAMETERS, so reject it here too instead of
+        // leniently matching `.contains("tag_index")`.
+        if (fieldSet.isNotEmpty()) {
+            val fields = fieldSet.substringAfter(":", "").split(",")
+            if (!fieldSet.contains(":") || fields.any { ":" in it }) {
+                return Reply(400, """{"message":"ILLEGAL_PARAMETERS: bad fieldSet '$fieldSet'"}""")
+            }
+        }
+        val withTagIndex = fieldSet.contains("tag_index")
         val query = MockSelection.parse(selection)
         val all = runBlocking { inner.search(query) }
         val offset = params["continuation"]?.toIntOrNull() ?: 0
