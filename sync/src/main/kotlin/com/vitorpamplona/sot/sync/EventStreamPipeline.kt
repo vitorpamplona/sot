@@ -34,8 +34,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.time.LocalDate
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -60,9 +58,10 @@ internal class Streamed(
  * the channel, so a producer parked in the non-cancellable [trySendBlocking]
  * unblocks instead of deadlocking forever.
  *
- * This class also owns the single-writer discipline. Every store mutation, both
- * the streamed inserts and [deleteFromStore], serializes behind one [Mutex], so
- * parallel relay syncs never write concurrently.
+ * Write serialization is the STORE's job, not this class's: [VespaEventStore]
+ * takes its writer lock only for the supersession resolve + the writes, running
+ * dedup/guards beside them, so parallel relay syncs overlap their read checks
+ * instead of queuing behind one pipeline-wide mutex.
  */
 internal class EventStreamPipeline(
     private val store: IEventStore,
@@ -70,11 +69,8 @@ internal class EventStreamPipeline(
     private val progress: SyncProgress,
     private val verifyEvents: Boolean,
 ) {
-    // Relay syncs run in parallel, but the store stays a single writer.
-    private val storeWrites = Mutex()
-
-    /** Store deletions share the single-writer lock with inserts. */
-    suspend fun deleteFromStore(filter: Filter) = storeWrites.withLock { store.delete(filter) }
+    /** Deletions serialize inside the store, like inserts — no pipeline-level lock. */
+    suspend fun deleteFromStore(filter: Filter) = store.delete(filter)
 
     /**
      * The streaming core. [producer] runs the relay download, handing every
@@ -158,18 +154,17 @@ internal class EventStreamPipeline(
         filter: Filter,
         onVerified: (suspend (List<Event>) -> Unit)?,
     ): Int {
-        // Stage-timed for the status line's bottleneck dial: signature CPU
-        // time vs. waiting on the single writer vs. the store insert itself.
+        // Stage-timed for the status line's bottleneck dial: signature CPU time
+        // vs. the store insert itself (the store now owns any write serialization).
         val t0 = System.nanoTime()
         val valid = dropForged(events, relay, filter)
         onVerified?.invoke(valid)
         val t1 = System.nanoTime()
         val accepted =
-            storeWrites
-                .withLock {
-                    val t2 = System.nanoTime()
-                    store.batchInsert(valid).also { progress.onBatchTimings(t1 - t0, t2 - t1, System.nanoTime() - t2) }
-                }.count { it is IEventStore.InsertOutcome.Accepted }
+            store
+                .batchInsert(valid)
+                .also { progress.onBatchTimings(t1 - t0, 0, System.nanoTime() - t1) }
+                .count { it is IEventStore.InsertOutcome.Accepted }
         progress.onInserted(accepted)
         return accepted
     }

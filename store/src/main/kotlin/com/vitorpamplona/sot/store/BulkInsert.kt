@@ -76,7 +76,29 @@ internal class BulkInsert(
     private val relay: NormalizedRelayUrl?,
     private val probe: suspend (Event) -> Unit,
 ) {
-    suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> {
+    /**
+     * What [plan] resolved from its LOCK-FREE reads, handed to [commit] to
+     * finish under the single writer lock. Stages A–C and the grouping are all
+     * read-only work that never needed the lock; only the supersession read
+     * (atomic with its own write) and the writes themselves stay inside it.
+     */
+    internal class Plan(
+        val events: List<Event>,
+        val outcome: Array<IEventStore.InsertOutcome?>,
+        val toPut: LinkedHashMap<String, Event>,
+        val groups: LinkedHashMap<Triple<Int, String, String?>, MutableList<Int>>,
+    )
+
+    /** Plan then commit in one call, for callers that already hold the writer lock across both. */
+    suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> = commit(plan(events))
+
+    /**
+     * The LOCK-FREE half: stages A–C (local checks, dedup, tombstone/vanish
+     * guards) plus the address grouping — reads that only observe the store,
+     * never mutate it. Two plans racing here is fine; [commit] does the one
+     * read that must be atomic with its write (supersession) under the lock.
+     */
+    suspend fun plan(events: List<Event>): Plan {
         val outcome = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
 
         fun alive() = events.indices.filter { outcome[it] == null }
@@ -166,7 +188,9 @@ internal class BulkInsert(
             }
         }
 
-        // Stage D — supersession per replaceable address, resolved in run order.
+        // Stage D-setup (local): group survivors by replaceable address; plain
+        // events go straight to toPut. The version READ + resolution runs in
+        // commit(), under the lock, so it stays atomic with the write.
         val toPut = LinkedHashMap<String, Event>() // id -> event scheduled for storage
         val groups = LinkedHashMap<Triple<Int, String, String?>, MutableList<Int>>()
         alive().forEach { i ->
@@ -178,6 +202,24 @@ internal class BulkInsert(
                 toPut[e.id] = e
             }
         }
+        return Plan(events, outcome, toPut, groups)
+    }
+
+    /**
+     * The LOCKED half: the supersession read+resolve (which must see every
+     * prior commit's writes, so it runs under the single writer lock) and the
+     * pipelined writes. Kept as short as the semantics allow — an empty remove
+     * or put set skips its round trip.
+     */
+    suspend fun commit(plan: Plan): List<IEventStore.InsertOutcome> {
+        val events = plan.events
+        val outcome = plan.outcome
+        val toPut = plan.toPut
+        val groups = plan.groups
+
+        fun alive() = events.indices.filter { outcome[it] == null }
+
+        // Stage D — supersession per replaceable address, resolved in run order.
         // Existing versions for every touched address, chunked. Replaceables are
         // fetched by (kind, authors…). Addressables are fetched by
         // (kind, author, d-tags…) via tag_index recall, then bucketed doc-side
@@ -243,12 +285,15 @@ internal class BulkInsert(
             // Older stored versions beyond the single best also fall (drift repair).
             versions.forEach { doc -> if (doc.id != bestDocId && doc.id !in removeFromStore) removeFromStore += doc.id }
         }
-        index.removeAll(removeFromStore.distinct())
+        // Skip the round trip when nothing supersedes — the common case for a
+        // fresh corpus (first-seen addresses remove nothing).
+        val toRemove = removeFromStore.distinct()
+        if (toRemove.isNotEmpty()) index.removeAll(toRemove)
 
         // Stage E — one pipelined write for everything that survived. (Timing
         // is booked by the layers below: the projection decorator splits it
         // into write / proj.fetch / proj.write.)
-        index.putAll(toPut.values.map { it.toDoc() })
+        if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
         return outcome.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
     }

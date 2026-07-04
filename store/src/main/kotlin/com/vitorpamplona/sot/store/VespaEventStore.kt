@@ -34,6 +34,7 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import com.vitorpamplona.sot.vespa.InMemoryEventIndex
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
 import com.vitorpamplona.sot.vespa.client.EventIndex
 import com.vitorpamplona.sot.vespa.doc.EventDoc
@@ -99,39 +100,140 @@ class VespaEventStore(
     override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
 
     /**
-     * Batches take the BULK fast path. The per-event path costs 3–5 index
-     * round-trips each (dup probe, tombstone probe, vanish probe,
-     * supersession), which caps ingest in the low thousands per second — useless
-     * against a million-event sync. Bulk runs the same rules with chunked
-     * queries and one pipelined [EventIndex.putAll].
+     * Batches take a BULK path — the per-event path costs 3–5 index round-trips
+     * each (dup probe, tombstone probe, vanish probe, supersession), which caps
+     * ingest in the low thousands per second, useless against a million-event
+     * sync. Two shapes, by whether the batch mutates via deletions:
      *
-     * Kind 5 and kind 62 keep the exact sequential path: they MUTATE the store,
-     * and order against their neighbors matters (a deletion inside the batch may
-     * target an event earlier in it). The batch is processed as plain-event runs
-     * separated by those events; tiny runs just loop [insertLocked].
+     *  - PURE RECORDS: [BulkInsert] chunks the read checks and pipelines one
+     *    [EventIndex.putAll]; its dedup + guard reads run outside the writer lock
+     *    so parallel relays overlap them.
+     *  - CONTAINS kind 5/62: [bulkMixedInsert] batch-reads the working set and
+     *    replays the per-event rules in memory (order against neighbours — a
+     *    deletion targeting an earlier event — preserved), then writes the diff.
+     *    A per-event fallback here would collapse ingest on the deletion-heavy
+     *    outbox streams (~98% kind 5).
+     *
+     * Sub-[BULK_MIN] batches aren't worth the setup and just loop [insertLocked].
      */
-    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> =
-        writes.withLock {
-            val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
-            var i = 0
-            while (i < events.size) {
-                if (events[i] is DeletionEvent || events[i] is RequestToVanishEvent) {
-                    outcomes[i] = tryInsertLocked(events[i])
-                    i++
-                    continue
-                }
-                var j = i
-                while (j < events.size && events[j] !is DeletionEvent && events[j] !is RequestToVanishEvent) j++
-                val run = events.subList(i, j)
-                if (run.size < BULK_MIN) {
-                    run.forEachIndexed { k, ev -> outcomes[i + k] = tryInsertLocked(ev) }
-                } else {
-                    bulkInsert.run(run).forEachIndexed { k, o -> outcomes[i + k] = o }
-                }
-                i = j
-            }
-            outcomes.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
+    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+        if (events.size < BULK_MIN) return writes.withLock { events.map { tryInsertLocked(it) } }
+        return if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
+            // A batch that CONTAINS deletions/vanishes. Run-splitting on every
+            // kind 5/62 would leave nothing to batch (an outbox stream is ~98%
+            // kind 5), collapsing ingest to per-event speed. Instead: batch-read
+            // the working set, replay the exact per-event rules in memory, then
+            // write the net diff back in bulk.
+            writes.withLock { bulkMixedInsert(events) }
+        } else {
+            // Pure records. The read checks (dedup + guards) run OUTSIDE the
+            // writer lock so parallel relays' batches overlap them; only the
+            // supersession read+resolve and the writes take the lock
+            // (query-then-write stays atomic — commit sees every prior commit).
+            val plan = bulkInsert.plan(events)
+            writes.withLock { bulkInsert.commit(plan) }
         }
+    }
+
+    /**
+     * The bulk path for a batch that contains deletions/vanishes: batch-read the
+     * working set those events touch, REPLAY the sequential [insertLocked] rules
+     * against an in-memory snapshot (zero I/O, so intra-batch ordering — a
+     * deletion targeting an earlier event, a tombstone blocking a later one — is
+     * preserved for free), then write the net diff back in bulk. Correct BY
+     * CONSTRUCTION: the replay runs the same code the per-event path does.
+     *
+     * Turns the per-event path's O(events × round trips) into O(working-set
+     * reads) + one pipelined write — the difference between weeks and hours on a
+     * deletion-heavy sync. Runs under the writer lock (query-then-write stays
+     * atomic); moving the preload reads out of it is a further refinement.
+     */
+    private suspend fun bulkMixedInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+        val snapshot = InMemoryEventIndex()
+        preloadWorkingSet(snapshot, events)
+        val before = snapshot.search(EventQuery()).mapTo(HashSet()) { it.id }
+        // A throwaway store over the snapshot replays the exact per-event rules.
+        val replay = VespaEventStore(snapshot, relay, nowSecs)
+        val outcomes =
+            events.map { e ->
+                try {
+                    replay.insert(e)
+                    IEventStore.InsertOutcome.Accepted
+                } catch (ex: RejectedException) {
+                    IEventStore.InsertOutcome.Rejected(ex.message ?: Rejections.INSERT_FAILED)
+                }
+            }
+        val after = snapshot.search(EventQuery())
+        val afterIds = after.mapTo(HashSet()) { it.id }
+        val removed = before.filter { it !in afterIds }
+        val added = after.filter { it.id !in before }
+        if (removed.isNotEmpty()) index.removeAll(removed)
+        if (added.isNotEmpty()) index.putAll(added)
+        return outcomes
+    }
+
+    /**
+     * Load every stored doc [bulkMixedInsert]'s replay could read — a SUPERSET
+     * of what [insertLocked]'s queries touch for this batch: existing ids (dup +
+     * deletion e-tag targets), the owners' tombstones/vanishes (guards +
+     * immunity), the records' address versions (supersession), each deletion's
+     * a-tag targets, and each vanish owner's history (the sweep). All fanned out
+     * as independent reads; the replay then needs no further I/O.
+     */
+    private suspend fun preloadWorkingSet(
+        snapshot: InMemoryEventIndex,
+        events: List<Event>,
+    ) {
+        val deletions = events.filterIsInstance<DeletionEvent>()
+        val vanishes = events.filterIsInstance<RequestToVanishEvent>()
+        val owners = events.map { it.owner() }.distinct()
+        val batchIds = events.map { it.id }
+        val batchAddresses = events.mapNotNull { it.addressOrNull() }.distinct()
+        val records = events.filter { it !is DeletionEvent && it !is RequestToVanishEvent }
+
+        val queries =
+            buildList {
+                // Existing docs by id: batch ids + every deletion's e-tag targets.
+                (batchIds + deletions.flatMap { it.deleteEventIds() }).distinct().chunked(PRELOAD_CHUNK).forEach { add(EventQuery(ids = it)) }
+
+                // Guards + immunity: the owners' stored tombstones (targeting this
+                // batch's ids/addresses) and their vanishes.
+                owners.chunked(PRELOAD_CHUNK).forEach { auth ->
+                    if (batchIds.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = auth, tags = mapOf("e" to batchIds)))
+                    if (batchAddresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = auth, tags = mapOf("a" to batchAddresses)))
+                    add(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = auth))
+                }
+
+                // Supersession: existing versions of every record address (same
+                // shapes as currentVersions — replaceable by (kind, authors),
+                // addressable by (kind, author, d-tags), empty-d stays broad).
+                for ((kind, evs) in records.filter { it.kind.isReplaceable() && !it.kind.isAddressable() }.groupBy { it.kind }) {
+                    evs
+                        .map { it.pubKey }
+                        .distinct()
+                        .chunked(PRELOAD_CHUNK)
+                        .forEach { add(EventQuery(kinds = listOf(kind), authors = it)) }
+                }
+                for ((ka, evs) in records.filter { it.kind.isAddressable() }.groupBy { it.kind to it.pubKey }) {
+                    val ds = evs.mapNotNull { it.tags.dTag() }.distinct()
+                    ds.chunked(PRELOAD_CHUNK).forEach { add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to it))) }
+                    if (evs.any { it.tags.dTag().isNullOrEmpty() }) add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)))
+                }
+
+                // Deletion a-tag targets: the author's events of that kind.
+                deletions
+                    .flatMap { it.deleteAddresses() }
+                    .filter { it.kind.isAddressable() || it.kind.isReplaceable() }
+                    .map { it.kind to it.pubKeyHex }
+                    .distinct()
+                    .forEach { (kind, author) -> add(EventQuery(kinds = listOf(kind), authors = listOf(author))) }
+
+                // Vanish sweep: the owner's whole history (the replay filters by until).
+                vanishes.map { it.pubKey }.distinct().forEach { add(EventQuery(owners = listOf(it))) }
+            }
+
+        queries.mapBounded(QUERY_FANOUT) { index.search(it) }.forEach { page -> page.forEach { snapshot.put(it) } }
+    }
 
     private suspend fun tryInsertLocked(event: Event): IEventStore.InsertOutcome =
         try {
@@ -462,6 +564,9 @@ class VespaEventStore(
         // Runs at least this long take the bulk path; smaller ones aren't
         // worth the setup and stay on the per-event path.
         const val BULK_MIN = 16
+
+        // Ids/authors/d-tags per preload query — well under the engine's page cap.
+        const val PRELOAD_CHUNK = 500
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
     }
 }

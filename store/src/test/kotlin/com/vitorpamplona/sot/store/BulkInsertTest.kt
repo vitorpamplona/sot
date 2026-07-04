@@ -174,4 +174,18 @@ class BulkInsertTest {
         val expired = note(at = next()).let { Event(it.id, alice, 100, 1, arrayOf(arrayOf("expiration", "200")), "old", "") }
         assertBulkMatchesSequential(batch = padding(15) + listOf(ephemeral, expired))
     }
+
+    @Test
+    fun `mixed batch of records and deletions of stored and absent targets matches sequential`() {
+        // The outbox-stream shape: records interleaved with deletions of
+        // already-stored notes (removals) and of ids we never had (tombstone only).
+        val stored = (1..4).map { note(at = 900L + it) }
+        val batch =
+            padding(9) +
+                listOf(deletion(stored[0].id, at = next()), deletion(stored[1].id, at = next())) +
+                padding(5) +
+                listOf(deletion("ab".repeat(32), at = next())) +
+                padding(6)
+        assertBulkMatchesSequential(prelude = stored, batch = batch)
+    }
 }

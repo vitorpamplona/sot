@@ -10,6 +10,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines)
     testImplementation(kotlin("test"))
     testImplementation(testFixtures(project(":vespa")))
+    // Virtual-time test clock: measures read/write serialization deterministically
+    // by injecting per-round-trip delays into the index (see BatchIngestConcurrencyTest).
+    testImplementation(libs.kotlinx.coroutines.test)
 }
 
 kotlin {
