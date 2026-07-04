@@ -28,11 +28,11 @@ import java.io.File
  *   2. a matching key in a `.env` file (path from `SOT_ENV`, else `./.env`)
  *   3. the built-in default
  *
- * Deliberately SMALLER than v1's: there is no EVENTS_DB (Vespa is the store),
- * no DEFAULT_OBSERVER (the house account plays that role, with a home relay so
- * its trust chain can bootstrap), and no INDEX_RELAYS key — the identity's
- * stored kind-10086 IS the indexer configuration (`sot init` seeds it; the
- * operator supersedes it from any Nostr client).
+ * The key set is deliberately small. There is no EVENTS_DB (Vespa is the
+ * store), no DEFAULT_OBSERVER (the house account plays that role, with a home
+ * relay so its trust chain can bootstrap), and no INDEX_RELAYS key — the
+ * identity's stored kind-10086 IS the indexer configuration (`sot init` seeds
+ * it; the operator supersedes it from any Nostr client).
  */
 object Config {
     /** key, default, one-line doc — drives the interactive `sot init` and the `.env` it writes. */
