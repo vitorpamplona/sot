@@ -129,7 +129,7 @@ open class VespaEventStoreTest {
             assertEquals(listOf(new.id), store.query<Event>(Filter(kinds = listOf(0))).map { it.id })
 
             val stale = metadata(at = 150, name = "late")
-            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(stale) }
+            val rejected = assertFailsWith<RejectedException> { store.insert(stale) }
             assertTrue(rejected.message!!.startsWith("replaced:"))
         }
 
@@ -142,7 +142,7 @@ open class VespaEventStoreTest {
             store.insert(high)
             store.insert(low)
             assertEquals(listOf(low.id), store.query<Event>(Filter(kinds = listOf(0))).map { it.id })
-            assertFailsWith<VespaEventStore.RejectedException> { store.insert(MetadataEvent("e".repeat(64), alice, 100, emptyArray(), "{}", "")) }
+            assertFailsWith<RejectedException> { store.insert(MetadataEvent("e".repeat(64), alice, 100, emptyArray(), "{}", "")) }
         }
 
     /** AddressableModule: supersession is per d-tag address. */
@@ -172,7 +172,7 @@ open class VespaEventStoreTest {
             // Alice's target is gone; bob's event survives (NIP-09 same-author rule).
             assertEquals(setOf(bobs.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
             // The tombstone blocks a re-insert.
-            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(target) }
+            val rejected = assertFailsWith<RejectedException> { store.insert(target) }
             assertTrue(rejected.message!!.startsWith("blocked:"))
         }
 
@@ -185,7 +185,7 @@ open class VespaEventStoreTest {
             assertEquals(0, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))))
 
             // Older than the deletion: blocked.
-            assertFailsWith<VespaEventStore.RejectedException> { store.insert(card(subject = bob, at = 150)) }
+            assertFailsWith<RejectedException> { store.insert(card(subject = bob, at = 150)) }
             // Newer than the deletion: accepted.
             store.insert(card(subject = bob, at = 300))
             assertEquals(1, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))))
@@ -205,7 +205,7 @@ open class VespaEventStoreTest {
     fun `expiration is enforced`() =
         runBlocking {
             val realNow = System.currentTimeMillis() / 1000
-            assertFailsWith<VespaEventStore.RejectedException> {
+            assertFailsWith<RejectedException> {
                 store.insert(note(tags = arrayOf(arrayOf("expiration", "${realNow - 10}"))))
             }
 
@@ -233,7 +233,7 @@ open class VespaEventStoreTest {
             assertEquals(setOf(his.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
             assertEquals(1, store.count(Filter(kinds = listOf(RequestToVanishEvent.KIND))))
 
-            val rejected = assertFailsWith<VespaEventStore.RejectedException> { store.insert(note(at = 150)) }
+            val rejected = assertFailsWith<RejectedException> { store.insert(note(at = 150)) }
             assertTrue(rejected.message!!.startsWith("blocked:"))
             // Newer than the request: accepted.
             store.insert(note(at = 300))
@@ -299,7 +299,7 @@ open class VespaEventStoreTest {
             store.insert(DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", wrap.id)), "", ""))
             assertEquals(0, store.count(Filter(kinds = listOf(GiftWrapEvent.KIND))))
             // And the tombstone blocks its return.
-            assertFailsWith<VespaEventStore.RejectedException> { store.insert(wrap) }
+            assertFailsWith<RejectedException> { store.insert(wrap) }
         }
 
     /** RightToVanishModule uses the owner too: vanishing erases wraps addressed to the author. */
