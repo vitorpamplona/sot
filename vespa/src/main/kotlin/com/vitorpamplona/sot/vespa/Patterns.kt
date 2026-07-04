@@ -20,9 +20,6 @@
  */
 package com.vitorpamplona.sot.vespa
 
-/** A lowercase 64-hex string — the shape of a Nostr event id or pubkey. */
-internal val HEX64 = Regex("^[0-9a-f]{64}$")
-
 /** Splits on any run of whitespace. */
 internal val WHITESPACE = Regex("\\s+")
 

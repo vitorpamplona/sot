@@ -5,8 +5,10 @@ plugins {
 }
 
 dependencies {
-    // Nostr-library-agnostic: plain event values in, YQL/JSON out. No Quartz.
-    // Only the JsonElement tree API is used, so no serialization plugin either.
+    // Quartz (the Nostr library) is available here — reuse its primitives
+    // (e.g. Hex) instead of re-implementing them.
+    implementation(libs.quartz)
+    // Only the JsonElement tree API is used, so no serialization plugin needed.
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines)
     // Writes go through Vespa's official feed client (async, HTTP/2 multiplexed,

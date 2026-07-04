@@ -76,13 +76,13 @@ data), and `SERVER_NSEC` (the relay's own key, generated for you). See
 ## The code
 
 The project is split into small modules with a strict one-way dependency flow:
-`:cli` → (`:relay`, `:sync`) → `:store` → `:profile` → `:vespa`. The rule that
-keeps it clean: **`:vespa` knows nothing about Nostr.** It deals in plain values
-and search queries; Nostr concepts only appear from `:store` upward.
+`:cli` → (`:relay`, `:sync`) → `:store` → `:profile` → `:vespa`. `:vespa` owns
+all Vespa access; it may use Quartz's Nostr primitives (Hex, event helpers)
+where they save re-implementing the same thing.
 
 | module | what it does |
 | --- | --- |
-| `:vespa` | All talking to Vespa, with no Nostr knowledge. Holds the Vespa schema (`app/`), maps an event to/from a stored document (`EventDoc`), turns a query into Vespa's query language (`EventQuery` → `EventYql`, with `BrainstormWordGroup` building the fuzzy word matching), and defines the `EventIndex` interface the store uses. `VespaEventIndex` is the real client; the testFixtures hold an in-memory version that serves as the reference for how queries should behave. |
+| `:vespa` | All talking to Vespa. Holds the Vespa schema (`app/`), maps an event to/from a stored document (`EventDoc`), turns a query into Vespa's query language (`EventQuery` → `EventYql`, with `BrainstormWordGroup` building the fuzzy word matching), and defines the `EventIndex` interface the store uses. `VespaEventIndex` is the real client; the testFixtures hold an in-memory version that serves as the reference for how queries should behave. |
 | `:store` | `VespaEventStore` — the one event store, enforcing all Nostr rules on the way in: newer replaceable events supersede older ones, deletions (kind 5) and tombstones, account vanish (kind 62), expiry (NIP-40), gift-wrap ownership. It maps Nostr filters to `EventQuery`, extracts searchable text per event kind (`SearchExtractors`), and offers a batched fast path (`BulkInsert`) for high-volume sync. |
 | `:profile` | Keeps trust scores up to date. `TrustProjection` wraps the store's index and, whenever a trust assertion (kind 30382 / 10040) is added or removed, recomputes the subject's trust tensors on their `profile` document — so every insert and delete path updates ranking with no special-case code. |
 | `:relay` | `SotRelayServer` — the Nostr protocol engine (built on Quartz's relay base) over the store: full filter subscriptions, live updates, publish gating, COUNT (NIP-45), server-side sync (NIP-77), the NIP-11 info document, mounted on a Ktor websocket. NIP-42 login switches the ranking observer for that connection. |

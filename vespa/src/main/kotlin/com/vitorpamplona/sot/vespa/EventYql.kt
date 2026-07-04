@@ -20,6 +20,8 @@
  */
 package com.vitorpamplona.sot.vespa
 
+import com.vitorpamplona.quartz.utils.Hex
+
 /**
  * Builds YQL over the `event` schema from an [EventQuery]. Returns null when
  * the query provably matches nothing, so the caller can answer with an empty
@@ -94,7 +96,7 @@ object EventYql {
         if (ranking != RANK_UNRANKED) {
             q.observer
                 ?.lowercase()
-                ?.takeIf(HEX64::matches)
+                ?.takeIf(Hex::isHex64)
                 ?.let { params["ranking.features.query(user_q)"] = "{$it:1.0}" }
         }
         q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
@@ -135,7 +137,7 @@ object EventYql {
         field: String,
         values: List<String>,
     ): String? {
-        val hexes = values.map { it.lowercase() }.filter(HEX64::matches).distinct()
+        val hexes = values.map { it.lowercase() }.filter(Hex::isHex64).distinct()
         if (hexes.isEmpty()) return null
         return "$field in (${hexes.joinToString(", ") { "\"$it\"" }})"
     }

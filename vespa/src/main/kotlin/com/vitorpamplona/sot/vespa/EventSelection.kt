@@ -20,6 +20,8 @@
  */
 package com.vitorpamplona.sot.vespa
 
+import com.vitorpamplona.quartz.utils.Hex
+
 /**
  * Builds a Vespa *document selection* from an [EventQuery]. A selection is the
  * expression language the document-API visit scans with: a streaming read over
@@ -54,7 +56,7 @@ object EventSelection {
         keys: List<String>,
     ): String? {
         val hexes = keys.map { it.lowercase() }
-        if (hexes.any { !HEX64.matches(it) }) return null
+        if (hexes.any { !Hex.isHex64(it) }) return null
         return hexes.distinct().joinToString(" or ", "(", ")") { "event.$field==\"$it\"" }
     }
 }

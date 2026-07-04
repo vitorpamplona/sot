@@ -28,15 +28,16 @@ proposals.
 ## Module map & dependency direction
 
 Dependencies flow one way: `:cli` → (`:relay`, `:sync`) → `:store` → `:profile`
-→ `:vespa`. Two rules keep it clean:
+→ `:vespa`. Notes:
 
-- **`:vespa` never imports a Nostr/Quartz type.** It deals in plain values and
-  queries; Nostr concepts start at `:store`.
+- **`:vespa` may use Quartz.** It owns all Vespa access and is free to reuse
+  Quartz's Nostr primitives (Hex, event helpers) instead of re-implementing
+  them. (Earlier it was Nostr-agnostic; that constraint has been dropped.)
 - **The trust projection sits UNDER the store** (it decorates the store's
   `EventIndex`), so ranking updates follow every insert and delete automatically.
 
 ```
-vespa    All Vespa access, Nostr-agnostic (com.vitorpamplona.sot.vespa):
+vespa    All Vespa access (com.vitorpamplona.sot.vespa):
            app/ — the Vespa application package: event.sd (lossless NIP-01
            fields + per-kind search fields + rank profiles) and profile.sd (the
            global trust-tensor doc every event references for ranking).
