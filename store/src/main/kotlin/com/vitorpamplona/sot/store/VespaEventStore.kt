@@ -142,7 +142,13 @@ class VespaEventStore(
         try {
             insertLocked(event)
             IEventStore.InsertOutcome.Accepted
-        } catch (e: Exception) {
+        } catch (e: RejectedException) {
+            // Only a SEMANTIC rejection (duplicate, replaced, blocked by a
+            // deletion/vanish) becomes a Rejected outcome. A transient engine
+            // failure (a 5xx that outlived its retries, an IO error) must
+            // PROPAGATE — swallowing it as "Rejected" would silently DROP a
+            // valid event and let the sync cursor advance past it. This matches
+            // the bulk path, which already throws on engine failures.
             IEventStore.InsertOutcome.Rejected(e.message ?: "insert failed")
         }
 
@@ -241,7 +247,8 @@ class VespaEventStore(
                             rejectIfDeleted(events[i])
                             rejectIfVanished(events[i])
                             null
-                        } catch (e: Exception) {
+                        } catch (e: RejectedException) {
+                            // Semantic block only; a transient engine failure propagates (see tryInsertLocked).
                             IEventStore.InsertOutcome.Rejected(e.message ?: "blocked")
                         }
                 }

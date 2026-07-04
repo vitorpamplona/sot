@@ -259,13 +259,31 @@ class TrustProjection(
     /** Re-derive every parent doc from scratch (bootstrap over an existing index). */
     suspend fun rebuildAll() = recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
 
-    /** Visit every score doc matching [query], collect the subjects, re-derive them in batches. */
+    /**
+     * Visit every score doc matching [query] and re-derive the subjects in
+     * bounded batches, STREAMING: the subject buffer is flushed and cleared
+     * every [RECOMPUTE_BATCH] distinct subjects rather than collecting the
+     * whole corpus first — a `rebuildAll()` or a large provider's 10040 change
+     * would otherwise hold millions of subject strings in memory (an OOM on
+     * the exact "scale-safe" path). A subject whose cards span a batch
+     * boundary is re-derived (idempotent), which is cheaper than an unbounded
+     * dedup set.
+     */
     private suspend fun recomputeWalk(query: EventQuery) {
-        val subjects = LinkedHashSet<String>()
-        inner.visitIds(query, withDTag = true) { page -> page.forEach { ref -> ref.dTag?.let(subjects::add) } }
-        if (subjects.isEmpty()) return
         val map = providerMap()
-        subjects.toList().chunked(RECOMPUTE_BATCH).forEach { batch -> recomputeBatch(batch, map, removeEmpties = true) }
+        val buffer = LinkedHashSet<String>()
+
+        suspend fun flush() {
+            if (buffer.isNotEmpty()) {
+                recomputeBatch(buffer.toList(), map, removeEmpties = true)
+                buffer.clear()
+            }
+        }
+        inner.visitIds(query, withDTag = true) { page ->
+            page.forEach { ref -> ref.dTag?.let(buffer::add) }
+            if (buffer.size >= RECOMPUTE_BATCH) flush()
+        }
+        flush()
     }
 
     /** The 30382's d tag is the SUBJECT the score is about. */

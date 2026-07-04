@@ -454,8 +454,14 @@ class RelaySyncer(
             // finish may advance the cursor — a stall's missing tail must be retried.
             val lastEventMs = AtomicLong(System.currentTimeMillis())
             client.fetchAllPages(relay, listOf(paged), timeoutMs = idleTimeoutMs) { e ->
-                lastEventMs.set(System.currentTimeMillis())
                 onEvent(e)
+                // Stamp AFTER onEvent, not before: onEvent blocks under
+                // backpressure (trySendBlocking while the consumer flushes a
+                // slow Vespa batch). Stamping before would count that ingest
+                // time as idle, so a clean finish whose last insert ran long
+                // would be misread as a timeout and the cursor would never
+                // advance — re-downloading the same window every pass.
+                lastEventMs.set(System.currentTimeMillis())
             }
             System.currentTimeMillis() - lastEventMs.get() < idleTimeoutMs
         }
