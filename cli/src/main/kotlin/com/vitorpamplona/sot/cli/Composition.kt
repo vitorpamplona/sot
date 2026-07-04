@@ -48,11 +48,25 @@ import kotlin.system.exitProcess
  * download, a relay publish, a kind-5 — updates ranking with no extra wiring.
  */
 
-/** The one store: Vespa event index, trust-projection-decorated, Nostr semantics on top. */
-internal fun openStore(): VespaEventStore {
-    val index = TrustProjection(VespaEventIndex(Config.vespaUrl), VespaProfileIndex(Config.vespaUrl))
-    return VespaEventStore(index, relay = publicRelayUrl())
+/** The wired storage stack: the store to use, plus the raw engine client for health gauges. */
+internal class Stack(
+    val store: VespaEventStore,
+    val vespa: VespaEventIndex,
+) : AutoCloseable {
+    /** The engine's feed-health status gauge — wire it into every sync's progress line. */
+    fun feedGauge(): () -> String = vespa::feedGauge
+
+    override fun close() = store.close()
 }
+
+/** The one store: Vespa event index, trust-projection-decorated, Nostr semantics on top. */
+internal fun openStack(): Stack {
+    val vespa = VespaEventIndex(Config.vespaUrl)
+    val index = TrustProjection(vespa, VespaProfileIndex(Config.vespaUrl))
+    return Stack(VespaEventStore(index, relay = publicRelayUrl()), vespa)
+}
+
+internal fun openStore(): VespaEventStore = openStack().store
 
 /** The relay's public url (`RELAY_URL`) — NIP-42's identity and the vanish scope. */
 internal fun publicRelayUrl(): NormalizedRelayUrl =
@@ -98,9 +112,9 @@ internal fun housePubkey(): String? {
     }
 }
 
-/** The background/foreground sync composition over a shared [store]. */
+/** The background/foreground sync composition over a shared [stack]. */
 internal fun syncService(
-    store: VespaEventStore,
+    stack: Stack,
     identity: Identity,
 ): SyncService {
     val pubkey = housePubkey()
@@ -110,7 +124,7 @@ internal fun syncService(
         warn("HOUSE_RELAY '${Config.houseRelay}' is not a valid relay url - the house 10002 will only resolve via the index relays")
     }
     return SyncService(
-        store = store,
+        store = stack.store,
         identity = identity,
         house = house,
         seedRelays = Config.seedRelays,
@@ -119,5 +133,6 @@ internal fun syncService(
         statePath = Config.syncStatePath,
         opts = SyncOptions(),
         log = { println(styleLogLine(it)) },
+        gauges = listOf(stack.feedGauge()),
     )
 }

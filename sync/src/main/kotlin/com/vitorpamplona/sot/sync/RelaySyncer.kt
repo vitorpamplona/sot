@@ -43,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.LocalDate
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -355,6 +356,7 @@ class RelaySyncer(
                         }
                     }
                     for (e in channel) {
+                        progress.onDequeued()
                         chunk.add(e)
                         if (chunk.size >= CHUNK_SIZE) flush()
                     }
@@ -367,6 +369,7 @@ class RelaySyncer(
                         progress.onEvent()
                         watch.tick(received.incrementAndGet(), needHint())
                         channel.trySendBlocking(e)
+                        progress.onQueued()
                     }
                 } finally {
                     watch.done()
@@ -376,7 +379,12 @@ class RelaySyncer(
             Streamed(inserted.get(), received.get(), completed)
         }
 
-    /** The download's slot name in the status line: relay, kind, and (for provider syncs) the author. */
+    /**
+     * The download's slot name in the status line: relay, kind, (for provider
+     * syncs) the author, and (for time-sliced syncs) the slice's date window —
+     * without it, parallel slices of the same filter are indistinguishable and
+     * a stalled one can't be identified.
+     */
     private fun label(
         relay: NormalizedRelayUrl,
         filter: Filter,
@@ -387,8 +395,17 @@ class RelaySyncer(
                 ?.firstOrNull()
                 ?.take(8)
                 ?.let { " $it" } ?: ""
-        return "${relay.displayUrl()}$kind$author"
+        val window =
+            if (filter.since != null || filter.until != null) {
+                " ${day(filter.since)}..${day(filter.until)}"
+            } else {
+                ""
+            }
+        return "${relay.displayUrl()}$kind$author$window"
     }
+
+    /** Epoch seconds -> "MM-dd" (status-line dates); open bounds render as "…". */
+    private fun day(t: Long?): String = t?.let { LocalDate.ofEpochDay(it / 86_400).toString().substring(5) } ?: "…"
 
     /** Paginated `since` fetch — works on every relay. [maxEvents] caps ingest via Filter.limit. */
     private suspend fun pagesStream(
@@ -423,9 +440,18 @@ class RelaySyncer(
         filter: Filter,
         onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Int {
+        // Stage-timed for the status line's bottleneck dial: signature CPU vs
+        // waiting on the single writer vs the store insert itself.
+        val t0 = System.nanoTime()
         val valid = dropForged(events, relay, filter)
         onVerified?.invoke(valid)
-        val accepted = storeWrites.withLock { store.batchInsert(valid) }.count { it is IEventStore.InsertOutcome.Accepted }
+        val t1 = System.nanoTime()
+        val accepted =
+            storeWrites
+                .withLock {
+                    val t2 = System.nanoTime()
+                    store.batchInsert(valid).also { progress.onBatchTimings(t1 - t0, t2 - t1, System.nanoTime() - t2) }
+                }.count { it is IEventStore.InsertOutcome.Accepted }
         progress.onInserted(accepted)
         return accepted
     }

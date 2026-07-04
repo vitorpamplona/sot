@@ -62,6 +62,9 @@ class SyncService(
     private val statePath: String,
     private val opts: SyncOptions = SyncOptions(),
     private val log: (String) -> Unit,
+    // Extra status-line gauges (the composition passes the engine's feed
+    // health here, so every pass's log can answer "is the store pushing back?").
+    private val gauges: List<() -> String> = emptyList(),
     private val client: NostrClient = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob())),
 ) : AutoCloseable {
     // Normalize relay urls once, here at the composition edge; typed beyond this point.
@@ -91,6 +94,7 @@ class SyncService(
     suspend fun runOnce() {
         identity.ensurePublished(store)
         val progress = SyncProgress(log = log)
+        gauges.forEach(progress::gauge)
         val syncer =
             RelaySyncer(
                 client,

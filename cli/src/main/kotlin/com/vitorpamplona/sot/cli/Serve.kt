@@ -66,8 +66,9 @@ internal fun serve(args: List<String>) {
     val identity = serverIdentity()
     logLine("relay identity (NIP-11 self): ${identity.signer.keyPair.pubKey.toNpub()}")
 
-    val store = openStore()
-    val sync = syncService(store, identity)
+    val stack = openStack()
+    val store = stack.store
+    val sync = syncService(stack, identity)
     val relaySrv =
         SotRelayServer(
             store = store,

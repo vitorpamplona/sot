@@ -104,7 +104,8 @@ object LoadTest {
         }
 
         runBlocking {
-            val store = openStore()
+            val stack = openStack()
+            val store = stack.store
             val observer = Identity.signerFromSecret("11".repeat(32))!!
             log("[load] observer ${observer.pubKey} trusts ${serviceKeys.size} service key(s) via a synthetic 10040")
             runCatching {
@@ -121,6 +122,7 @@ object LoadTest {
             val client = NostrClient(okHttpWebsocketBuilder(), CoroutineScope(Dispatchers.IO + SupervisorJob()))
             val state = SyncState.load("load-state.json")
             val progress = SyncProgress(log = log)
+            progress.gauge(stack.feedGauge())
             val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = 30_000, progress = progress)
             val ticker = launch { progress.run() }
 
@@ -151,6 +153,7 @@ object LoadTest {
                             async(Dispatchers.IO) {
                                 runCatching { syncer.sync(relayUrl, f, maxEvents = maxEvents) }
                                     .onFailure { log("  ! slice ${f.since}..${f.until} failed: ${it.message}") }
+                                    .onSuccess { log("[load] slice ${f.since}..${f.until} done: downloaded=${it.downloaded} inserted=${it.inserted}${if (it.usedNegentropy) " (neg)" else ""}") }
                                     .getOrNull()
                             }
                         }

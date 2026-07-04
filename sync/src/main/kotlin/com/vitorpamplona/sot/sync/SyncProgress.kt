@@ -28,14 +28,26 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Live counters for one sync pass, rendered as ONE dense status line every
- * [everyMs] — the answer to "where are things at?" while a multi-hour pass runs:
+ * [everyMs] — the answer to "where are things at?" AND "what's the
+ * bottleneck?" while a multi-hour pass runs:
  *
- *   ~ relays 42/127 | recv 1.2M (4.3k/s) new 987k | vespa ok 950k inflight 12k | purplepag.es k0 741k/2.3M, damus.io k0 234k, +4 more
+ *   ~ providers 3/12 | recv 1.2M (8.9k/s) new 987k (2.1k/s) q 9.8k | vrf 0.4x wait 3.1x ins 92% | feed ok 950k inflight 512 lat 19ms | nip85.… k30382 05-19..06-02 741k/2.3M
  *
- * Every component reports in: [RelaySyncer] counts events and registers each
- * live [Download], the pipeline phases set the `done/total` position, and other
- * components ([SyncService]'s Vespa projection) contribute [gauge]s. The line
- * only prints while something is happening.
+ * Reading the bottleneck dial:
+ *  - `q` is the download->insert channel depth summed over live downloads:
+ *    pinned at capacity = ingest-bound (the socket is waiting on the store);
+ *    near zero = network-bound (the store is waiting on the relay).
+ *  - `ins` is the store's single-writer busy share of wall time (<=100%):
+ *    high = the store/engine is the limiter. `wait` is time spent queued on
+ *    that writer lock (sums over parallel downloads, so >1x is normal);
+ *    `vrf` is signature-check CPU concurrency.
+ *  - the feed [gauge] (registered by the composition) shows the engine
+ *    client's live window and latency.
+ *
+ * Every component reports in: [RelaySyncer] counts events, registers each
+ * live [Download], and stamps the stage timings; the pipeline phases set the
+ * `done/total` position; other components contribute [gauge]s. The line only
+ * prints while something is happening.
  */
 class SyncProgress(
     private val everyMs: Long = 5_000,
@@ -74,6 +86,10 @@ class SyncProgress(
     private val done = AtomicInteger(0)
     private val received = AtomicLong(0)
     private val inserted = AtomicLong(0)
+    private val queued = AtomicLong(0)
+    private val verifyNanos = AtomicLong(0)
+    private val lockWaitNanos = AtomicLong(0)
+    private val insertNanos = AtomicLong(0)
     private val active = ConcurrentHashMap<String, Download>()
     private val gauges = CopyOnWriteArrayList<() -> String>()
 
@@ -88,6 +104,27 @@ class SyncProgress(
     /** [n] events were newly accepted into the store. */
     fun onInserted(n: Int) {
         inserted.addAndGet(n.toLong())
+    }
+
+    /** An event entered the download->insert channel. */
+    fun onQueued() {
+        queued.incrementAndGet()
+    }
+
+    /** An event left the channel for verification + insert. */
+    fun onDequeued() {
+        queued.decrementAndGet()
+    }
+
+    /** One insert batch's stage timings (signature checks / writer-lock wait / store insert). */
+    fun onBatchTimings(
+        verifyNanos: Long,
+        lockWaitNanos: Long,
+        insertNanos: Long,
+    ) {
+        this.verifyNanos.addAndGet(verifyNanos)
+        this.lockWaitNanos.addAndGet(lockWaitNanos)
+        this.insertNanos.addAndGet(insertNanos)
     }
 
     /** Enter a new phase of [totalItems] items; [itemDone] advances through it. */
@@ -111,17 +148,34 @@ class SyncProgress(
     /** Print the status line every [everyMs] until cancelled; silent while nothing changes. */
     suspend fun run() {
         var prevReceived = 0L
+        var prevInserted = 0L
+        var prevVerify = 0L
+        var prevWait = 0L
+        var prevInsert = 0L
         var prevAt = System.nanoTime()
         var lastLine = ""
         while (true) {
             delay(everyMs)
             val now = System.nanoTime()
+            val wall = (now - prevAt).coerceAtLeast(1)
             val recv = received.get()
-            val perSec = ((recv - prevReceived) * 1_000_000_000.0 / (now - prevAt)).toLong()
+            val ins = inserted.get()
+            val perSec = ((recv - prevReceived) * 1_000_000_000.0 / wall).toLong()
+            val insPerSec = ((ins - prevInserted) * 1_000_000_000.0 / wall).toLong()
+            val busy =
+                busyGauge(
+                    verifyX = (verifyNanos.get() - prevVerify).toDouble() / wall,
+                    waitX = (lockWaitNanos.get() - prevWait).toDouble() / wall,
+                    insertX = (insertNanos.get() - prevInsert).toDouble() / wall,
+                )
             prevReceived = recv
+            prevInserted = ins
+            prevVerify = verifyNanos.get()
+            prevWait = lockWaitNanos.get()
+            prevInsert = insertNanos.get()
             prevAt = now
 
-            val line = statusLine(perSec)
+            val line = statusLine(perSec, insPerSec, busy)
             // While downloads are live, keep printing even if the numbers froze -
             // a visibly stalled line beats silence. Only true idleness goes quiet.
             if (active.isEmpty() && line == lastLine) continue
@@ -130,13 +184,33 @@ class SyncProgress(
         }
     }
 
-    /** The one-line snapshot: phase position, totals + rate, gauges, live downloads. */
-    internal fun statusLine(perSec: Long): String =
+    /** The per-tick bottleneck dial; empty while nothing was verified or inserted. */
+    private fun busyGauge(
+        verifyX: Double,
+        waitX: Double,
+        insertX: Double,
+    ): String {
+        if (verifyX + waitX + insertX < 0.005) return ""
+        // The store writer is a mutex: its busy share is a true <=100% dial.
+        // Verify and lock-wait sum over parallel downloads, so they read as
+        // concurrency multiples instead.
+        return "vrf %.1fx wait %.1fx ins %d%%".format(verifyX, waitX, (insertX * 100).toInt().coerceAtMost(100))
+    }
+
+    /** The one-line snapshot: phase position, totals + rates, bottleneck dial, gauges, live downloads. */
+    internal fun statusLine(
+        perSec: Long,
+        insPerSec: Long = 0,
+        busy: String = "",
+    ): String =
         buildString {
             append("  ~ $phase ${done.get()}/$total")
             append(" | recv ${compact(received.get())}")
             if (perSec > 0) append(" (${compact(perSec)}/s)")
             append(" new ${compact(inserted.get())}")
+            if (insPerSec > 0) append(" (${compact(insPerSec)}/s)")
+            queued.get().let { if (it > 0) append(" q ${compact(it)}") }
+            if (busy.isNotEmpty()) append(" | $busy")
             for (gauge in gauges) append(" | ${gauge()}")
 
             val busiest = active.entries.sortedByDescending { it.value.received }

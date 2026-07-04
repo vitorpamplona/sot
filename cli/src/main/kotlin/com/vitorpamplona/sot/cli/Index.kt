@@ -32,8 +32,9 @@ import kotlinx.coroutines.runBlocking
 internal fun index(args: List<String>) {
     ensureVespaIsUp(args)
     val identity = serverIdentity()
-    val store = openStore()
-    val sync = syncService(store, identity)
+    val stack = openStack()
+    val store = stack.store
+    val sync = syncService(stack, identity)
     try {
         runBlocking { sync.runOnce() }
         ok("pass complete.")

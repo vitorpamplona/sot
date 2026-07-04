@@ -227,6 +227,20 @@ class VespaEventIndex(
         return http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
     }
 
+    /**
+     * One-line feed-client health for status lines: cumulative acks, the LIVE
+     * in-flight window, and per-request HTTP latency — the numbers that tell
+     * "the engine is slow" from "the client isn't pushing" at a glance
+     * (a starved window shows tiny inflight at low latency; a saturated
+     * engine shows a big window at high latency).
+     */
+    fun feedGauge(): String {
+        val s = feed.stats()
+        val failed = (s.responses() - s.successes()) + s.exceptions()
+        return "feed ok ${s.successes()} inflight ${s.inflight()} lat ${s.averageLatencyMillis()}ms" +
+            if (failed > 0) " FAILED $failed" else ""
+    }
+
     /** Graceful: waits for in-flight feed operations before closing the connections. */
     override fun close() = feed.close(true)
 
