@@ -217,10 +217,20 @@ class TrustSync(
 
     /**
      * Phase C — the providers: every stored 10040's `30382:rank` entries,
-     * pulled from their own relay hints. Ported from v1's phase 3: providers
-     * cluster hard on a few NIP-85 relays, so services group by relay into
-     * ONE multi-author filter (chunked), and a full sync reconciles the
-     * batch's complete set so silently-removed scores are deleted.
+     * pulled from their own relay hints. Providers cluster hard on a few
+     * NIP-85 relays, so services group by relay into ONE multi-author filter
+     * (chunked).
+     *
+     * **The provider relay is the AUTHORITATIVE source of truth for its
+     * service keys' 30382s** — the observer chose it in their 10040. So
+     * deletion is ABSENCE: a full sync reconciles the batch's complete id
+     * set, and any score we hold that the relay no longer serves is deleted
+     * locally. No kind-5 download is needed for this scope (a provider
+     * retracting a score just removes it; the reconcile diff sees the hole).
+     * This absence-is-deletion rule applies ONLY here — kind 30382 on the
+     * 10040-chosen relay — never to the records plane, where an author's
+     * outbox is one replica among many and deletion needs an explicit
+     * kind 5/62.
      */
     private suspend fun syncProviderScores() {
         var providers =
@@ -237,23 +247,18 @@ class TrustSync(
                 .groupBy({ it.second }, { it.first })
                 .flatMap { (relay, services) -> services.distinct().chunked(AUTHORS_PER_FILTER).map { relay to it } }
 
-        log("=== scores C: 30382 + 5 for ${providers.size} provider(s) across ${units.size} relay batch(es) ===")
+        log("=== scores C: 30382 for ${providers.size} provider(s) across ${units.size} relay batch(es) ===")
         progress.startPhase("providers", units.size)
         forEachParallel(units, opts.concurrency) { (relay, services) ->
-            // The providers' own deletion requests live on their relay too — a
-            // kind:5 published only there must still erase the score here.
-            syncer.sync(relay, Filter(kinds = listOf(DeletionEvent.KIND), authors = services), maxEvents = opts.maxEvents)
-
             val scores = Filter(kinds = listOf(ContactCardEvent.KIND), authors = services)
             if (opts.maxEvents == 0) {
-                // Full sync: reconcile the batch's complete set, so scores a
-                // provider silently removed (no kind:5, no supersession) get
-                // deleted from the store.
+                // Full sync: reconcile the batch's complete id set; absence IS
+                // deletion here (the relay is authoritative for this scope).
                 val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores)
                 if (r.relayIds != null) {
                     val stale = store.query<ContactCardEvent>(scores).map { it.id }.filterNot { it in r.relayIds }
                     if (stale.isNotEmpty()) {
-                        log("[reconcile] ${services.size} provider(s) @ ${relay.displayUrl()}: ${stale.size} score event(s) vanished - deleting")
+                        log("[reconcile] ${services.size} provider(s) @ ${relay.displayUrl()}: ${stale.size} score event(s) no longer served - deleting")
                         stale.chunked(100).forEach { syncer.deleteFromStore(Filter(ids = it)) }
                     }
                 }
