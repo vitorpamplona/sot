@@ -112,8 +112,8 @@ class TrustProjection(
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         IngestStats.timed("write") { inner.putAll(docs) }
-        // Provider lists first: they change the map the scores attribute through.
-        docs.filter { it.kind == TrustProviderListEvent.KIND }.forEach { recomputeSubjectsOf(it) }
+        // Provider lists first (ONE walk over the union): they change the map the scores attribute through.
+        recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
         val cards = docs.filter { it.kind == ContactCardEvent.KIND }
         if (cards.isEmpty()) return
         val serviceToObserver = providerMap()
@@ -197,7 +197,7 @@ class TrustProjection(
     override suspend fun removeAll(ids: List<String>) {
         val docs = ids.mapBounded(QUERY_FANOUT) { inner.get(it) }.filterNotNull()
         inner.removeAll(ids)
-        docs.filter { it.kind == TrustProviderListEvent.KIND }.forEach { recomputeSubjectsOf(it) }
+        recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
         val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
         if (subjects.isNotEmpty()) recomputeBatch(subjects, providerMap(), removeEmpties = true)
     }
@@ -205,7 +205,7 @@ class TrustProjection(
     private suspend fun react(doc: EventDoc) {
         when (doc.kind) {
             ContactCardEvent.KIND -> subjectOf(doc)?.let { recompute(it) }
-            TrustProviderListEvent.KIND -> recomputeSubjectsOf(doc)
+            TrustProviderListEvent.KIND -> recomputeSubjectsOf(listOf(doc))
         }
     }
 
@@ -238,9 +238,18 @@ class TrustProjection(
         return ProfileDoc(subject, quality, followers)
     }
 
-    /** service key -> observer, from every stored 10040's `30382:rank` entries. */
+    /**
+     * service key -> observer, from every stored 10040's `30382:rank` entries.
+     * CACHED across a pass: this map only changes when a 10040 is written or
+     * removed, and every such path invalidates it ([recomputeSubjectsOf]), so
+     * a run of single 30382 publishes (each of which re-derives its subject)
+     * pays the full-10040 scan ONCE, not per event. Safe as a plain field:
+     * every write/react path runs under the store's single-writer lock.
+     */
+    @Volatile private var cachedProviderMap: Map<String, String>? = null
+
     private suspend fun providerMap(): Map<String, String> =
-        inner
+        cachedProviderMap ?: inner
             .search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND)))
             .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) as? TrustProviderListEvent }
             .flatMap { list ->
@@ -249,22 +258,26 @@ class TrustProjection(
                     .filter { it.service == ProviderTypes.rank }
                     .map { it.pubkey to list.pubKey }
             }.toMap()
+            .also { cachedProviderMap = it }
 
     /**
-     * A 10040 appeared or disappeared: every subject its rank services have
-     * scored needs re-attribution under the new provider map. The subjects
-     * are enumerated through the engine's VISIT walk (d tags projected), not
-     * a search — a provider with millions of stored scores is exactly where
-     * a 10k search page would silently miss most of them — and re-derived in
-     * batches, empties removed (a re-attribution can empty a parent).
+     * One or more 10040s appeared or disappeared: the provider map changed, so
+     * every subject their rank services have scored needs re-attribution. The
+     * subjects are enumerated through the engine's VISIT walk (d tags
+     * projected), not a search — a provider with millions of stored scores is
+     * exactly where a 10k search page would silently miss most of them — and
+     * re-derived in batches, empties removed (a re-attribution can empty a
+     * parent). A BATCH of 10040s does ONE walk over the union of their
+     * services, not one walk per list.
      */
-    private suspend fun recomputeSubjectsOf(listDoc: EventDoc) {
-        val list = Event.fromJsonOrNull(listDoc.toEventJson()) as? TrustProviderListEvent ?: return
+    private suspend fun recomputeSubjectsOf(listDocs: List<EventDoc>) {
+        if (listDocs.isEmpty()) return
+        cachedProviderMap = null // the map just changed; next providerMap() rebuilds
         val services =
-            list
-                .serviceProviders()
-                .filter { it.service == ProviderTypes.rank }
-                .map { it.pubkey }
+            listDocs
+                .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) as? TrustProviderListEvent }
+                .flatMap { it.serviceProviders().filter { p -> p.service == ProviderTypes.rank }.map { p -> p.pubkey } }
+                .distinct()
         if (services.isEmpty()) return
         recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = services))
     }
@@ -313,7 +326,7 @@ class TrustProjection(
         // (~50 observed), so 100 subjects already recall ~5k docs — a bigger
         // chunk would cross the engine's 10k search page and silently truncate
         // the derivation.
-        const val FETCH_CHUNK = 100
+        const val FETCH_CHUNK = 50
 
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
