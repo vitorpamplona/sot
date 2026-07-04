@@ -157,7 +157,9 @@ class VespaEventIndex(
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         val selection = EventSelection.build(query) ?: return super.visitIds(query, withDTag, onPage)
-        val fieldSet = "$DOCTYPE:created_at" + if (withDTag) ",$DOCTYPE:tag_index" else ""
+        // Vespa fieldSet syntax is "<doctype>:<field>,<field>,…" — the doctype
+        // prefixes the list ONCE, not each field (else: ILLEGAL_PARAMETERS).
+        val fieldSet = "$DOCTYPE:created_at" + if (withDTag) ",tag_index" else ""
         val base =
             "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(selection, "UTF-8")}" +

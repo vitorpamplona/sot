@@ -95,7 +95,10 @@ internal fun deploy(args: List<String>): Int {
         return 1
     }
     val tgz = "/tmp/vespa.tgz"
-    if (run("bash", "-c", "tar -czf $tgz -C '$app' .") != 0) return 1
+    // COPYFILE_DISABLE=1 stops macOS tar from embedding `._*` AppleDouble sidecars
+    // (files here carry a com.apple.quarantine xattr); Vespa would try to parse
+    // `._services.xml` as XML and reject the package. No-op on Linux.
+    if (run("bash", "-c", "COPYFILE_DISABLE=1 tar -czf $tgz -C '$app' .") != 0) return 1
     return run(
         "bash",
         "-c",
