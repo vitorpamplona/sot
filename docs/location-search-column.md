@@ -2,9 +2,34 @@
 
 Status: **Option A shipped** — the free-text `search_location` column landed
 (filled systemically from every kind's `location` tags; recall + a
-`w_location` ranking term). Option B (geohash proximity) remains a proposal.
-Companion to the search-field role work in `SearchExtractors` and
-`vespa/app/schemas/event.sd`.
+`w_location` ranking term). **Option B (server-side geohash proximity) is
+declined** — see the decision below; geohash proximity is handled entirely
+client-side via `#g` tag filtering, no server work. Companion to the
+search-field role work in `SearchExtractors` and `vespa/app/schemas/event.sd`.
+
+## Decision: geohash proximity is a client concern, not the relay's
+
+The `g` (geohash) tag is indexed in `tag_index` exactly like `t` (every
+single-letter tag becomes `"g:<value>"`, and a `#g` filter ORs its values), and
+events emit the geohash *tree* (`g:u`, `g:u3`, `g:u33`, …). So a client already
+has full proximity capability with zero server changes:
+
+- cell recall is a plain `#g:["u33dc0"]` filter;
+- radius/neighbor recall is the client picking a precision and sending the cell
+  + its 8 neighbor prefixes as a multi-value `#g` OR filter (the geohash
+  neighbor arithmetic lives in the client, where it belongs);
+- distance ordering is done client-side from the geohashes returned on each hit.
+
+This keeps the relay a plain NIP-01 tag filter (consistent with "the relay is
+the API; clients are Nostr clients") and avoids a `position` attribute, a
+geohash decoder, a `geo:` NIP-50 extension, and the `geoLocation`/`closeness` +
+`MockYql`/reference-index work Option B below would have required.
+
+The one capability this does NOT provide is server-side *trust-ranked*
+proximity (a bare `#g` filter with no search term returns newest-first, not
+observer-ranked). Revisit Option B only if a client concretely needs
+"near me, ranked by who I trust"; until then it is not worth a spatial
+subsystem. The design below is retained for that hypothetical.
 
 ## Problem
 
