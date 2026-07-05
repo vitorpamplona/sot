@@ -259,15 +259,16 @@ class VespaEventIndex(
         )
 
     /**
-     * Send [req], briefly retrying transient 5xx (the engine sheds load under
-     * heavy concurrent summary fills). Shared by the query, get, and visit
-     * paths. The full-corpus visit walk is exactly a place where one 504 page
-     * must not abort the whole scan.
+     * Send [req], briefly retrying transient overload: 5xx (the engine sheds
+     * load under heavy concurrent summary fills) AND 429 (the document API
+     * rejects past 256 enqueued requests — pushback, not failure). Shared by the
+     * query, get, and visit paths. The full-corpus visit walk is exactly a place
+     * where one 504/429 page must not abort the whole scan.
      */
     private suspend fun sendRetrying(req: HttpRequest): HttpResponse<String> {
         var resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
         var attempt = 0
-        while (resp.statusCode() in 500..599 && attempt++ < QUERY_RETRIES) {
+        while ((resp.statusCode() in 500..599 || resp.statusCode() == 429) && attempt++ < QUERY_RETRIES) {
             delay(500L * attempt)
             resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
         }
