@@ -76,7 +76,7 @@ internal object BrainstormWordGroup {
         for (field in SEARCH_FIELDS) clauses += fieldClauses(field, param, maxEdits, roleOf(field))
         if (withGrams) {
             for (gramField in OR_GRAM_FIELDS) orGramClause(literal, gramField)?.let { clauses += it }
-            andAboutGramClause(literal)?.let { clauses += it }
+            for (gramField in AND_GRAM_FIELDS) andGramClause(literal, gramField)?.let { clauses += it }
         }
         return "(${clauses.joinToString(" or ")})"
     }
@@ -136,15 +136,23 @@ internal object BrainstormWordGroup {
         return grams.joinToString(" or ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
     }
 
-    /** AND of the word's trigrams against about_gram (discriminative, unlike the OR nets). */
-    private fun andAboutGramClause(word: String): String? {
+    /**
+     * AND of the word's trigrams against a discriminative gram field (every
+     * trigram must be present, unlike the OR nets). Used for the long free-text
+     * fields — `about` and the generic `search_secondary` — where an OR net
+     * would recall too much noise.
+     */
+    private fun andGramClause(
+        word: String,
+        gramField: String,
+    ): String? {
         // Lowercase like every other gram net (orGramClause): the *_gram fields
         // are lowercase-indexed, so uppercased trigrams from a capitalized query
         // word ("Vitor") would never match and this discriminative net would go
         // silently dead for mixed-case input — the common case for names.
         val grams = trigrams(word.lowercase())
         if (grams.isEmpty()) return null
-        return grams.joinToString(" and ", prefix = "(", postfix = ")") { "about_gram contains \"$it\"" }
+        return grams.joinToString(" and ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
     }
 
     /** Alphanumeric-only trigrams — safe to embed in YQL without escaping. */
@@ -177,7 +185,9 @@ internal object BrainstormWordGroup {
         }
 
     private val SEARCH_FIELDS =
-        listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text")
+        listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text", "search_location")
 
     private val OR_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
+
+    private val AND_GRAM_FIELDS = listOf("about_gram", "search_secondary_gram")
 }

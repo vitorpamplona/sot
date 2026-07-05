@@ -104,13 +104,47 @@ import com.vitorpamplona.sot.vespa.doc.SearchFields
  * current or future, is imported; the explicit branches only add field-priority
  * structure on top.
  *
+ * Beyond the tiers, a kind may also fill the profile *role* columns when it
+ * carries that shape of data: kind 31990 (app handler) is a full UserMetadata
+ * clone and goes through the kind-0 columns wholesale, and any kind with a
+ * homepage/site URL (git repos, podcasts, live streams) fills [SearchFields.website]
+ * so it inherits the affiliation-domain treatment. The schema's rank profiles
+ * compose the role columns with `max()`/sum, so this cross-kind reuse is safe.
+ *
+ * Two signals are filled SYSTEMICALLY for every tier kind, in a post-pass, so
+ * they never depend on a branch remembering them (see [extract]): the event's
+ * hashtags fold into the secondary tier, and its `location` tags into
+ * [SearchFields.location]. The per-kind branches therefore no longer add
+ * hashtags themselves.
+ *
  * Non-searchable kinds return [SearchFields.NONE] and stay invisible to NIP-50.
  *
  * Extractors are derived data: changing one rolls out with
  * `reindexFullTextSearch`, with no resync.
  */
 object SearchExtractors {
-    fun extract(event: Event): SearchFields =
+    fun extract(event: Event): SearchFields = augment(event, base(event))
+
+    /**
+     * Systemic post-pass over the per-kind [base]: fold the event's hashtags
+     * into the secondary tier and its `location` tags into the location column,
+     * for EVERY tier kind at once — so keyword and place-name recall don't
+     * depend on each kind's branch remembering to add them. Profile-shaped kinds
+     * (kind 0, app handlers) own their columns and are left untouched;
+     * non-searchable kinds stay invisible.
+     */
+    private fun augment(
+        event: Event,
+        base: SearchFields,
+    ): SearchFields {
+        if (event !is SearchableEvent || event is MetadataEvent || event is AppDefinitionEvent) return base
+        return base.copy(
+            secondary = join(base.secondary, hashtags(event)),
+            location = base.location ?: join(tagValues(event, "location")),
+        )
+    }
+
+    private fun base(event: Event): SearchFields =
         when (event) {
             // kind 0 -> the profile fields, each in its own role.
             is MetadataEvent -> {
@@ -130,7 +164,7 @@ object SearchExtractors {
             }
 
             is LongTextNoteEvent -> {
-                tiers(event.title(), join(event.summary(), hashtags(event)), event.content)
+                tiers(event.title(), event.summary(), event.content)
             }
 
             is WikiNoteEvent -> {
@@ -142,7 +176,7 @@ object SearchExtractors {
             }
 
             is GitRepositoryEvent -> {
-                tiers(event.name(), event.description(), event.content)
+                tiers(event.name(), event.description(), event.content, website = join(event.webs()))
             }
 
             is GitIssueEvent -> {
@@ -181,8 +215,10 @@ object SearchExtractors {
                 tiers(event.title(), null, event.content)
             }
 
+            // Torrents are searched by FILE NAME above all — index the file
+            // list into the secondary tier, trackers as the affiliation URL.
             is TorrentEvent -> {
-                tiers(event.title(), null, event.content)
+                tiers(event.title(), join(tagValues(event, "file")), event.content, website = join(event.trackers()))
             }
 
             is ThreadEvent -> {
@@ -222,7 +258,7 @@ object SearchExtractors {
             }
 
             is LiveActivitiesEvent -> {
-                tiers(event.title(), event.summary(), event.content)
+                tiers(event.title(), event.summary(), event.content, website = event.streaming())
             }
 
             is InteractiveStoryBaseEvent -> {
@@ -237,8 +273,15 @@ object SearchExtractors {
                 tiers(event.title(), event.summary(), null)
             }
 
+            // Code snippets are searched by language/runtime as much as name —
+            // fold those keywords into the secondary tier, repo as affiliation.
             is CodeSnippetEvent -> {
-                tiers(event.snippetName(), event.snippetDescription(), event.content)
+                tiers(
+                    event.snippetName(),
+                    join(event.snippetDescription(), event.language(), event.extension(), event.runtime()),
+                    event.content,
+                    website = event.repo(),
+                )
             }
 
             is BadgeDefinitionEvent -> {
@@ -254,7 +297,7 @@ object SearchExtractors {
             }
 
             is SoftwareApplicationEvent -> {
-                tiers(event.name(), event.summary(), event.content)
+                tiers(event.name(), event.summary(), event.content, website = join(event.url(), event.repository()))
             }
 
             is PodcastEpisodeEvent -> {
@@ -262,7 +305,7 @@ object SearchExtractors {
             }
 
             is PodcastMetadataEvent -> {
-                tiers(event.title(), event.description(), null)
+                tiers(event.title(), event.description(), null, website = join(event.websites()))
             }
 
             is GroupMetadataEvent -> {
@@ -270,7 +313,7 @@ object SearchExtractors {
             }
 
             is InterestSetEvent -> {
-                tiers(event.title(), join(event.description(), join(event.publicHashtags())), null)
+                tiers(event.title(), event.description(), null)
             }
 
             is FollowListEvent -> {
@@ -305,8 +348,10 @@ object SearchExtractors {
                 tiers(event.title(), event.description(), null)
             }
 
+            // A web bookmark IS its URL — route it to the affiliation website
+            // column so the bookmark is findable by its domain.
             is WebBookmarkEvent -> {
-                tiers(event.title(), event.description(), null)
+                tiers(event.title(), event.description(), null, website = event.url())
             }
 
             is NamedSiteEvent -> {
@@ -365,15 +410,32 @@ object SearchExtractors {
                 tiers(event.subject(), null, null)
             }
 
+            // kind 31990 — the app handler's metadata IS a UserMetadata clone
+            // (name/displayName/about/nip05/lud16/website), so route it through
+            // the same profile columns as kind 0 instead of flattening it into
+            // the generic tiers. An app's @-handle and site then get the same
+            // identity/affiliation treatment a person's do.
             is AppDefinitionEvent -> {
                 val md = event.appMetaData()
-                tiers(join(md?.name, md?.displayName), md?.about, null)
+                if (md == null) {
+                    SearchFields.NONE
+                } else {
+                    SearchFields(
+                        // Per NIP-24 the deprecated `username` folds into `name`.
+                        name = clean(md.name ?: md.username),
+                        displayName = clean(md.displayName),
+                        about = clean(md.about),
+                        nip05 = clean(md.nip05),
+                        lud16 = clean(md.lud16),
+                        website = clean(md.website),
+                    )
+                }
             }
 
             // kind 1 LAST among the explicit branches: several kinds extend the
             // text-note base, and their own branches above must win.
             is TextNoteEvent -> {
-                tiers(event.subject(), hashtags(event), event.content)
+                tiers(event.subject(), null, event.content)
             }
 
             // Everything else Quartz can search, current or future: the whole
@@ -391,7 +453,8 @@ object SearchExtractors {
         primary: String?,
         secondary: String?,
         text: String?,
-    ) = SearchFields(primary = clean(primary), secondary = clean(secondary), text = clean(text))
+        website: String? = null,
+    ) = SearchFields(primary = clean(primary), secondary = clean(secondary), text = clean(text), website = clean(website))
 
     private fun clean(s: String?): String? = s?.trim()?.ifEmpty { null }
 
@@ -404,4 +467,10 @@ object SearchExtractors {
     private fun join(parts: List<String>): String? = clean(parts.joinToString(" "))
 
     private fun hashtags(event: Event): String? = join(event.tags.hashtags())
+
+    /** First value of every tag named [name] (e.g. "location", "file"), non-empty only. */
+    private fun tagValues(
+        event: Event,
+        name: String,
+    ): List<String> = event.tags.mapNotNull { tag -> tag.getOrNull(1)?.takeIf { tag.getOrNull(0) == name && it.isNotEmpty() } }
 }

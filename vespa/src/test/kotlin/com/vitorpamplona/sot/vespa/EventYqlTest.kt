@@ -85,14 +85,17 @@ class EventYqlTest {
         assertTrue("({defaultIndex:\"about\",prefix:true}userInput(@w0))" in q.yql)
         // Recall role: unlabeled.
         assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in q.yql)
+        assertTrue("({defaultIndex:\"search_location\"}userInput(@w0))" in q.yql)
         // 8 chars: one edit of fuzz, not two.
         assertTrue("({defaultIndex:\"name\",fuzzy:{maxEditDistance:1,prefixLength:2},label:\"mtch_fz1\"}userInput(@w0))" in q.yql)
         assertFalse("maxEditDistance:2" in q.yql)
-        // Trigram safety nets: OR against the name grams, AND against about_gram.
+        // Trigram safety nets: OR against the name grams, AND against the
+        // discriminative about_gram and search_secondary_gram.
         assertTrue("name_gram contains \"pam\"" in q.yql)
         assertTrue("display_name_gram contains \"pam\"" in q.yql)
         assertTrue("search_primary_gram contains \"pam\"" in q.yql)
         assertTrue("(about_gram contains \"pam\" and about_gram contains \"amp\"" in q.yql)
+        assertTrue("(search_secondary_gram contains \"pam\" and search_secondary_gram contains \"amp\"" in q.yql)
     }
 
     @Test

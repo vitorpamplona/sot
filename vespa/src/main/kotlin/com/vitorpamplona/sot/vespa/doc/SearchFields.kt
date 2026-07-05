@@ -27,14 +27,21 @@ import com.vitorpamplona.sot.vespa.query.EventYql
  * extractors decompose a searchable event into. All-null means the event is
  * invisible to NIP-50 search.
  *
- * There are two groups, DISJOINT per kind, which is what lets the schema's rank
- * profiles compose them as a plain sum (see event.sd):
+ * There are two groups, LARGELY disjoint per kind, which is what lets the
+ * schema's rank profiles compose them as a plain sum (see event.sd):
  *
  *  - the kind-0 profile group ([name]..[website]), with each field's role:
  *    name/displayName primary, nip05/lud16 identity (IDF), about/website
  *    affiliation;
  *  - the generic tiers for every other kind: [primary] (title/subject-like),
- *    [secondary] (summary/hashtag-like), [text] (the body).
+ *    [secondary] (summary/hashtag-like), [text] (the body), plus [location]
+ *    (place names, filled systemically from any kind's `location` tags).
+ *
+ * The disjointness is not strict: a kind may also fill a profile ROLE column
+ * when it carries that data — an app handler (kind 31990) fills the whole
+ * profile group, and a repo/podcast/stream fills [website] for the
+ * affiliation-domain treatment. The schema composes the groups with max()/sum,
+ * so the overlap stays well-defined.
  */
 data class SearchFields(
     val name: String? = null,
@@ -46,6 +53,7 @@ data class SearchFields(
     val primary: String? = null,
     val secondary: String? = null,
     val text: String? = null,
+    val location: String? = null,
 ) {
     /** Schema field name -> value, for the doc field map. Nulls are omitted. */
     fun fields(): Map<String, String> =
@@ -59,6 +67,7 @@ data class SearchFields(
             primary?.let { put("search_primary", it) }
             secondary?.let { put("search_secondary", it) }
             text?.let { put("search_text", it) }
+            location?.let { put("search_location", it) }
         }
 
     /**
@@ -91,6 +100,7 @@ data class SearchFields(
                 primary = get("search_primary"),
                 secondary = get("search_secondary"),
                 text = get("search_text"),
+                location = get("search_location"),
             )
     }
 }

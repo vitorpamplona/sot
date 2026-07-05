@@ -10,11 +10,14 @@
 #
 # SEARCH is per-kind: the store's extractors populate kind-specific fields
 # (kind 0 fills the Brainstorm profile group; other kinds fill the generic
-# tiers). Because the groups are DISJOINT per kind, every scoring function
-# zeroes out on docs of the other kinds — so one rank profile serves a mixed
+# tiers). The groups are LARGELY disjoint per kind, so every scoring function
+# zeroes out on docs of the other kinds — one rank profile serves a mixed
 # kinds filter with a plain SUM, no kind dispatch, and each doc is ranked by
 # its own kind's equations weighted by the observer's web of trust imported
-# from the `profile` parent document.
+# from the `profile` parent document. A kind MAY also fill a profile ROLE
+# column when it carries that data (an app handler fills the whole profile
+# group; a repo/podcast/stream fills `website`); the composites combine the
+# groups with max()/SUM, so that deliberate overlap stays well-defined.
 #
 # Profile fields + equations ported VERBATIM from Brainstorm's
 # brainstorm-k8s charts/brainstorm/vespa-app doc.sd (2026-07; operator-
@@ -165,6 +168,14 @@ schema event {
             indexing: index | summary
             index: enable-bm25
         }
+
+        # Place names, filled systemically from any kind's `location` tags
+        # (classifieds, calendar events, pictures/videos). Free-text recall only;
+        # geohash-proximity is a separate future column (docs/location-search-column.md).
+        field search_location type string {
+            indexing: index | summary
+            index: enable-bm25
+        }
     }
 
     import field author_ref.quality_scores as author_quality_scores {}
@@ -217,8 +228,20 @@ schema event {
         }
     }
 
+    # Discriminative (AND-matched) trigram net for the secondary tier — the same
+    # typo-recall safety net `about` has (about_gram), extended to every kind's
+    # summary/description so a misspelled query still recalls them.
+    field search_secondary_gram type string {
+        indexing: input search_secondary | index
+        index: enable-bm25
+        match {
+            gram
+            gram-size: 3
+        }
+    }
+
     fieldset default {
-        fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text
+        fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text, search_location
     }
 
     fieldset grams {
@@ -272,6 +295,7 @@ schema event {
             # Tier-group weights (sot extension, non-profile kinds).
             query(w_secondary) double: 0.4
             query(w_content) double: 0.15
+            query(w_location) double: 0.3
         }
 
         # The observer's trust in this doc's AUTHOR, via the profile parent.
@@ -389,12 +413,23 @@ schema event {
             }
         }
 
+        # Secondary tier text: bm25 plus its discriminative gram net — the same
+        # typo-recall treatment about_text() gives bios, extended to every kind's
+        # summary/description. Uncapped, exactly like about_text().
+        function secondary_text() {
+            expression {
+                bm25(search_secondary)
+                + query(w_gram) * bm25(search_secondary_gram)
+            }
+        }
+
         function tier_text() {
             expression {
                 tier_token_match() * query(w_name_tier)
                 + tier_primary_text()
-                + query(w_secondary) * bm25(search_secondary)
+                + query(w_secondary) * secondary_text()
                 + query(w_content) * bm25(search_text)
+                + query(w_location) * bm25(search_location)
             }
         }
 
@@ -437,8 +472,9 @@ schema event {
                 + query(w_proximity) * proximity()
                 + primary_text()
                 + tier_primary_text()
-                + query(w_secondary) * bm25(search_secondary)
+                + query(w_secondary) * secondary_text()
                 + query(w_content) * bm25(search_text)
+                + query(w_location) * bm25(search_location)
                 + secondary_active() * query(w_about) * about_text()
             }
         }
