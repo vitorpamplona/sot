@@ -261,7 +261,7 @@ object SearchExtractors {
             }
 
             is SoftwareApplicationEvent -> {
-                tiers(event.name(), event.summary(), event.content)
+                tiers(event.name(), event.summary(), event.content, website = join(event.url(), event.repository()))
             }
 
             is PodcastEpisodeEvent -> {
@@ -312,8 +312,10 @@ object SearchExtractors {
                 tiers(event.title(), event.description(), null)
             }
 
+            // A web bookmark IS its URL — route it to the affiliation website
+            // column so the bookmark is findable by its domain.
             is WebBookmarkEvent -> {
-                tiers(event.title(), event.description(), null)
+                tiers(event.title(), event.description(), null, website = event.url())
             }
 
             is NamedSiteEvent -> {

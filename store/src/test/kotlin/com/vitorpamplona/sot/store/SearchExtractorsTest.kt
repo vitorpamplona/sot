@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.store
 
+import com.vitorpamplona.quartz.experimental.nip82SoftwareApps.application.SoftwareApplicationEvent
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
@@ -27,6 +28,7 @@ import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
+import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
 import com.vitorpamplona.sot.vespa.doc.SearchFields
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -93,6 +95,20 @@ class SearchExtractorsTest {
         val tags = arrayOf(arrayOf("d", "repo"), arrayOf("name", "cool-repo"), arrayOf("description", "a git tool"), arrayOf("web", "https://cool.dev"))
         val fields = SearchExtractors.extract(GitRepositoryEvent("7".repeat(64), alice, 1L, tags, "", ""))
         assertEquals(SearchFields(primary = "cool-repo", secondary = "a git tool", website = "https://cool.dev"), fields)
+    }
+
+    @Test
+    fun `web bookmarks route the bookmarked url to the website column`() {
+        val tags = arrayOf(arrayOf("d", "example.com/article"), arrayOf("title", "Great Article"))
+        val fields = SearchExtractors.extract(WebBookmarkEvent("8".repeat(64), alice, 1L, tags, "a description", ""))
+        assertEquals(SearchFields(primary = "Great Article", secondary = "a description", website = "https://example.com/article"), fields)
+    }
+
+    @Test
+    fun `software apps route homepage and repository urls to the website column`() {
+        val tags = arrayOf(arrayOf("d", "com.example.app"), arrayOf("name", "Example App"), arrayOf("summary", "does things"), arrayOf("url", "https://example.com"), arrayOf("repository", "https://github.com/ex/app"))
+        val fields = SearchExtractors.extract(SoftwareApplicationEvent("9".repeat(64), alice, 1L, tags, "", ""))
+        assertEquals(SearchFields(primary = "Example App", secondary = "does things", website = "https://example.com\nhttps://github.com/ex/app"), fields)
     }
 
     @Test
