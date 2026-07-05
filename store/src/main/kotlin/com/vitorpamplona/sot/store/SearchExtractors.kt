@@ -104,6 +104,13 @@ import com.vitorpamplona.sot.vespa.doc.SearchFields
  * current or future, is imported; the explicit branches only add field-priority
  * structure on top.
  *
+ * Beyond the tiers, a kind may also fill the profile *role* columns when it
+ * carries that shape of data: kind 31990 (app handler) is a full UserMetadata
+ * clone and goes through the kind-0 columns wholesale, and any kind with a
+ * homepage/site URL (git repos, podcasts, live streams) fills [SearchFields.website]
+ * so it inherits the affiliation-domain treatment. The schema's rank profiles
+ * compose the role columns with `max()`/sum, so this cross-kind reuse is safe.
+ *
  * Non-searchable kinds return [SearchFields.NONE] and stay invisible to NIP-50.
  *
  * Extractors are derived data: changing one rolls out with
@@ -142,7 +149,7 @@ object SearchExtractors {
             }
 
             is GitRepositoryEvent -> {
-                tiers(event.name(), event.description(), event.content)
+                tiers(event.name(), event.description(), event.content, website = join(event.webs()))
             }
 
             is GitIssueEvent -> {
@@ -222,7 +229,7 @@ object SearchExtractors {
             }
 
             is LiveActivitiesEvent -> {
-                tiers(event.title(), event.summary(), event.content)
+                tiers(event.title(), event.summary(), event.content, website = event.streaming())
             }
 
             is InteractiveStoryBaseEvent -> {
@@ -262,7 +269,7 @@ object SearchExtractors {
             }
 
             is PodcastMetadataEvent -> {
-                tiers(event.title(), event.description(), null)
+                tiers(event.title(), event.description(), null, website = join(event.websites()))
             }
 
             is GroupMetadataEvent -> {
@@ -365,9 +372,26 @@ object SearchExtractors {
                 tiers(event.subject(), null, null)
             }
 
+            // kind 31990 — the app handler's metadata IS a UserMetadata clone
+            // (name/displayName/about/nip05/lud16/website), so route it through
+            // the same profile columns as kind 0 instead of flattening it into
+            // the generic tiers. An app's @-handle and site then get the same
+            // identity/affiliation treatment a person's do.
             is AppDefinitionEvent -> {
                 val md = event.appMetaData()
-                tiers(join(md?.name, md?.displayName), md?.about, null)
+                if (md == null) {
+                    SearchFields.NONE
+                } else {
+                    SearchFields(
+                        // Per NIP-24 the deprecated `username` folds into `name`.
+                        name = clean(md.name ?: md.username),
+                        displayName = clean(md.displayName),
+                        about = clean(md.about),
+                        nip05 = clean(md.nip05),
+                        lud16 = clean(md.lud16),
+                        website = clean(md.website),
+                    )
+                }
             }
 
             // kind 1 LAST among the explicit branches: several kinds extend the
@@ -391,7 +415,8 @@ object SearchExtractors {
         primary: String?,
         secondary: String?,
         text: String?,
-    ) = SearchFields(primary = clean(primary), secondary = clean(secondary), text = clean(text))
+        website: String? = null,
+    ) = SearchFields(primary = clean(primary), secondary = clean(secondary), text = clean(text), website = clean(website))
 
     private fun clean(s: String?): String? = s?.trim()?.ifEmpty { null }
 

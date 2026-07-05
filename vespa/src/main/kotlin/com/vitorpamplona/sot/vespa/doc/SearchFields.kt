@@ -27,14 +27,20 @@ import com.vitorpamplona.sot.vespa.query.EventYql
  * extractors decompose a searchable event into. All-null means the event is
  * invisible to NIP-50 search.
  *
- * There are two groups, DISJOINT per kind, which is what lets the schema's rank
- * profiles compose them as a plain sum (see event.sd):
+ * There are two groups, LARGELY disjoint per kind, which is what lets the
+ * schema's rank profiles compose them as a plain sum (see event.sd):
  *
  *  - the kind-0 profile group ([name]..[website]), with each field's role:
  *    name/displayName primary, nip05/lud16 identity (IDF), about/website
  *    affiliation;
  *  - the generic tiers for every other kind: [primary] (title/subject-like),
  *    [secondary] (summary/hashtag-like), [text] (the body).
+ *
+ * The disjointness is not strict: a kind may also fill a profile ROLE column
+ * when it carries that data — an app handler (kind 31990) fills the whole
+ * profile group, and a repo/podcast/stream fills [website] for the
+ * affiliation-domain treatment. The schema composes the groups with max()/sum,
+ * so the overlap stays well-defined.
  */
 data class SearchFields(
     val name: String? = null,

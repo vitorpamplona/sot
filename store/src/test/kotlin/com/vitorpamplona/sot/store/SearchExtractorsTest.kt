@@ -25,6 +25,8 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
+import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
+import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.sot.vespa.doc.SearchFields
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -67,6 +69,30 @@ class SearchExtractorsTest {
     fun `unmapped searchable kinds fall back to indexableContent in the tertiary tier`() {
         val fields = SearchExtractors.extract(ChatMessageEvent("4".repeat(64), alice, 1L, emptyArray(), "hello group", ""))
         assertEquals(SearchFields(text = "hello group"), fields)
+    }
+
+    @Test
+    fun `app handler metadata reuses the kind-0 profile columns`() {
+        val content = """{"name":"Damus","display_name":"Damus App","about":"a nostr client","nip05":"_@damus.io","lud16":"tips@damus.io","website":"https://damus.io"}"""
+        val fields = SearchExtractors.extract(AppDefinitionEvent("6".repeat(64), alice, 1L, emptyArray(), content, ""))
+        assertEquals(
+            SearchFields(
+                name = "Damus",
+                displayName = "Damus App",
+                about = "a nostr client",
+                nip05 = "_@damus.io",
+                lud16 = "tips@damus.io",
+                website = "https://damus.io",
+            ),
+            fields,
+        )
+    }
+
+    @Test
+    fun `git repositories route their web url to the affiliation website column`() {
+        val tags = arrayOf(arrayOf("d", "repo"), arrayOf("name", "cool-repo"), arrayOf("description", "a git tool"), arrayOf("web", "https://cool.dev"))
+        val fields = SearchExtractors.extract(GitRepositoryEvent("7".repeat(64), alice, 1L, tags, "", ""))
+        assertEquals(SearchFields(primary = "cool-repo", secondary = "a git tool", website = "https://cool.dev"), fields)
     }
 
     @Test
