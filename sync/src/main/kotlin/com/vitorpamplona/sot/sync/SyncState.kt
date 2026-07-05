@@ -68,6 +68,20 @@ data class RelayState(
 )
 
 /**
+ * A one-line summary of the most recent completed pass, persisted so a separate
+ * `sot status` process can report sync freshness and throughput (the live
+ * per-pass counters otherwise exist only in the running `serve` process).
+ */
+@Serializable
+data class PassSummary(
+    // epoch seconds when the pass finished
+    val endedAtSecs: Long,
+    val durationSecs: Long,
+    val received: Long,
+    val inserted: Long,
+)
+
+/**
  * Small persisted state that keeps periodic re-runs cheap: which relays speak
  * negentropy and how far each scope has synced. Stored as JSON next to the
  * config. The store holds the events; this holds only the sync bookkeeping.
@@ -83,7 +97,19 @@ data class SyncState(
     // PURPOSE: a relay's temporary downtime expires and gets re-checked, so it is
     // never a permanent ban.
     val deadUntil: MutableMap<NormalizedRelayUrl, Long> = mutableMapOf(),
+    // The last completed pass, for `sot status` freshness/throughput. Null until the first pass ends.
+    var lastPass: PassSummary? = null,
 ) {
+    /** Record the just-finished pass (called from the save path at pass end). */
+    fun recordPass(
+        endedAtSecs: Long,
+        durationSecs: Long,
+        received: Long,
+        inserted: Long,
+    ) {
+        lastPass = PassSummary(endedAtSecs, durationSecs, received, inserted)
+    }
+
     // Relay syncs run in parallel; every access to the shared maps synchronizes here.
     fun relay(relay: NormalizedRelayUrl): RelayState = synchronized(relays) { relays.getOrPut(relay) { RelayState() } }
 

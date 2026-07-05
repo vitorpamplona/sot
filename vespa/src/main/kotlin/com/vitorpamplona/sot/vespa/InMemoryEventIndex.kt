@@ -62,6 +62,7 @@ class InMemoryEventIndex : EventIndex {
         val pairs = tagIndex()
         return (q.ids.isEmpty() || id in q.ids) &&
             (q.kinds.isEmpty() || kind in q.kinds) &&
+            (q.notKinds.isEmpty() || kind !in q.notKinds) &&
             (q.authors.isEmpty() || pubkey in q.authors) &&
             (q.owners.isEmpty() || owner in q.owners) &&
             q.tags.all { (name, values) -> values.any { v -> "$name:$v" in pairs } } &&

@@ -116,6 +116,11 @@ class SyncProgress(
         queued.decrementAndGet()
     }
 
+    /** This pass's cumulative received/inserted totals — snapshotted into the persisted last-pass summary. */
+    fun receivedTotal(): Long = received.get()
+
+    fun insertedTotal(): Long = inserted.get()
+
     /** One insert batch's stage timings (signature checks / writer-lock wait / store insert). */
     fun onBatchTimings(
         verifyNanos: Long,

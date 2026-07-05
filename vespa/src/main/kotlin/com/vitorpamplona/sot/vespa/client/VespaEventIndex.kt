@@ -31,9 +31,11 @@ import com.vitorpamplona.sot.vespa.query.VespaQuery
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -204,17 +206,73 @@ class VespaEventIndex(
         // Vespa caps under the recency `order by`'s match-phase (a 10x+ undercount
         // on large kinds). See [EventYql.buildCount].
         val root = queryRoot(EventYql.buildCount(query) ?: return 0, hits = 0) ?: return 0
-        return root["children"]
-            ?.jsonArray
-            ?.firstNotNullOfOrNull {
-                it.jsonObject["fields"]
+        return countIn(root) ?: 0
+    }
+
+    override suspend fun countDistinctAuthors(query: EventQuery): Int {
+        // `all(group(pubkey) output(count()))` counts the GROUPS — i.e. the
+        // distinct pubkeys — not the docs. The count() lands one level deeper
+        // than [count]'s (inside the group list), so both share [countIn]'s
+        // recursive scan. See [EventYql.buildDistinctCount].
+        val root = queryRoot(EventYql.buildDistinctCount(query, "pubkey") ?: return 0, hits = 0) ?: return 0
+        return countIn(root) ?: 0
+    }
+
+    override suspend fun countByKind(query: EventQuery): Map<Int, Int> {
+        // `all(group(kind) each(output(count())))` yields one leaf group per kind,
+        // each carrying its `value` (the kind) and a `count()`. See [EventYql.buildKindHistogram].
+        val root = queryRoot(EventYql.buildKindHistogram(query) ?: return emptyMap(), hits = 0) ?: return emptyMap()
+        val out = LinkedHashMap<Int, Int>()
+        kindCountsInto(root, out)
+        return out
+    }
+
+    /** Collect every leaf group's (value -> count()) pair anywhere under this node. */
+    private fun kindCountsInto(
+        node: JsonElement,
+        out: MutableMap<Int, Int>,
+    ) {
+        when (node) {
+            is JsonObject -> {
+                val value = node["value"]?.jsonPrimitive?.intOrNull
+                val count =
+                    node["fields"]
+                        ?.jsonObject
+                        ?.get("count()")
+                        ?.jsonPrimitive
+                        ?.intOrNull
+                if (value != null && count != null) out[value] = count
+                node["children"]?.let { kindCountsInto(it, out) }
+            }
+
+            is JsonArray -> {
+                node.forEach { kindCountsInto(it, out) }
+            }
+
+            else -> {}
+        }
+    }
+
+    /** The first `count()` grouping output anywhere under this node — flat for [count], nested under the group list for [countDistinctAuthors]. */
+    private fun countIn(node: JsonElement): Int? =
+        when (node) {
+            is JsonObject -> {
+                node["fields"]
                     ?.jsonObject
                     ?.get("count()")
                     ?.jsonPrimitive
-                    ?.int
+                    ?.intOrNull
+                    ?: node["children"]?.let { countIn(it) }
             }
-            ?: 0
-    }
+
+            is JsonArray -> {
+                node.firstNotNullOfOrNull { countIn(it) }
+            }
+
+            else -> {
+                null
+            }
+        }
 
     /**
      * Run [vq] against `/search/`. It POSTs because a filter with hundreds of

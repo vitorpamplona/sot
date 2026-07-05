@@ -138,10 +138,18 @@ class SyncService(
         body: suspend () -> Unit,
     ) = coroutineScope {
         val ticker = launch { progress.run() }
+        val startedMs = System.currentTimeMillis()
         try {
             body()
         } finally {
             ticker.cancel()
+            val endedMs = System.currentTimeMillis()
+            state.recordPass(
+                endedAtSecs = endedMs / 1000,
+                durationSecs = (endedMs - startedMs) / 1000,
+                received = progress.receivedTotal(),
+                inserted = progress.insertedTotal(),
+            )
             SyncState.save(statePath, state)
             log("[state] saved cursors for ${state.relays.size} relay(s)")
         }

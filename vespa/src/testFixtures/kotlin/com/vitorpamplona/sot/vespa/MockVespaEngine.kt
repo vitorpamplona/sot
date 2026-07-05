@@ -179,22 +179,26 @@ class MockVespaEngine {
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
         val hits = params["hits"]?.toIntOrNull() ?: 10
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
-        // Grouping counts the FULL match set, so ignore the hit-limiting `limit 0`.
+        // The distinct-author query (EventYql.buildDistinctCount): "… | all(group(pubkey) output(count()))".
+        // Both grouping counts scan the FULL match set, so ignore the hit-limiting `limit 0`.
+        // The kind histogram (EventYql.buildKindHistogram): "… | all(group(kind) max(N) each(output(count())))".
         val isCount = yql.contains("all(output(count()))")
-        val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (isCount) it.copy(limit = null) else it }
+        val isDistinct = yql.contains("group(pubkey)")
+        val isKindHistogram = yql.contains("group(kind)")
+        val grouped = isCount || isDistinct || isKindHistogram
+        val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
         val matches = runBlocking { inner.search(query) }
         val children =
-            if (isCount) {
-                JsonArray(
-                    listOf(
-                        buildJsonObject {
-                            put("id", JsonPrimitive("group:root:0"))
-                            put("fields", buildJsonObject { put("count()", JsonPrimitive(matches.size)) })
-                        },
-                    ),
-                )
-            } else {
-                JsonArray(matches.take(hits).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
+            when {
+                // Nest count() under the group list, exactly where real Vespa's
+                // grouping puts it — the client's recursive scan must find it there.
+                isDistinct -> groupCountChildren(matches.map { it.pubkey }.distinct().size)
+
+                isKindHistogram -> kindHistogramChildren(matches.groupingBy { it.kind }.eachCount())
+
+                isCount -> countChildren(matches.size)
+
+                else -> JsonArray(matches.take(hits).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
             }
         val root =
             buildJsonObject {
@@ -208,6 +212,72 @@ class MockVespaEngine {
             }
         return Reply(200, root.toString())
     }
+
+    /** `all(output(count()))`: a single group:root node carrying the doc count() directly. */
+    private fun countChildren(count: Int): JsonArray =
+        JsonArray(
+            listOf(
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:root:0"))
+                    put("fields", buildJsonObject { put("count()", JsonPrimitive(count)) })
+                },
+            ),
+        )
+
+    /** `all(group(pubkey) output(count()))`: the group:root wraps a grouplist whose count() is the number of distinct groups. */
+    private fun groupCountChildren(distinct: Int): JsonArray =
+        JsonArray(
+            listOf(
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:root:0"))
+                    put(
+                        "children",
+                        JsonArray(
+                            listOf(
+                                buildJsonObject {
+                                    put("id", JsonPrimitive("grouplist:pubkey"))
+                                    put("label", JsonPrimitive("pubkey"))
+                                    put("fields", buildJsonObject { put("count()", JsonPrimitive(distinct)) })
+                                },
+                            ),
+                        ),
+                    )
+                },
+            ),
+        )
+
+    /** `all(group(kind) each(output(count())))`: the group:root wraps a grouplist of one leaf group per kind, each with its `value` and `count()`. */
+    private fun kindHistogramChildren(counts: Map<Int, Int>): JsonArray =
+        JsonArray(
+            listOf(
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:root:0"))
+                    put(
+                        "children",
+                        JsonArray(
+                            listOf(
+                                buildJsonObject {
+                                    put("id", JsonPrimitive("grouplist:kind"))
+                                    put("label", JsonPrimitive("kind"))
+                                    put(
+                                        "children",
+                                        JsonArray(
+                                            counts.map { (kind, count) ->
+                                                buildJsonObject {
+                                                    put("id", JsonPrimitive("group:kind:$kind"))
+                                                    put("value", JsonPrimitive(kind))
+                                                    put("fields", buildJsonObject { put("count()", JsonPrimitive(count)) })
+                                                }
+                                            },
+                                        ),
+                                    )
+                                },
+                            ),
+                        ),
+                    )
+                },
+            ),
+        )
 
     /**
      * The document-API visit, paged: the selection is PARSED back into an
@@ -398,6 +468,8 @@ object MockYql {
                     clause.startsWith("owner in (") -> q.copy(owners = strings(clause))
 
                     clause.startsWith("kind in (") -> q.copy(kinds = ints(clause))
+
+                    clause.startsWith("kind not in (") -> q.copy(notKinds = ints(clause))
 
                     clause.startsWith("created_at >= ") -> q.copy(since = clause.substringAfterLast(' ').toLong())
 

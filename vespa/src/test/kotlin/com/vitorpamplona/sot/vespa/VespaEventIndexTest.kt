@@ -127,7 +127,62 @@ class VespaEventIndexTest {
         check(EventQuery(expiresBefore = 3000))
         check(EventQuery(search = "vitor"))
         check(EventQuery(kinds = listOf(0, 1), tags = mapOf("p" to listOf(bob)), until = 9000))
+        check(EventQuery(notKinds = listOf(0, 30382)))
+        check(EventQuery(notKinds = listOf(0, 30382), authors = listOf(bob)))
     }
+
+    /** `notKinds` excludes the plumbing kinds; the count is the full content match set. */
+    @Test
+    fun `count honors notKinds exclusion`() =
+        runBlocking {
+            seed(
+                doc(kind = 0),
+                doc(kind = 30382),
+                doc(kind = 1),
+                doc(kind = 1),
+                doc(kind = 30023),
+            )
+            assertEquals(3, index.count(EventQuery(notKinds = listOf(0, 30382))))
+        }
+
+    /** Distinct-author grouping: the number of unique pubkeys among the matches, over the wire, agreeing with the spec. */
+    @Test
+    fun `countDistinctAuthors counts unique pubkeys`() =
+        runBlocking {
+            val alice = "a1".repeat(32)
+            val bob = "b2".repeat(32)
+            val carol = "c3".repeat(32)
+            seed(
+                doc(kind = 1, pubkey = alice),
+                doc(kind = 1, pubkey = alice),
+                doc(kind = 1, pubkey = bob),
+                doc(kind = 30023, pubkey = carol),
+                doc(kind = 0, pubkey = carol), // plumbing: excluded, so carol only counts via her 30023
+                doc(kind = 30382, pubkey = "d4".repeat(32)), // plumbing-only author: excluded
+            )
+            val content = EventQuery(notKinds = listOf(0, 30382))
+            assertEquals(3, index.countDistinctAuthors(content))
+            assertEquals(reference.countDistinctAuthors(content), index.countDistinctAuthors(content))
+        }
+
+    /** The per-kind histogram: one entry per kind with its doc count, over the wire, agreeing with the spec. */
+    @Test
+    fun `countByKind histograms the corpus by kind`() =
+        runBlocking {
+            seed(
+                doc(kind = 1),
+                doc(kind = 1),
+                doc(kind = 1),
+                doc(kind = 0),
+                doc(kind = 30023),
+                doc(kind = 30023),
+            )
+            val all = EventQuery()
+            assertEquals(mapOf(1 to 3, 0 to 1, 30023 to 2), index.countByKind(all))
+            assertEquals(reference.countByKind(all), index.countByKind(all))
+            // Honors the same filters as the other queries.
+            assertEquals(mapOf(1 to 3, 30023 to 2), index.countByKind(EventQuery(notKinds = listOf(0))))
+        }
 
     @Test
     fun `count returns the full match set past the hits page`() =
