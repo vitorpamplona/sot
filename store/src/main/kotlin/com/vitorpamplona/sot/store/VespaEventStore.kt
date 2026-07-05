@@ -325,6 +325,23 @@ class VespaEventStore(
      */
     suspend fun distinctAuthors(filter: Filter): Set<HexKey> = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.distinctAuthors(it) } ?: emptySet()
 
+    /**
+     * Every distinct `d` tag (addressable subject) across [filter]'s matches, via
+     * an UNCAPPED document visit — for reading back a set the capped `search`
+     * (maxHits) would truncate, e.g. the hundreds of thousands of subjects one WoT
+     * provider scores. The sync uses it to find every scored author to fetch
+     * content for, not just the first page.
+     */
+    suspend fun distinctDTags(filter: Filter): Set<String> {
+        val q = restoreSearches(listOf(filter)).single().toExpiryQuery() ?: return emptySet()
+        val out = HashSet<String>()
+        index.visitIds(q, withDTag = true) { page ->
+            page.forEach { it.dTag?.takeIf(String::isNotEmpty)?.let(out::add) }
+            true
+        }
+        return out
+    }
+
     override suspend fun count(filters: List<Filter>): Int {
         // Multi-filter counts need cross-filter id dedup (engine count can't),
         // but they don't need the events materialized — recall the docs and

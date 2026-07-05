@@ -39,14 +39,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
-/** Tuning knobs for one sync pass. Everything has a sensible default. */
+/**
+ * Tuning knobs for one sync pass.
+ *
+ * A sync is ALL-OR-NOTHING and UNBOUNDED. It always discovers (snowball-sweeps
+ * EVERY reachable relay for kind-10040 trust lists and harvests their FULL 10002
+ * sets), always syncs the scores those 10040s point to, and always pulls the
+ * RECORDS plane (every [IndexableKinds] kind) for EVERY scored author. There is
+ * deliberately no sample cap, relay budget, provider cap, or per-download max —
+ * we download everything for the people we track (see docs/inverted-relay-sync.md).
+ * The only limits are structural: idle timeouts (so a dead relay can't hang a
+ * unit) and concurrency (so we don't exhaust sockets or the store's write path).
+ */
 data class SyncOptions(
-    /** Per-download ingest cap for bounded experiments; 0 (the default) = full sync. */
+    /**
+     * Per-download ingest cap, for bounded EXPERIMENTS/tests only; 0 (the
+     * default, and the only production value) = no cap.
+     */
     val maxEvents: Int = 0,
     /** Idle timeout: give up on a relay only after this long with NOTHING received. */
     val fetchTimeoutMs: Long = 10_000,
-    /** Cap on how many rank providers a pass visits, 0 = all. */
-    val maxProviders: Int = 0,
     /** How many relays sync at the same time (store writes stay serialized). */
     val concurrency: Int = 64,
     /**
@@ -67,24 +79,6 @@ data class SyncOptions(
     val reconcileScores: Boolean = false,
     /** Verify id + signature before storing. Test-only seam — leave on. */
     val verifyEvents: Boolean = true,
-    /**
-     * Discovery crawl: cap on distinct (collapsed) relays swept for 10040 in a
-     * pass.
-     *
-     * A sync is ALL-OR-NOTHING: it always discovers (snowball-sweeps write relays
-     * for kind-10040 trust lists), always syncs the scores those 10040s point to,
-     * and always pulls the RECORDS plane (the searchable content — every
-     * [IndexableKinds] kind — for the scored authors, the full firehose). There is
-     * no toggle to run only part of it: a partial pass leaves the store partial and
-     * advances per-relay cursors such that a later fuller pass can't cleanly
-     * backfill (see docs/inverted-relay-sync.md). This knob and [maxDiscoveryHarvest]
-     * only TUNE the always-on crawl, which snowballs from the seeds through the pool
-     * (no rounds/barriers): every write relay a harvest turns up feeds the next
-     * sweep mid-flight, bounded only by this relay budget.
-     */
-    val maxDiscoveryRelays: Int = 2_000,
-    /** Discovery crawl: 10002s to sample per relay — enough to surface its relay URLs, not its whole set. */
-    val maxDiscoveryHarvest: Int = 5_000,
 )
 
 /**

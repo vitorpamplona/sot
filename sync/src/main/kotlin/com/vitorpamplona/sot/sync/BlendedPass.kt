@@ -30,6 +30,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.store.VespaEventStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -95,12 +96,10 @@ internal class BlendedPass(
     // The discovery crawl runs as ordinary pool units (no round barrier): each
     // relay to sweep is submitted like any other work, and every write relay a
     // harvest turns up snowballs back in mid-flight. [discoverySeen] dedups so a
-    // relay is swept once; [discoveryBudget] caps the crawl at
-    // [SyncOptions.maxDiscoveryRelays]. A single stuck harvest holds only its own
-    // pool slot — it can never wedge the whole sweep.
+    // relay is swept at most once — the ONLY bound on the crawl (there is no relay
+    // budget: we sweep every reachable relay). A single stuck harvest holds only
+    // its own pool slot, so it can never wedge the whole sweep.
     private val discoverySeen = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-    private val discoveryBudget = AtomicInteger(0)
-    private val discoveryBudgetLogged = AtomicBoolean(false)
 
     // The records plane, folded into the SAME pool (no scores->records barrier):
     // a scored author's content is fetched the moment their score lands. Each
@@ -120,7 +119,7 @@ internal class BlendedPass(
         // sweep as normal work, snowballing mid-flight; observers found register
         // immediately and sync alongside. A single stuck harvest holds only its
         // own pool slot, so it can never wedge the crawl or the pass.
-        if (seedRelays.isNotEmpty()) log("[discovery] crawling from ${seedRelays.size} seed relay(s), budget ${opts.maxDiscoveryRelays}")
+        if (seedRelays.isNotEmpty()) log("[discovery] crawling from ${seedRelays.size} seed relay(s) - sweeping every reachable relay")
         enqueueDiscovery(seedRelays)
         // No initial units doesn't mean no work. An observer with no
         // discoverable 10002 lands in the no-list fallback, and stored 10040s
@@ -221,34 +220,27 @@ internal class BlendedPass(
      * trust list lives on its author's OWN outbox, not the profile directories,
      * so we cast the widest net: every write relay a harvested 10002 names becomes
      * a new sweep target. URLs are COLLAPSED to real servers ([RelayUrls]), dead
-     * ones skipped, and each swept at most once ([discoverySeen]) up to
-     * [SyncOptions.maxDiscoveryRelays] ([discoveryBudget]). Thread-safe: a
-     * harvest's onVerified snowballs new relays through here from a pool worker.
+     * ones skipped, and each swept at most once ([discoverySeen]). There is NO
+     * relay budget — we sweep every reachable relay. Thread-safe: a harvest's
+     * onVerified snowballs new relays through here from a pool worker.
      */
     private fun enqueueDiscovery(relays: Collection<NormalizedRelayUrl>) {
         for (relay in RelayUrls.collapse(relays)) {
             // Skip URLs we structurally can't reach (LAN/CGNAT/loopback/.onion) so
             // a private local relay in someone's 10002 doesn't cost a connect timeout.
             if (!RelayUrls.isPubliclyRoutable(relay) || deadRelays.isDead(relay) || !discoverySeen.add(relay)) continue
-            if (discoveryBudget.incrementAndGet() > opts.maxDiscoveryRelays) {
-                discoveryBudget.decrementAndGet()
-                if (discoveryBudgetLogged.compareAndSet(false, true)) {
-                    log("[discovery] relay budget (${opts.maxDiscoveryRelays}) reached - not sweeping further relays this pass")
-                }
-                return
-            }
             submit { harvestUnit(relay) }
         }
     }
 
     /**
-     * One discovery sweep, as a pool unit. Harvest the relay's 10002s (a SAMPLE —
-     * enough to surface its relay URLs, via [SyncOptions.maxDiscoveryHarvest]) and
-     * sweep its 10040s (all of them; the kind is rare). The write relays the
-     * 10002s name snowball into the crawl the moment they arrive (onVerified — no
-     * round barrier), and each new 10040 author registers as an observer
-     * mid-flight. A relay that never becomes reachable is marked dead so the rest
-     * of the crawl skips it.
+     * One discovery sweep, as a pool unit. Pull the relay's FULL kind-10002 set
+     * (10002 is the bootstrap kind — everyone's relay list can be anywhere, so we
+     * take all of it from every relay; no sample cap) and sweep its 10040s. The
+     * write relays the 10002s name snowball into the crawl the moment they arrive
+     * (onVerified — no round barrier), and each new 10040 author registers as an
+     * observer mid-flight. A relay that never becomes reachable is marked dead so
+     * the rest of the crawl skips it.
      */
     private suspend fun harvestUnit(relay: NormalizedRelayUrl) {
         val reached =
@@ -257,7 +249,7 @@ internal class BlendedPass(
                     syncer.sync(
                         relay,
                         Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)),
-                        maxEvents = opts.maxDiscoveryHarvest,
+                        maxEvents = opts.maxEvents,
                         onVerified = { events ->
                             enqueueDiscovery(events.filterIsInstance<AdvertisedRelayListEvent>().flatMap { it.writeRelaysNorm().orEmpty() })
                         },
@@ -340,7 +332,6 @@ internal class BlendedPass(
         // stale-deletion diff can tell single-relay (authoritative) services
         // from multi-relay ones.
         serviceRelays.getOrPut(service) { ConcurrentHashMap.newKeySet() }.add(relayHint)
-        if (opts.maxProviders > 0 && seenServices.size >= opts.maxProviders) return
         if (!seenServices.add(service)) return
         bufferedBatch(providerBuf, relayHint, service)?.let { batch -> submit { scoreUnit(relayHint, batch) } }
     }
@@ -399,17 +390,26 @@ internal class BlendedPass(
         registerContentAuthors(scoredSubjects(services))
     }
 
-    /** The distinct subjects (scored authors) these [services] rank, read back from the stored 30382s. */
-    private suspend fun scoredSubjects(services: List<HexKey>): List<HexKey> =
-        store
-            .query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND), authors = services))
-            .filter { it.rank() != null }
-            .mapNotNull { card ->
-                card.tags
-                    .firstOrNull { it.size > 1 && it[0] == "d" }
-                    ?.get(1)
-                    ?.takeIf(String::isNotEmpty)
-            }.distinct()
+    /**
+     * The distinct subjects (scored authors) these [services] rank, read back from
+     * the stored 30382s — the `d` tag IS the subject pubkey. Read via an UNCAPPED
+     * document visit: a single provider scores hundreds of thousands of subjects,
+     * and a capped search would truncate the set so we'd sync content for only a
+     * slice of the people we track. (A non-Vespa store falls back to the query.)
+     */
+    private suspend fun scoredSubjects(services: List<HexKey>): List<HexKey> {
+        val filter = Filter(kinds = listOf(ContactCardEvent.KIND), authors = services)
+        return (store as? VespaEventStore)?.distinctDTags(filter)?.toList()
+            ?: store
+                .query<ContactCardEvent>(filter)
+                .filter { it.rank() != null }
+                .mapNotNull { card ->
+                    card.tags
+                        .firstOrNull { it.size > 1 && it[0] == "d" }
+                        ?.get(1)
+                        ?.takeIf(String::isNotEmpty)
+                }.distinct()
+    }
 
     /** New scored authors join the records side of the pipeline: resolve their outbox, then fetch their content. */
     private suspend fun registerContentAuthors(authors: List<HexKey>) {
