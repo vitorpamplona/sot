@@ -218,6 +218,41 @@ class VespaEventIndex(
         return countIn(root) ?: 0
     }
 
+    override suspend fun countByKind(query: EventQuery): Map<Int, Int> {
+        // `all(group(kind) each(output(count())))` yields one leaf group per kind,
+        // each carrying its `value` (the kind) and a `count()`. See [EventYql.buildKindHistogram].
+        val root = queryRoot(EventYql.buildKindHistogram(query) ?: return emptyMap(), hits = 0) ?: return emptyMap()
+        val out = LinkedHashMap<Int, Int>()
+        kindCountsInto(root, out)
+        return out
+    }
+
+    /** Collect every leaf group's (value -> count()) pair anywhere under this node. */
+    private fun kindCountsInto(
+        node: JsonElement,
+        out: MutableMap<Int, Int>,
+    ) {
+        when (node) {
+            is JsonObject -> {
+                val value = node["value"]?.jsonPrimitive?.intOrNull
+                val count =
+                    node["fields"]
+                        ?.jsonObject
+                        ?.get("count()")
+                        ?.jsonPrimitive
+                        ?.intOrNull
+                if (value != null && count != null) out[value] = count
+                node["children"]?.let { kindCountsInto(it, out) }
+            }
+
+            is JsonArray -> {
+                node.forEach { kindCountsInto(it, out) }
+            }
+
+            else -> {}
+        }
+    }
+
     /** The first `count()` grouping output anywhere under this node — flat for [count], nested under the group list for [countDistinctAuthors]. */
     private fun countIn(node: JsonElement): Int? =
         when (node) {

@@ -129,6 +129,27 @@ object EventYql {
         )
     }
 
+    /** A group cap high enough to hold every distinct kind — there are dozens, not thousands. */
+    const val KIND_GROUP_MAX = 1000
+
+    /**
+     * A per-KIND histogram: the same filters, grouped by kind with a `count()`
+     * on each group. No `order by` (same match-phase reasoning as [buildCount]).
+     * Used by `sot status` to show the corpus shape (top kinds by volume). Null
+     * when the filter provably matches nothing.
+     */
+    fun buildKindHistogram(q: EventQuery): VespaQuery? {
+        if (q.limit != null && q.limit <= 0) return null
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
+        return VespaQuery(
+            yql = "select * from event where $where limit 0 | all(group(kind) max($KIND_GROUP_MAX) each(output(count())))",
+            params = params,
+            ranking = RANK_UNRANKED,
+        )
+    }
+
     /** The shared WHERE clauses (filters + optional search term); null when the filter provably matches nothing. */
     private fun filterClauses(
         q: EventQuery,

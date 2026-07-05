@@ -87,6 +87,14 @@ interface EventIndex : AutoCloseable {
      * real client overrides it with a grouping count over the full match set.
      */
     suspend fun countDistinctAuthors(query: EventQuery): Int = search(query).map { it.pubkey }.distinct().size
+
+    /**
+     * How many docs match [query] per kind (kind -> count) — the corpus shape
+     * `sot status` prints as "top kinds". The default rides [search] (exact only
+     * where uncapped, the in-memory reference); the real client overrides it
+     * with a grouping over the full match set.
+     */
+    suspend fun countByKind(query: EventQuery): Map<Int, Int> = search(query).groupingBy { it.kind }.eachCount()
 }
 
 /** The (id, created_at[, d tag]) projection [EventIndex.visitIds] streams — all a sync diff or projection walk needs. */

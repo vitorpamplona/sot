@@ -165,6 +165,25 @@ class VespaEventIndexTest {
             assertEquals(reference.countDistinctAuthors(content), index.countDistinctAuthors(content))
         }
 
+    /** The per-kind histogram: one entry per kind with its doc count, over the wire, agreeing with the spec. */
+    @Test
+    fun `countByKind histograms the corpus by kind`() =
+        runBlocking {
+            seed(
+                doc(kind = 1),
+                doc(kind = 1),
+                doc(kind = 1),
+                doc(kind = 0),
+                doc(kind = 30023),
+                doc(kind = 30023),
+            )
+            val all = EventQuery()
+            assertEquals(mapOf(1 to 3, 0 to 1, 30023 to 2), index.countByKind(all))
+            assertEquals(reference.countByKind(all), index.countByKind(all))
+            // Honors the same filters as the other queries.
+            assertEquals(mapOf(1 to 3, 30023 to 2), index.countByKind(EventQuery(notKinds = listOf(0))))
+        }
+
     @Test
     fun `count returns the full match set past the hits page`() =
         runBlocking {

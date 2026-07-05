@@ -181,15 +181,20 @@ class MockVespaEngine {
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
         // The distinct-author query (EventYql.buildDistinctCount): "… | all(group(pubkey) output(count()))".
         // Both grouping counts scan the FULL match set, so ignore the hit-limiting `limit 0`.
+        // The kind histogram (EventYql.buildKindHistogram): "… | all(group(kind) max(N) each(output(count())))".
         val isCount = yql.contains("all(output(count()))")
         val isDistinct = yql.contains("group(pubkey)")
-        val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (isCount || isDistinct) it.copy(limit = null) else it }
+        val isKindHistogram = yql.contains("group(kind)")
+        val grouped = isCount || isDistinct || isKindHistogram
+        val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
         val matches = runBlocking { inner.search(query) }
         val children =
             when {
                 // Nest count() under the group list, exactly where real Vespa's
                 // grouping puts it — the client's recursive scan must find it there.
                 isDistinct -> groupCountChildren(matches.map { it.pubkey }.distinct().size)
+
+                isKindHistogram -> kindHistogramChildren(matches.groupingBy { it.kind }.eachCount())
 
                 isCount -> countChildren(matches.size)
 
@@ -233,6 +238,39 @@ class MockVespaEngine {
                                     put("id", JsonPrimitive("grouplist:pubkey"))
                                     put("label", JsonPrimitive("pubkey"))
                                     put("fields", buildJsonObject { put("count()", JsonPrimitive(distinct)) })
+                                },
+                            ),
+                        ),
+                    )
+                },
+            ),
+        )
+
+    /** `all(group(kind) each(output(count())))`: the group:root wraps a grouplist of one leaf group per kind, each with its `value` and `count()`. */
+    private fun kindHistogramChildren(counts: Map<Int, Int>): JsonArray =
+        JsonArray(
+            listOf(
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:root:0"))
+                    put(
+                        "children",
+                        JsonArray(
+                            listOf(
+                                buildJsonObject {
+                                    put("id", JsonPrimitive("grouplist:kind"))
+                                    put("label", JsonPrimitive("kind"))
+                                    put(
+                                        "children",
+                                        JsonArray(
+                                            counts.map { (kind, count) ->
+                                                buildJsonObject {
+                                                    put("id", JsonPrimitive("group:kind:$kind"))
+                                                    put("value", JsonPrimitive(kind))
+                                                    put("fields", buildJsonObject { put("count()", JsonPrimitive(count)) })
+                                                }
+                                            },
+                                        ),
+                                    )
                                 },
                             ),
                         ),
