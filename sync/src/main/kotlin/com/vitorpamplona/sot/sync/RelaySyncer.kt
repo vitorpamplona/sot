@@ -94,6 +94,11 @@ class RelaySyncer(
         val inserted: Int,
         val usedNegentropy: Boolean,
         val downloaded: Int,
+        // Did the download terminate cleanly (EOSE / cap) rather than time out?
+        // A relay that never becomes reachable finishes `completed = false` with
+        // nothing downloaded — the signal the dead-relay cache keys on. Defaults
+        // true so a relay is presumed reachable unless a sync proves otherwise.
+        val completed: Boolean = true,
     )
 
     /**
@@ -145,13 +150,14 @@ class RelaySyncer(
             } else {
                 log("  ! ${relay.displayUrl()} pages sync timed out - cursor not advanced, next pass retries")
             }
-            return Outcome(pages.inserted, usedNegentropy = false, downloaded = pages.received)
+            return Outcome(pages.inserted, usedNegentropy = false, downloaded = pages.received, completed = pages.completed)
         }
 
         val neg = negentropyStream(relay, scoped, maxEvents, onVerified = onVerified)
         var inserted = neg.streamed.inserted
         var received = neg.streamed.received
         var usedNeg = neg.usedNegentropy
+        var completed = neg.streamed.completed
 
         if (looksIncomplete(neg, maxEvents, firstSync)) {
             val pages = pagesStream(relay, scoped, maxEvents, onVerified = onVerified)
@@ -162,6 +168,7 @@ class RelaySyncer(
             }
             inserted += pages.inserted
             received += pages.received
+            completed = pages.completed
         } else if (usedNeg && neg.downloaded > 0 && state.relay(relay).negentropyCapable == null) {
             state.relay(relay).negentropyCapable = true
         } else if (neg.result?.pagedFallback == true && state.relay(relay).negentropyCapable == null) {
@@ -174,7 +181,7 @@ class RelaySyncer(
         }
 
         state.markSynced(relay, scope, nowSecs())
-        return Outcome(inserted, usedNeg, received)
+        return Outcome(inserted, usedNeg, received, completed)
     }
 
     /**
