@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.vespa.IngestStats
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
+import com.vitorpamplona.sot.vespa.SkipDerivedRecompute
 import com.vitorpamplona.sot.vespa.client.DocRef
 import com.vitorpamplona.sot.vespa.client.EventIndex
 import com.vitorpamplona.sot.vespa.doc.EventDoc
@@ -33,6 +34,7 @@ import com.vitorpamplona.sot.vespa.doc.ProfileDoc
 import com.vitorpamplona.sot.vespa.doc.ProfileIndex
 import com.vitorpamplona.sot.vespa.mapBounded
 import com.vitorpamplona.sot.vespa.query.EventQuery
+import kotlin.coroutines.coroutineContext
 
 /**
  * Maintains the `profile` parent documents — the per-pubkey trust tensors the
@@ -85,8 +87,16 @@ class TrustProjection(
         profiles.close()
     }
 
+    /**
+     * True when the store has marked the current mutation trust-neutral (a
+     * kind-30382 supersession with unchanged rank/follower tags): store the
+     * event, but skip the re-derive — the tensors it feeds can't have moved.
+     */
+    private suspend fun skipRecompute() = coroutineContext[SkipDerivedRecompute] != null
+
     override suspend fun put(doc: EventDoc) {
         inner.put(doc)
+        if (skipRecompute()) return
         react(doc)
     }
 
@@ -107,6 +117,10 @@ class TrustProjection(
      * did.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
+        if (skipRecompute()) {
+            IngestStats.timed("write") { inner.putAll(docs) }
+            return
+        }
         IngestStats.timed("write") { inner.putAll(docs) }
         // Provider lists first (ONE walk over the union): they change the service->observer map the scores are attributed through.
         recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
@@ -179,6 +193,10 @@ class TrustProjection(
     }
 
     override suspend fun remove(id: String) {
+        if (skipRecompute()) {
+            inner.remove(id)
+            return
+        }
         // The doomed doc says what the removal invalidates — read before deleting.
         val doc = inner.get(id)
         inner.remove(id)
@@ -191,6 +209,10 @@ class TrustProjection(
      * 30382's subject is re-derived in a single batch, not one recompute per doc.
      */
     override suspend fun removeAll(ids: List<String>) {
+        if (skipRecompute()) {
+            inner.removeAll(ids)
+            return
+        }
         val docs = ids.mapBounded(QUERY_FANOUT) { inner.get(it) }.filterNotNull()
         inner.removeAll(ids)
         recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })

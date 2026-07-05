@@ -22,18 +22,24 @@ package com.vitorpamplona.sot.vespa
 import com.vitorpamplona.sot.vespa.doc.ProfileDoc
 import com.vitorpamplona.sot.vespa.doc.ProfileIndex
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /** The in-memory reference [ProfileIndex] — what projection tests assert against. */
 class InMemoryProfileIndex : ProfileIndex {
     val docs = ConcurrentHashMap<String, ProfileDoc>()
 
+    /** Count of mutating writes (put/remove) — lets tests prove a recompute was (not) issued. */
+    val writes = AtomicInteger(0)
+
     override suspend fun get(pubkey: String): ProfileDoc? = docs[pubkey]
 
     override suspend fun put(profile: ProfileDoc) {
+        writes.incrementAndGet()
         docs[profile.pubkey] = profile
     }
 
     override suspend fun remove(pubkey: String) {
+        writes.incrementAndGet()
         docs.remove(pubkey)
     }
 

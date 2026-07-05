@@ -32,10 +32,12 @@ import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.sot.vespa.IngestStats
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
+import com.vitorpamplona.sot.vespa.SkipDerivedRecompute
 import com.vitorpamplona.sot.vespa.client.EventIndex
 import com.vitorpamplona.sot.vespa.doc.EventDoc
 import com.vitorpamplona.sot.vespa.mapBounded
 import com.vitorpamplona.sot.vespa.query.EventQuery
+import kotlinx.coroutines.withContext
 
 /** A SEMANTIC insert rejection (duplicate, replaced, or blocked). Transient engine failures are NOT this; they propagate. */
 class RejectedException(
@@ -257,6 +259,11 @@ internal class BulkInsert(
                 }
             }
         val removeFromStore = ArrayList<String>()
+        // Ids of the trust-neutral supersessions (a 30382 replacing 30382s with
+        // identical rank+followers): stored like any other, but the projection's
+        // re-derive is skipped — the ranking tensor they feed can't have moved.
+        val neutralRemoveIds = HashSet<String>()
+        val neutralPutIds = HashSet<String>()
         for ((key, idxs) in groups) {
             val versions = existing[key].orEmpty()
             // The run competes against the store's best. Every stored version
@@ -265,6 +272,7 @@ internal class BulkInsert(
             var bestAt = versions.maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE
             var bestId = versions.filter { it.createdAt == bestAt }.minOfOrNull { it.id }
             var bestInRun: Int? = null
+            val removedHere = ArrayList<String>()
             for (i in idxs) {
                 val e = events[i]
                 val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId!! < e.id))
@@ -274,7 +282,7 @@ internal class BulkInsert(
                     // The previous best is superseded. An in-run best stays
                     // Accepted but never lands; a stored best is removed.
                     bestInRun?.let { toPut.remove(events[it].id) }
-                    bestDocId?.let { removeFromStore += it }
+                    bestDocId?.let { removedHere += it }
                     bestDocId = null
                     bestInRun = i
                     bestAt = e.createdAt
@@ -283,17 +291,40 @@ internal class BulkInsert(
                 }
             }
             // Older stored versions beyond the single best also fall (drift repair).
-            versions.forEach { doc -> if (doc.id != bestDocId && doc.id !in removeFromStore) removeFromStore += doc.id }
-        }
-        // Skip the round trip when nothing supersedes — the common case for a
-        // fresh corpus (first-seen addresses remove nothing).
-        val toRemove = removeFromStore.distinct()
-        if (toRemove.isNotEmpty()) index.removeAll(toRemove)
+            versions.forEach { doc -> if (doc.id != bestDocId && doc.id !in removedHere) removedHere += doc.id }
+            removeFromStore += removedHere
 
-        // Stage E — one pipelined write for everything that survived. (Timing
-        // is booked by the layers below: the projection decorator splits it
-        // into write / proj.fetch / proj.write.)
-        if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
+            // A landed winner whose every swept version carries the same trust
+            // tags moves no tensor cell — mark it so the writes below skip the
+            // re-derive without changing the final state.
+            val winner = bestInRun?.let { events[it] }
+            if (winner != null && removedHere.isNotEmpty() &&
+                isTrustNeutralSupersession(winner, versions.filter { it.id in removedHere })
+            ) {
+                neutralPutIds += winner.id
+                neutralRemoveIds += removedHere
+            }
+        }
+        val toRemove = removeFromStore.distinct()
+        val putDocs = toPut.values.map { it.toDoc() }
+
+        // Stage E — trust-neutral supersessions first: their event docs are
+        // written (so any reactive re-derive below observes them), but the
+        // recompute is skipped. Reactive mutations keep the remove-then-put
+        // ordering. Each empty set skips its round trip — the common case for a
+        // fresh corpus is all-reactive, first-seen, and removes nothing.
+        val neutralRemove = toRemove.filter { it in neutralRemoveIds }
+        val neutralPut = putDocs.filter { it.id in neutralPutIds }
+        if (neutralRemove.isNotEmpty() || neutralPut.isNotEmpty()) {
+            withContext(SkipDerivedRecompute()) {
+                if (neutralRemove.isNotEmpty()) index.removeAll(neutralRemove)
+                if (neutralPut.isNotEmpty()) index.putAll(neutralPut)
+            }
+        }
+        val reactiveRemove = toRemove.filter { it !in neutralRemoveIds }
+        val reactivePut = putDocs.filter { it.id !in neutralPutIds }
+        if (reactiveRemove.isNotEmpty()) index.removeAll(reactiveRemove)
+        if (reactivePut.isNotEmpty()) index.putAll(reactivePut)
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
         return outcome.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
     }

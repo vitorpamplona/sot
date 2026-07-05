@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.vespa.doc.EventDoc
 
 /*
@@ -67,3 +68,29 @@ internal fun Event.addressOrNull(): String? =
         kind.isAddressable() -> Address.assemble(kind, pubKey, tags.dTag())
         else -> null
     }
+
+/**
+ * The only inputs the trust projection reads off a kind-30382: its rank and
+ * follower-count tags. Two versions with the same pair derive the SAME ranking
+ * tensor cell, so replacing one with the other is a no-op for ranking.
+ */
+private fun ContactCardEvent.trustCell() = rank() to followerCount()
+
+/**
+ * True when storing [incoming] over the versions it [superseded] cannot move any
+ * ranking tensor: it is a kind-30382 replacing kind-30382s that ALL carry the
+ * same rank + follower tags. A first-seen address (nothing superseded) is never
+ * neutral — its cell must still be created. Lets the store write the event but
+ * skip the projection's re-derive via [com.vitorpamplona.sot.vespa.SkipDerivedRecompute].
+ */
+internal fun isTrustNeutralSupersession(
+    incoming: Event,
+    superseded: List<EventDoc>,
+): Boolean {
+    if (incoming !is ContactCardEvent || superseded.isEmpty()) return false
+    val cell = incoming.trustCell()
+    return superseded.all { doc ->
+        val old = Event.fromJsonOrNull(doc.toEventJson()) as? ContactCardEvent
+        old != null && old.trustCell() == cell
+    }
+}

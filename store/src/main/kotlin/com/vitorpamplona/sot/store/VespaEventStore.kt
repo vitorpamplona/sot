@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
 import com.vitorpamplona.sot.vespa.QUERY_FANOUT
+import com.vitorpamplona.sot.vespa.SkipDerivedRecompute
 import com.vitorpamplona.sot.vespa.client.EventIndex
 import com.vitorpamplona.sot.vespa.doc.EventDoc
 import com.vitorpamplona.sot.vespa.doc.SearchFields
@@ -43,6 +44,7 @@ import com.vitorpamplona.sot.vespa.mapBounded
 import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -269,11 +271,20 @@ class VespaEventStore(
         rejectIfDeleted(event)
         rejectIfVanished(event)
         when (event) {
-            is DeletionEvent -> applyDeletion(event)
-            is RequestToVanishEvent -> applyVanish(event)
-            else -> supersede(event)
+            is DeletionEvent -> {
+                applyDeletion(event)
+                index.put(event.toDoc())
+            }
+
+            is RequestToVanishEvent -> {
+                applyVanish(event)
+                index.put(event.toDoc())
+            }
+
+            else -> {
+                supersedeAndStore(event)
+            }
         }
-        index.put(event.toDoc())
     }
 
     // ---- queries ------------------------------------------------------------
@@ -436,18 +447,34 @@ class VespaEventStore(
     }
 
     /**
-     * Replaceable/addressable version resolution in ONE query. Fetch the stored
-     * versions once. If any of them wins the (created_at, lowest id wins ties)
-     * comparison, reject this insert. Otherwise delete the strictly-older ones it
-     * supersedes.
+     * Replaceable/addressable version resolution in ONE query, then store this
+     * event. Fetch the stored versions once. If any of them wins the (created_at,
+     * lowest id wins ties) comparison, reject this insert. Otherwise delete the
+     * strictly-older ones it supersedes and store it.
+     *
+     * When a kind-30382's replaced version carries the SAME trust tags, the
+     * ranking tensor it feeds can't move: the delete+store still run (negentropy
+     * and supersession both need the event on disk), but under
+     * [SkipDerivedRecompute] so the projection skips re-deriving — and the engine
+     * is never asked to rewrite a tensor cell to the value it already holds. The
+     * comparison reuses the versions [currentVersions] already read, so it costs
+     * no extra query.
      */
-    private suspend fun supersede(event: Event) {
+    private suspend fun supersedeAndStore(event: Event) {
         val versions = currentVersions(event)
         if (versions.any { it.createdAt > event.createdAt || (it.createdAt == event.createdAt && it.id < event.id) }) {
             throw RejectedException(Rejections.REPLACED)
         }
-        versions.forEach {
-            if (it.createdAt < event.createdAt || (it.createdAt == event.createdAt && it.id > event.id)) index.remove(it.id)
+        val superseded = versions.filter { it.createdAt < event.createdAt || (it.createdAt == event.createdAt && it.id > event.id) }
+
+        suspend fun store() {
+            superseded.forEach { index.remove(it.id) }
+            index.put(event.toDoc())
+        }
+        if (isTrustNeutralSupersession(event, superseded)) {
+            withContext(SkipDerivedRecompute()) { store() }
+        } else {
+            store()
         }
     }
 

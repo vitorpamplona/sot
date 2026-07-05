@@ -34,6 +34,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The projection is driven through the REAL store, so every path that
@@ -153,6 +154,99 @@ class TrustProjectionTest {
             // re-attributes — service's score detaches, service2's attaches.
             store.insert(list10040(serviceKey = service2, at = 200))
             assertEquals(mapOf(observer to 42), profiles.get(subject)?.qualityScores)
+        }
+
+    @Test
+    fun `an unchanged 30382 supersession skips the recompute but keeps the cell`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 87, followers = 120, at = 100))
+            val before = profiles.writes.get()
+            // A newer version with IDENTICAL trust tags — ranking can't move.
+            store.insert(card(rank = 87, followers = 120, at = 200))
+            assertEquals(before, profiles.writes.get(), "no profile write for an unchanged supersession")
+            assertEquals(
+                ProfileDoc(subject, mapOf(observer to 87), mapOf(observer to 120.0)),
+                profiles.get(subject),
+                "the cell still holds the unchanged score",
+            )
+        }
+
+    @Test
+    fun `a changed 30382 supersession still recomputes`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 87, followers = 120, at = 100))
+            val before = profiles.writes.get()
+            store.insert(card(rank = 50, followers = 120, at = 200))
+            assertTrue(profiles.writes.get() > before, "a changed score must re-derive")
+            assertEquals(mapOf(observer to 50), profiles.get(subject)?.qualityScores)
+        }
+
+    @Test
+    fun `an unchanged 30382 supersession through the bulk path skips the recompute`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 87, followers = 120, at = 100))
+            val before = profiles.writes.get()
+            store.batchInsert(listOf(card(rank = 87, followers = 120, at = 200)))
+            assertEquals(before, profiles.writes.get(), "bulk unchanged supersession issues no profile write")
+            assertEquals(
+                ProfileDoc(subject, mapOf(observer to 87), mapOf(observer to 120.0)),
+                profiles.get(subject),
+            )
+        }
+
+    /**
+     * The write split must not cross wires: a batch where one subject is a
+     * trust-neutral supersession (skipped) and another genuinely changed
+     * (re-derived) lands both final cells correctly.
+     */
+    @Test
+    fun `a bulk batch mixing neutral and changed supersessions stays correct`() =
+        runBlocking {
+            val subjectB = "cd".repeat(32)
+            // Distinct observers so both services map (one 10040 per author).
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(signer = service, about = subject, rank = 87, followers = 120, at = 100))
+            store.insert(card(signer = service2, about = subjectB, rank = 40, followers = 9, at = 100))
+            store.batchInsert(
+                listOf(
+                    card(signer = service, about = subject, rank = 87, followers = 120, at = 200), // neutral
+                    card(signer = service2, about = subjectB, rank = 55, followers = 9, at = 200), // changed
+                ),
+            )
+            assertEquals(mapOf(observer to 87), profiles.get(subject)?.qualityScores, "neutral subject unchanged")
+            assertEquals(mapOf(observer2 to 55), profiles.get(subjectB)?.qualityScores, "changed subject re-derived")
+        }
+
+    /**
+     * The ordering net: ONE subject scored by a neutral service and a changed
+     * service in the same batch. The neutral card's event doc must be written
+     * BEFORE the changed service's re-derive runs, or the re-derive would drop
+     * the neutral cell (its old card gone, new card not yet stored).
+     */
+    @Test
+    fun `a neutral and a changed service on the same subject both survive a bulk batch`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(signer = service, about = subject, rank = 87, followers = 120, at = 100))
+            store.insert(card(signer = service2, about = subject, rank = 40, followers = 9, at = 100))
+            assertEquals(mapOf(observer to 87, observer2 to 40), profiles.get(subject)?.qualityScores)
+
+            store.batchInsert(
+                listOf(
+                    card(signer = service, about = subject, rank = 87, followers = 120, at = 200), // neutral
+                    card(signer = service2, about = subject, rank = 55, followers = 9, at = 200), // changed
+                ),
+            )
+            assertEquals(
+                mapOf(observer to 87, observer2 to 55),
+                profiles.get(subject)?.qualityScores,
+                "the neutral cell survives the changed service's re-derive",
+            )
         }
 
     @Test
