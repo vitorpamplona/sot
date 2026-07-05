@@ -89,7 +89,7 @@ class RecordsPassTest {
         net: InProcessNet,
         store: VespaEventStore,
     ): TrustSync {
-        val opts = SyncOptions(concurrency = 4, fetchTimeoutMs = 15_000, syncRecords = true)
+        val opts = SyncOptions(concurrency = 4, fetchTimeoutMs = 15_000)
         val syncer = RelaySyncer(net.client, store, SyncState(), log = { }, idleTimeoutMs = opts.fetchTimeoutMs)
         return TrustSync(syncer, store, opts, log = { })
     }

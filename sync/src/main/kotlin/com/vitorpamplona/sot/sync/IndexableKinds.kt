@@ -86,7 +86,7 @@ import com.vitorpamplona.quartz.nipF4Podcasts.metadata.PodcastMetadataEvent
 
 /**
  * The kinds the store can index for NIP-50 search, and therefore the kinds the
- * records plane ([RecordsPass]) pulls for scored authors.
+ * records plane ([BlendedPass]'s content units) pulls for scored authors.
  *
  * This is the SAME set the store's `SearchExtractors` decomposes — one entry per
  * explicit extractor branch — so what we sync equals what we can index. The list

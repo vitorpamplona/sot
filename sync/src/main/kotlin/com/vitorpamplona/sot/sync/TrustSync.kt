@@ -49,6 +49,14 @@ data class SyncOptions(
     /** How many relays sync at the same time (store writes stay serialized). */
     val concurrency: Int = 64,
     /**
+     * Pool width for the relay-centric scheduler ([BlendedPass]). Relays are
+     * I/O-stalled, so this oversubscribes past [concurrency] (the store-bound
+     * number) to keep the feed full. The ceiling is Vespa's document API, which
+     * REJECTS past 256 enqueued requests (a real run 429'd at 256): every pool
+     * worker can have a visit/search in flight, so keep it comfortably under.
+     */
+    val relayConcurrency: Int = 128,
+    /**
      * Force the authoritative silent-deletion pass on pages-only provider
      * relays too (full enumeration plus diff). Negentropy-capable relays detect
      * silent deletions automatically on every full sync, so this is only for
@@ -59,21 +67,21 @@ data class SyncOptions(
     /** Verify id + signature before storing. Test-only seam — leave on. */
     val verifyEvents: Boolean = true,
     /**
-     * Sync the RECORDS plane too (the searchable content — every [IndexableKinds]
-     * kind — for the scored authors), not just the trust scores. Off by default:
-     * it is the full firehose (kind 1 dominates the corpus), so a deploy opts in
-     * once the scale path is proven. See [RecordsPass].
+     * Discovery crawl bounds. A sync is ALL-OR-NOTHING: it always discovers
+     * (snowball-sweeps write relays for kind-10040 trust lists), always syncs
+     * the scores those 10040s point to, and always pulls the RECORDS plane (the
+     * searchable content — every [IndexableKinds] kind — for the scored authors,
+     * the full firehose). There is no toggle to run only part of it: a partial
+     * pass leaves the store partial and advances per-relay cursors such that a
+     * later fuller pass can't cleanly backfill (see docs/inverted-relay-sync.md).
+     * These knobs only TUNE the always-on discovery crawl; each round's newly
+     * found relays feed the next.
      */
-    val syncRecords: Boolean = false,
-    /**
-     * Records plane: how many scored authors per score band. Authors sync in
-     * descending-score bands; within a band they batch by shared outbox relay.
-     * Wide enough that a band spans many relays (parallelism), narrow enough that
-     * trust order still governs what lands first.
-     */
-    val recordBandSize: Int = 2_000,
-    /** Records plane: cap on score bands per pass (the trust-ordered budget); 0 = all. */
-    val maxRecordBands: Int = 0,
+    val maxDiscoveryRounds: Int = 3,
+    /** Discovery crawl: cap on distinct (collapsed) relays swept for 10040 in a pass. */
+    val maxDiscoveryRelays: Int = 2_000,
+    /** Discovery crawl: 10002s to sample per relay — enough to surface its relay URLs, not its whole set. */
+    val maxDiscoveryHarvest: Int = 5_000,
 )
 
 /**
@@ -127,18 +135,13 @@ class TrustSync(
         house: HouseAccount? = null,
         seedRelays: List<NormalizedRelayUrl> = emptyList(),
     ) {
-        log("=== scores: blended chain (${seedRelays.size} seed / ${indexRelays.size} index relay(s)) ===")
+        log("=== scores + records: relay-centric pool (${seedRelays.size} seed / ${indexRelays.size} index relay(s)) ===")
         progress.startPhase("chain", 0)
+        // One relay-centric pool drives BOTH planes: a scored author's content is
+        // fetched the moment their score lands, so records never waits for the
+        // whole scores plane to finish (see docs/inverted-relay-sync.md).
         BlendedPass(syncer, store, opts, progress, log, indexRelays, house).run(observers + setOfNotNull(house?.pubkey), seedRelays)
         sweepOrphanScores()
-
-        // The records plane rides on the scores just synced: the trusted authors
-        // are read back from the stored 30382s, so it always runs LAST.
-        if (opts.syncRecords) {
-            log("=== records: indexable content for scored authors ===")
-            progress.startPhase("records", 0)
-            RecordsPass(syncer, store, opts, progress, log, indexRelays).run()
-        }
     }
 
     /**

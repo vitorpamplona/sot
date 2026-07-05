@@ -47,8 +47,6 @@ object Config {
             Triple("RELAY_URL", "ws://localhost:7777", "public ws url the relay advertises (NIP-42 + the identity's 10002)"),
             Triple("SYNC_INTERVAL", "15", "minutes between background sync passes in `sot serve`; 0 = serve-only"),
             Triple("SYNC_STATE", "sync-state.json", "where per-relay sync cursors persist (losing it costs a re-download, never correctness)"),
-            Triple("SYNC_RECORDS", "false", "also sync searchable CONTENT (every indexable kind) for scored authors, not just trust scores - the full firehose, off by default"),
-            Triple("SYNC_RECORD_BAND", "2000", "records plane: scored authors per trust-score band (highest-score bands sync first)"),
             Triple(
                 "SEED_RELAYS",
                 "wss://purplepag.es,wss://relay.damus.io,wss://nos.lol",
@@ -92,8 +90,6 @@ object Config {
     val relayUrl get() = env("RELAY_URL")
     val syncIntervalMinutes get() = env("SYNC_INTERVAL").toInt()
     val syncStatePath get() = env("SYNC_STATE")
-    val syncRecords get() = env("SYNC_RECORDS").trim().lowercase() in setOf("true", "1", "yes", "on")
-    val syncRecordBand get() = env("SYNC_RECORD_BAND").toIntOrNull()?.coerceAtLeast(1) ?: 2_000
     val seedRelays get() = env("SEED_RELAYS").split(",").map { it.trim() }.filter { it.isNotEmpty() }
     val houseNpub get() = env("HOUSE_NPUB")
     val houseRelay get() = env("HOUSE_RELAY")
