@@ -189,7 +189,7 @@ object EventYql {
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
-        if (q.notKinds.isNotEmpty()) clauses += "kind not in (${q.notKinds.joinToString(", ")})"
+        if (q.notKinds.isNotEmpty()) clauses += "!(kind in (${q.notKinds.joinToString(", ")}))" // Vespa negates with !(...), not `not in`
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
         if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
         for ((name, values) in q.tags) {

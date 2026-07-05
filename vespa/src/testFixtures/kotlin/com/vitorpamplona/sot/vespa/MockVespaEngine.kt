@@ -469,7 +469,7 @@ object MockYql {
 
                     clause.startsWith("kind in (") -> q.copy(kinds = ints(clause))
 
-                    clause.startsWith("kind not in (") -> q.copy(notKinds = ints(clause))
+                    clause.startsWith("!(kind in (") -> q.copy(notKinds = ints(clause.removePrefix("!(").removeSuffix(")")))
 
                     clause.startsWith("created_at >= ") -> q.copy(since = clause.substringAfterLast(' ').toLong())
 
