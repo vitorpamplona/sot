@@ -79,6 +79,14 @@ interface EventIndex : AutoCloseable {
     }
 
     suspend fun count(query: EventQuery): Int
+
+    /**
+     * The number of DISTINCT authors (pubkeys) among the matches — what `sot
+     * status` reports as "pubkeys with content". The default rides [search], so
+     * it is exact only where search is uncapped (the in-memory reference); the
+     * real client overrides it with a grouping count over the full match set.
+     */
+    suspend fun countDistinctAuthors(query: EventQuery): Int = search(query).map { it.pubkey }.distinct().size
 }
 
 /** The (id, created_at[, d tag]) projection [EventIndex.visitIds] streams — all a sync diff or projection walk needs. */

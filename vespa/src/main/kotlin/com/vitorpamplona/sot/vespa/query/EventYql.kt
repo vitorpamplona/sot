@@ -107,6 +107,28 @@ object EventYql {
         )
     }
 
+    /**
+     * A DISTINCT-value count over [field] (an attribute): the same filters, a
+     * grouping that outputs `count()` on the group LIST — i.e. the number of
+     * distinct values, not the number of docs. No `order by` (same match-phase
+     * reasoning as [buildCount]). Used by `sot status` to count the distinct
+     * pubkeys with content. Null when the filter provably matches nothing.
+     */
+    fun buildDistinctCount(
+        q: EventQuery,
+        field: String,
+    ): VespaQuery? {
+        if (q.limit != null && q.limit <= 0) return null
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
+        return VespaQuery(
+            yql = "select * from event where $where limit 0 | all(group($field) output(count()))",
+            params = params,
+            ranking = RANK_UNRANKED,
+        )
+    }
+
     /** The shared WHERE clauses (filters + optional search term); null when the filter provably matches nothing. */
     private fun filterClauses(
         q: EventQuery,
@@ -116,6 +138,7 @@ object EventYql {
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
+        if (q.notKinds.isNotEmpty()) clauses += "kind not in (${q.notKinds.joinToString(", ")})"
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
         if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
         for ((name, values) in q.tags) {
