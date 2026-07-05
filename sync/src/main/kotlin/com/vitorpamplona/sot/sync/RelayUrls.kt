@@ -68,4 +68,35 @@ internal object RelayUrls {
         short: String,
         long: String,
     ): Boolean = short.isEmpty() || short == long || long.startsWith("$short/")
+
+    /**
+     * Is this a relay we could actually reach from a public host? A huge share of
+     * the URLs harvested from 10002s are structurally unreachable — someone's
+     * LOCAL relay on a LAN/CGNAT address (`10.x`, `192.168.x`, `100.64-127.x`
+     * Tailscale, on ports like `:4848`), a loopback, a `.onion` we have no Tor
+     * proxy for, or `localhost`. Sweeping those just burns a full connect timeout
+     * each. This is a cheap, no-network pre-filter; it does NOT judge whether a
+     * public relay is alive (that's the connect result + [DeadRelayCache]).
+     */
+    fun isPubliclyRoutable(relay: NormalizedRelayUrl): Boolean {
+        val host = runCatching { URI(relay.url).host?.lowercase() }.getOrNull() ?: return false
+        if (host == "localhost" || host.endsWith(".local") || host.endsWith(".onion")) return false
+        if (host.contains(':')) { // an IPv6 literal — hostnames never contain a colon
+            val h = host.trim('[', ']')
+            return !(h == "::1" || h.startsWith("fe80") || h.startsWith("fc") || h.startsWith("fd"))
+        }
+        // Only range-check genuine IPv4 literals, so a public host like "10up.io" is kept.
+        if (host.matches(IPV4)) return !PRIVATE_V4.containsMatchIn(host)
+        return true
+    }
+
+    /** [relays] minus the structurally-unreachable ones (see [isPubliclyRoutable]). */
+    fun publiclyRoutable(relays: Collection<NormalizedRelayUrl>): List<NormalizedRelayUrl> = relays.filter(::isPubliclyRoutable)
+
+    private val IPV4 = Regex("""\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}""")
+
+    // Private (10/8, 192.168/16, 172.16-31/12), loopback (127/8), link-local
+    // (169.254/16) and CGNAT / Tailscale (100.64-127/10) IPv4 ranges.
+    private val PRIVATE_V4 =
+        Regex("""^(10|127)\.|^169\.254\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\.|^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.""")
 }

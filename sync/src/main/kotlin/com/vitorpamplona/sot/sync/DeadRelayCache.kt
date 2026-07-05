@@ -21,33 +21,36 @@
 package com.vitorpamplona.sot.sync
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Remembers relays that just failed so the discovery crawl doesn't keep paying
  * the connect/timeout cost on them. Of the thousands of relay URLs a broad
  * harvest turns up, most are dead — this keeps the sweep from drowning in dead
- * sockets. Entries expire after [ttlMs] so a relay that comes back is retried.
+ * sockets, both within a pass and (because the marks live in the persisted
+ * [SyncState]) across passes, so a periodic re-run doesn't re-time-out every
+ * dead relay from scratch.
  *
- * Scoped to one discovery crawl here (skipping dead relays across its rounds); a
- * follow-up can lift it to the sync service to persist the skip across passes.
+ * A mark is a TEMPORARY skip, never a permanent ban: it expires after [ttlMs],
+ * at which point the relay is retried, so a relay that was merely having downtime
+ * comes back into rotation on its own. (A future refinement could escalate the
+ * TTL for relays that stay dead across several re-checks.)
  */
 internal class DeadRelayCache(
-    private val ttlMs: Long = 30 * 60_000,
+    private val state: SyncState,
+    private val ttlMs: Long = DEFAULT_TTL_MS,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    private val deadUntil = ConcurrentHashMap<NormalizedRelayUrl, Long>()
+    fun isDead(relay: NormalizedRelayUrl): Boolean = state.isRelayDead(relay, clock())
 
-    fun isDead(relay: NormalizedRelayUrl): Boolean {
-        val until = deadUntil[relay] ?: return false
-        if (clock() < until) return true
-        deadUntil.remove(relay, until) // expired — retry it, but don't clobber a fresher mark
-        return false
+    fun markDead(relay: NormalizedRelayUrl) = state.markRelayDead(relay, clock() + ttlMs)
+
+    fun size(): Int = state.activeDeadCount(clock())
+
+    companion object {
+        // How long a dead relay is skipped before it is re-checked. Long enough
+        // that a periodic sync stops re-paying the connect timeout on the same
+        // dead relays every pass, short enough that a day's downtime doesn't hide
+        // a relay for much longer than a day.
+        const val DEFAULT_TTL_MS = 6 * 60 * 60_000L
     }
-
-    fun markDead(relay: NormalizedRelayUrl) {
-        deadUntil[relay] = clock() + ttlMs
-    }
-
-    fun size(): Int = deadUntil.size
 }

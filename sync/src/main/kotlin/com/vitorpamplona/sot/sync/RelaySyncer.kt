@@ -57,7 +57,9 @@ import java.util.concurrent.atomic.AtomicLong
 class RelaySyncer(
     private val client: NostrClient,
     store: IEventStore,
-    private val state: SyncState,
+    // Exposed (same package) so BlendedPass can persist its dead-relay skips in
+    // the same state file as the cursors.
+    internal val state: SyncState,
     private val log: (String) -> Unit,
     private val fetchBatch: Int = 500,
     // Idle timeout: how long a download may hear NOTHING from the relay before

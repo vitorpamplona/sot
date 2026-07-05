@@ -65,4 +65,31 @@ class RelayUrlsTest {
         val relays = setOf(n("wss://r.test/ab"), n("wss://r.test/abc"))
         assertEquals(relays, RelayUrls.collapse(relays))
     }
+
+    @Test
+    fun `structurally unreachable relays are not publicly routable`() {
+        // The classes the discovery crawl wastes connect timeouts on.
+        listOf(
+            "wss://10.0.1.24:4848", // private LAN
+            "wss://192.168.1.10", // private LAN
+            "wss://172.16.5.5", // private LAN
+            "wss://100.103.119.73:4848", // CGNAT / Tailscale
+            "wss://127.0.0.1:7777", // loopback
+            "wss://169.254.1.1", // link-local
+            "wss://localhost:4869", // localhost
+            "wss://citrine.local", // .local
+            "wss://ttouyicplkr2fu7q4emm3ekrk6h7pmnjh5rhw5j6hjgbni46sfqbq7id.onion", // Tor
+        ).forEach { assertEquals(false, RelayUrls.isPubliclyRoutable(n(it)), "$it must be filtered") }
+    }
+
+    @Test
+    fun `real public relays stay routable`() {
+        listOf(
+            "wss://relay.damus.io",
+            "wss://nos.lol",
+            "wss://relay.band/npub1abc",
+            "wss://10up.io", // starts with '10' but is a hostname, not a 10/8 IP
+            "wss://13.50.72.62", // a public IP is kept (liveness is the connect's job, not ours)
+        ).forEach { assertEquals(true, RelayUrls.isPubliclyRoutable(n(it)), "$it must be kept") }
+    }
 }

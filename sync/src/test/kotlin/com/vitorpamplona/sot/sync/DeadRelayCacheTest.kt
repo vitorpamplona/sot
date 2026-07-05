@@ -31,7 +31,7 @@ class DeadRelayCacheTest {
     @Test
     fun `a marked relay is dead until its ttl expires, then retried`() {
         var now = 1_000L
-        val cache = DeadRelayCache(ttlMs = 100, clock = { now })
+        val cache = DeadRelayCache(SyncState(), ttlMs = 100, clock = { now })
 
         assertFalse(cache.isDead(relay), "unknown relay is not dead")
         cache.markDead(relay)
@@ -43,5 +43,19 @@ class DeadRelayCacheTest {
         now += 60 // now 110ms after the mark, past ttl=100
         assertFalse(cache.isDead(relay), "past the ttl - retried")
         assertFalse(cache.isDead(relay), "and cleared, so still not dead")
+    }
+
+    @Test
+    fun `the mark lives in the shared state, so a later pass sees it`() {
+        var now = 1_000L
+        val state = SyncState()
+        DeadRelayCache(state, ttlMs = 10_000, clock = { now }).markDead(relay)
+
+        // A fresh cache over the SAME state (as a later pass builds) still skips it.
+        val nextPass = DeadRelayCache(state, ttlMs = 10_000, clock = { now })
+        assertTrue(nextPass.isDead(relay), "the skip persisted through the state")
+
+        now += 10_001
+        assertFalse(nextPass.isDead(relay), "and still expires - a downtime is never a permanent ban")
     }
 }

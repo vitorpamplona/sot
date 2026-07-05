@@ -76,9 +76,41 @@ data class RelayState(
 @Serializable
 data class SyncState(
     val relays: MutableMap<NormalizedRelayUrl, RelayState> = mutableMapOf(),
+    // Relays that failed to become reachable -> the epoch-ms UNTIL which we skip
+    // them (see [DeadRelayCache]). Persisted so the skip survives across passes
+    // (the discovery crawl turns up thousands of dead relays; re-paying a connect
+    // timeout on each one every pass is the cost this avoids). TTL-based ON
+    // PURPOSE: a relay's temporary downtime expires and gets re-checked, so it is
+    // never a permanent ban.
+    val deadUntil: MutableMap<NormalizedRelayUrl, Long> = mutableMapOf(),
 ) {
     // Relay syncs run in parallel; every access to the shared maps synchronizes here.
     fun relay(relay: NormalizedRelayUrl): RelayState = synchronized(relays) { relays.getOrPut(relay) { RelayState() } }
+
+    /** Dead (skip it) if a live mark exists; an expired mark is dropped and the relay retried. */
+    fun isRelayDead(
+        relay: NormalizedRelayUrl,
+        nowMs: Long,
+    ): Boolean =
+        synchronized(deadUntil) {
+            val until = deadUntil[relay] ?: return false
+            if (nowMs < until) return true
+            deadUntil.remove(relay, until) // expired — retry, but don't clobber a fresher mark
+            false
+        }
+
+    fun markRelayDead(
+        relay: NormalizedRelayUrl,
+        untilMs: Long,
+    ) {
+        synchronized(deadUntil) { deadUntil[relay] = untilMs }
+    }
+
+    /** How many relays are dead right now (expired marks don't count). */
+    fun activeDeadCount(nowMs: Long): Int = synchronized(deadUntil) { deadUntil.count { it.value > nowMs } }
+
+    /** Drop marks that expired before [nowMs] so the state file doesn't accumulate stale dead relays. */
+    private fun pruneDeadRelays(nowMs: Long) = synchronized(deadUntil) { deadUntil.values.removeAll { it <= nowMs } }
 
     fun cursor(
         relay: NormalizedRelayUrl,
@@ -103,6 +135,7 @@ data class SyncState(
         fun load(path: String): SyncState =
             runCatching { json.decodeFromString(serializer(), File(path).readText()) }
                 .getOrElse { SyncState() }
+                .also { it.pruneDeadRelays(System.currentTimeMillis()) }
 
         fun save(
             path: String,

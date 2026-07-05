@@ -87,9 +87,20 @@ internal class BlendedPass(
     private val serviceRelays = ConcurrentHashMap<HexKey, MutableSet<NormalizedRelayUrl>>()
     private val catchUpRan = AtomicBoolean(false)
 
-    // Dead relays skipped across the discovery crawl's rounds (most of the URLs a
-    // broad harvest turns up are dead).
-    private val deadRelays = DeadRelayCache()
+    // Dead relays skipped across the discovery crawl AND across passes (most of
+    // the URLs a broad harvest turns up are dead) — the skip lives in the syncer's
+    // persisted state, with a TTL so a relay's downtime is re-checked, not banned.
+    private val deadRelays = DeadRelayCache(syncer.state)
+
+    // The discovery crawl runs as ordinary pool units (no round barrier): each
+    // relay to sweep is submitted like any other work, and every write relay a
+    // harvest turns up snowballs back in mid-flight. [discoverySeen] dedups so a
+    // relay is swept once; [discoveryBudget] caps the crawl at
+    // [SyncOptions.maxDiscoveryRelays]. A single stuck harvest holds only its own
+    // pool slot — it can never wedge the whole sweep.
+    private val discoverySeen = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+    private val discoveryBudget = AtomicInteger(0)
+    private val discoveryBudgetLogged = AtomicBoolean(false)
 
     // The records plane, folded into the SAME pool (no scores->records barrier):
     // a scored author's content is fetched the moment their score lands. Each
@@ -104,23 +115,13 @@ internal class BlendedPass(
         seedRelays: List<NormalizedRelayUrl>,
     ) = coroutineScope {
         registerObservers(initialObservers + storedObservers())
-        // Discovery ALWAYS runs, CONCURRENTLY with the pool (not a barrier): a
-        // token keeps the pool alive while it crawls, and every observer it finds
-        // registers mid-flight and is synced by the pool right away — the chain
-        // never waits for the whole relay set to be swept. It subsumes the old
-        // seed-hint sweep (harvestAndSweep pulls 10040 AND 10002 from the seeds).
-        pending.incrementAndGet()
-        launch {
-            try {
-                discoverObservers(seedRelays)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log("  ! discovery failed: ${e.message}")
-            } finally {
-                unitDone()
-            }
-        }
+        // Discovery ALWAYS runs, as ordinary units in the SAME pool — never a
+        // barrier. The seed relays (and every write relay their 10002s name)
+        // sweep as normal work, snowballing mid-flight; observers found register
+        // immediately and sync alongside. A single stuck harvest holds only its
+        // own pool slot, so it can never wedge the crawl or the pass.
+        if (seedRelays.isNotEmpty()) log("[discovery] crawling from ${seedRelays.size} seed relay(s), budget ${opts.maxDiscoveryRelays}")
+        enqueueDiscovery(seedRelays)
         // No initial units doesn't mean no work. An observer with no
         // discoverable 10002 lands in the no-list fallback, and stored 10040s
         // feed the catch-up; both surface through onIdle. Only a pass that
@@ -216,50 +217,51 @@ internal class BlendedPass(
     }
 
     /**
-     * Broad observer discovery ([SyncOptions.discoverRelays]). A kind-10040 trust
-     * list lives on its author's OWN outbox, not on the profile directories, so
-     * we cast the widest net possible. Each round harvests 10002s AND sweeps
-     * 10040 from a frontier of relays; the write relays those 10002s name —
-     * COLLAPSED to real servers ([RelayUrls]) and with dead ones skipped —
-     * become the next round's frontier. It snowballs out from the seeds across
-     * the live relay set, bounded by rounds and a relay budget. Observers found
-     * register mid-flight and are synced by the main chain that follows.
+     * Feed [relays] into the discovery crawl as ordinary pool units. A kind-10040
+     * trust list lives on its author's OWN outbox, not the profile directories,
+     * so we cast the widest net: every write relay a harvested 10002 names becomes
+     * a new sweep target. URLs are COLLAPSED to real servers ([RelayUrls]), dead
+     * ones skipped, and each swept at most once ([discoverySeen]) up to
+     * [SyncOptions.maxDiscoveryRelays] ([discoveryBudget]). Thread-safe: a
+     * harvest's onVerified snowballs new relays through here from a pool worker.
      */
-    private suspend fun discoverObservers(seeds: List<NormalizedRelayUrl>) {
-        val processed = HashSet<NormalizedRelayUrl>()
-        var frontier = RelayUrls.collapse(seeds).toList()
-        var round = 1
-        while (frontier.isNotEmpty() && round <= opts.maxDiscoveryRounds && processed.size < opts.maxDiscoveryRelays) {
-            val batch = frontier.filterNot { deadRelays.isDead(it) }.take(opts.maxDiscoveryRelays - processed.size)
-            if (batch.isEmpty()) break
-            processed += batch
-            log("[discovery] round $round: sweeping ${batch.size} relay(s) (total ${processed.size}, dead ${deadRelays.size()})")
-            forEachParallel(batch, opts.relayConcurrency) { relay -> harvestAndSweep(relay) }
-
-            // The next frontier: every write relay across ALL stored 10002s,
-            // collapsed to real servers, minus what we already swept.
-            val known =
-                RelayUrls.collapse(
-                    store
-                        .query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
-                        .flatMap { it.writeRelaysNorm().orEmpty() },
-                )
-            frontier = known.filterNot { it in processed }
-            round++
+    private fun enqueueDiscovery(relays: Collection<NormalizedRelayUrl>) {
+        for (relay in RelayUrls.collapse(relays)) {
+            // Skip URLs we structurally can't reach (LAN/CGNAT/loopback/.onion) so
+            // a private local relay in someone's 10002 doesn't cost a connect timeout.
+            if (!RelayUrls.isPubliclyRoutable(relay) || deadRelays.isDead(relay) || !discoverySeen.add(relay)) continue
+            if (discoveryBudget.incrementAndGet() > opts.maxDiscoveryRelays) {
+                discoveryBudget.decrementAndGet()
+                if (discoveryBudgetLogged.compareAndSet(false, true)) {
+                    log("[discovery] relay budget (${opts.maxDiscoveryRelays}) reached - not sweeping further relays this pass")
+                }
+                return
+            }
+            submit { harvestUnit(relay) }
         }
-        log("[discovery] done: swept ${processed.size} relay(s), ${deadRelays.size()} dead")
     }
 
     /**
-     * Harvest a relay's 10002s (a SAMPLE — enough to surface its relay URLs for
-     * the crawl, via [SyncOptions.maxDiscoveryHarvest]) and sweep it for 10040s
-     * (all of them; the kind is rare). A failure marks the relay dead so the
-     * remaining rounds skip it.
+     * One discovery sweep, as a pool unit. Harvest the relay's 10002s (a SAMPLE —
+     * enough to surface its relay URLs, via [SyncOptions.maxDiscoveryHarvest]) and
+     * sweep its 10040s (all of them; the kind is rare). The write relays the
+     * 10002s name snowball into the crawl the moment they arrive (onVerified — no
+     * round barrier), and each new 10040 author registers as an observer
+     * mid-flight. A relay that never becomes reachable is marked dead so the rest
+     * of the crawl skips it.
      */
-    private suspend fun harvestAndSweep(relay: NormalizedRelayUrl) {
+    private suspend fun harvestUnit(relay: NormalizedRelayUrl) {
         val reached =
             runCatching {
-                val h = syncer.sync(relay, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)), maxEvents = opts.maxDiscoveryHarvest)
+                val h =
+                    syncer.sync(
+                        relay,
+                        Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)),
+                        maxEvents = opts.maxDiscoveryHarvest,
+                        onVerified = { events ->
+                            enqueueDiscovery(events.filterIsInstance<AdvertisedRelayListEvent>().flatMap { it.writeRelaysNorm().orEmpty() })
+                        },
+                    )
                 val s =
                     syncer.sync(
                         relay,
@@ -272,6 +274,7 @@ internal class BlendedPass(
                 h.completed || h.downloaded > 0 || s.completed || s.downloaded > 0
             }.getOrDefault(false)
         if (!reached) deadRelays.markDead(relay)
+        progress.itemDone()
     }
 
     /** One (index relay x observer batch) 10002 lookup; completing an observer's LAST lookup unblocks their outboxes. */
@@ -295,7 +298,9 @@ internal class BlendedPass(
                 .flatMap { batch -> store.query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch)) }
                 .associateBy { it.pubKey }
         for (o in observers) {
-            val relays = byAuthor[o]?.writeRelaysNorm().orEmpty()
+            // Drop unreachable write relays (a private/local relay in the 10002);
+            // an observer left with none falls back to the index relays below.
+            val relays = RelayUrls.publiclyRoutable(byAuthor[o]?.writeRelaysNorm().orEmpty())
             if (relays.isEmpty()) {
                 noList.add(o)
                 continue
@@ -424,8 +429,9 @@ internal class BlendedPass(
         val byAuthor = storedRelayLists(fresh)
         for (a in fresh) {
             // An author's posts are on all their write relays, so fetch from just
-            // ONE — the least-loaded — to spread work across the relay set.
-            val relays = byAuthor[a]?.writeRelaysNorm().orEmpty().ifEmpty { indexRelays }
+            // ONE — the least-loaded reachable one — to spread work across the set;
+            // if none are reachable, fall back to the index relays.
+            val relays = RelayUrls.publiclyRoutable(byAuthor[a]?.writeRelaysNorm().orEmpty()).ifEmpty { indexRelays }
             val chosen = relays.minByOrNull { relayLoad[it]?.get() ?: 0 } ?: continue
             relayLoad.getOrPut(chosen) { AtomicInteger() }.incrementAndGet()
             bufferedBatch(contentBuf, chosen, a)?.let { batch -> submit { contentUnit(chosen, batch) } }

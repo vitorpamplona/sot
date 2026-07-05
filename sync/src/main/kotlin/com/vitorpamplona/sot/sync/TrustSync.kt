@@ -67,18 +67,20 @@ data class SyncOptions(
     /** Verify id + signature before storing. Test-only seam — leave on. */
     val verifyEvents: Boolean = true,
     /**
-     * Discovery crawl bounds. A sync is ALL-OR-NOTHING: it always discovers
-     * (snowball-sweeps write relays for kind-10040 trust lists), always syncs
-     * the scores those 10040s point to, and always pulls the RECORDS plane (the
-     * searchable content — every [IndexableKinds] kind — for the scored authors,
-     * the full firehose). There is no toggle to run only part of it: a partial
-     * pass leaves the store partial and advances per-relay cursors such that a
-     * later fuller pass can't cleanly backfill (see docs/inverted-relay-sync.md).
-     * These knobs only TUNE the always-on discovery crawl; each round's newly
-     * found relays feed the next.
+     * Discovery crawl: cap on distinct (collapsed) relays swept for 10040 in a
+     * pass.
+     *
+     * A sync is ALL-OR-NOTHING: it always discovers (snowball-sweeps write relays
+     * for kind-10040 trust lists), always syncs the scores those 10040s point to,
+     * and always pulls the RECORDS plane (the searchable content — every
+     * [IndexableKinds] kind — for the scored authors, the full firehose). There is
+     * no toggle to run only part of it: a partial pass leaves the store partial and
+     * advances per-relay cursors such that a later fuller pass can't cleanly
+     * backfill (see docs/inverted-relay-sync.md). This knob and [maxDiscoveryHarvest]
+     * only TUNE the always-on crawl, which snowballs from the seeds through the pool
+     * (no rounds/barriers): every write relay a harvest turns up feeds the next
+     * sweep mid-flight, bounded only by this relay budget.
      */
-    val maxDiscoveryRounds: Int = 3,
-    /** Discovery crawl: cap on distinct (collapsed) relays swept for 10040 in a pass. */
     val maxDiscoveryRelays: Int = 2_000,
     /** Discovery crawl: 10002s to sample per relay — enough to surface its relay URLs, not its whole set. */
     val maxDiscoveryHarvest: Int = 5_000,
