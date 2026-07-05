@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.store
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
@@ -315,6 +316,14 @@ class VespaEventStore(
     ) = query<T>(filters).forEach(onEach)
 
     override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.count(it) } ?: 0
+
+    /**
+     * The distinct authors (pubkeys) matching [filter], via a server-side grouping
+     * query ([EventIndex.distinctAuthors]) — for callers that need the author set
+     * out of a huge match set without reconstructing every event (the orphan-score
+     * sweep over millions of 30382s). Honors expiry like [count].
+     */
+    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.distinctAuthors(it) } ?: emptySet()
 
     override suspend fun count(filters: List<Filter>): Int {
         // Multi-filter counts need cross-filter id dedup (engine count can't),

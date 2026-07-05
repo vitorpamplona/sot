@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.sot.store.VespaEventStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
@@ -161,14 +162,15 @@ class TrustSync(
                 .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
                 .flatMap { l -> l.rankProviders().map { it.pubkey } }
                 .toSet()
-        // Full enumeration for now. A Vespa grouping query (distinct 30382
-        // authors in one round trip) will replace this when the corpus grows.
-        val orphans =
-            store
-                .query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND)))
-                .map { it.pubKey }
-                .distinct()
-                .filterNot { it in referenced }
+        // Distinct 30382 authors via a server-side grouping query — reconstructing
+        // every score doc (millions of them) times Vespa out (a 504). Falls back to
+        // enumeration only for a non-Vespa store (none in production/tests).
+        val storedAuthors =
+            when (store) {
+                is VespaEventStore -> store.distinctAuthors(Filter(kinds = listOf(ContactCardEvent.KIND)))
+                else -> store.query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.pubKey }.toSet()
+            }
+        val orphans = storedAuthors.filterNot { it in referenced }
         if (orphans.isEmpty()) return
         log("[sweep] ${orphans.size} orphaned score provider(s) - deleting their 30382s")
         orphans.chunked(100).forEach { syncer.deleteFromStore(Filter(kinds = listOf(ContactCardEvent.KIND), authors = it)) }

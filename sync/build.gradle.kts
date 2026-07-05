@@ -12,11 +12,14 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     // The shared websocket transport (okHttpWebsocketBuilder).
     implementation(libs.okhttp)
+    // VespaEventStore: the orphan-score sweep needs its grouping distinctAuthors
+    // (a full 30382 enumeration times Vespa out at scale). Matches the intended
+    // dependency direction (:sync -> :store).
+    implementation(project(":store"))
     testImplementation(kotlin("test"))
-    // Tests run the real protocol against in-process relays backed by the
-    // SAME store implementation the product uses: VespaEventStore over the
-    // in-memory reference index.
-    testImplementation(project(":store"))
+    // Tests run the real protocol against in-process relays backed by the SAME
+    // store implementation the product uses: VespaEventStore over the in-memory
+    // reference index.
     testImplementation(testFixtures(project(":vespa")))
 }
 

@@ -80,6 +80,8 @@ class TrustProjection(
 
     override suspend fun count(query: EventQuery): Int = inner.count(query)
 
+    override suspend fun distinctAuthors(query: EventQuery): Set<String> = inner.distinctAuthors(query)
+
     override fun close() {
         inner.close()
         profiles.close()

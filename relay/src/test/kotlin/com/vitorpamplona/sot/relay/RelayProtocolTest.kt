@@ -72,6 +72,8 @@ class RelayProtocolTest {
 
         override suspend fun count(query: EventQuery) = inner.count(query)
 
+        override suspend fun distinctAuthors(query: EventQuery) = inner.distinctAuthors(query)
+
         override fun close() {}
     }
 

@@ -54,6 +54,8 @@ class InMemoryEventIndex : EventIndex {
 
     override suspend fun count(query: EventQuery): Int = docs.values.count { it.matches(query) }
 
+    override suspend fun distinctAuthors(query: EventQuery): Set<String> = docs.values.filter { it.matches(query) }.mapTo(HashSet()) { it.pubkey }
+
     override fun close() {}
 
     fun size(): Int = docs.size

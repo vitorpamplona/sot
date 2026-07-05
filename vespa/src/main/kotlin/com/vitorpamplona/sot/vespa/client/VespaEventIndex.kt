@@ -34,6 +34,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -273,6 +274,20 @@ class VespaEventIndex(
                 null
             }
         }
+
+    override suspend fun distinctAuthors(query: EventQuery): Set<String> {
+        val root = queryRoot(EventYql.buildDistinctAuthors(query) ?: return emptySet(), hits = 0) ?: return emptySet()
+        // group(pubkey) nests a grouplist whose leaf `group:` nodes each carry a
+        // pubkey as `value`. Walk the tree and collect every group value.
+        val authors = LinkedHashSet<String>()
+
+        fun collect(node: JsonObject) {
+            (node["value"] as? JsonPrimitive)?.let { if (node["id"]?.jsonPrimitive?.content?.startsWith("group:") == true) authors += it.content }
+            node["children"]?.jsonArray?.forEach { collect(it.jsonObject) }
+        }
+        collect(root)
+        return authors
+    }
 
     /**
      * Run [vq] against `/search/`. It POSTs because a filter with hundreds of

@@ -61,6 +61,10 @@ object EventYql {
     /** YQL caps at this many query words; the rest add nothing and are dropped. */
     const val MAX_QUERY_WORDS = 6
 
+    // The engine's default grouping.globalMaxGroups ceiling; the distinct-author
+    // grouping caps here (its cardinality — WoT service keys — is far below it).
+    const val MAX_AUTHOR_GROUPS = 10_000
+
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
@@ -124,6 +128,32 @@ object EventYql {
         val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
         return VespaQuery(
             yql = "select * from event where $where limit 0 | all(group($field) output(count()))",
+            params = params,
+            ranking = RANK_UNRANKED,
+        )
+    }
+
+    /**
+     * DISTINCT authors of the match set: the same filters, unranked, grouped by
+     * `pubkey`, emitting each group's value. Server-side aggregation returns only
+     * the distinct pubkeys, however large the match set — the point of not
+     * reconstructing every doc. (`pubkey` is an attribute, so it is groupable;
+     * `each(output(count()))` gives each group a payload so Vespa emits it.)
+     * Unlike [buildDistinctCount] this returns the author VALUES, not just a count.
+     *
+     * [MAX_AUTHOR_GROUPS] caps the returned groups at the engine's default
+     * `grouping.globalMaxGroups` ceiling (10k). The only caller — the orphan-score
+     * sweep — groups distinct 30382 authors, i.e. the WoT service keys, of which
+     * there are a handful; the cap is orders of magnitude above that. If it were
+     * ever hit, the sweep would just under-delete (safe), never over-delete.
+     */
+    fun buildDistinctAuthors(q: EventQuery): VespaQuery? {
+        if (q.limit != null && q.limit <= 0) return null
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
+        return VespaQuery(
+            yql = "select * from event where $where limit 0 | all(group(pubkey) max($MAX_AUTHOR_GROUPS) each(output(count())))",
             params = params,
             ranking = RANK_UNRANKED,
         )

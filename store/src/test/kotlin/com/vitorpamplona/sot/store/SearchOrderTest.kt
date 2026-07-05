@@ -55,6 +55,8 @@ class SearchOrderTest {
 
         override suspend fun count(query: EventQuery): Int = hits.size
 
+        override suspend fun distinctAuthors(query: EventQuery): Set<String> = hits.mapTo(HashSet()) { it.pubkey }
+
         override suspend fun put(doc: EventDoc) {}
 
         override suspend fun remove(id: String) {}

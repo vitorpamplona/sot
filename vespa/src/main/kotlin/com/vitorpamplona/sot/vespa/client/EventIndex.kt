@@ -95,6 +95,18 @@ interface EventIndex : AutoCloseable {
      * with a grouping over the full match set.
      */
     suspend fun countByKind(query: EventQuery): Map<Int, Int> = search(query).groupingBy { it.kind }.eachCount()
+
+    /**
+     * The DISTINCT `pubkey`s (event authors) across [query]'s match set — the
+     * actual author set, not just its size ([countDistinctAuthors]). The default
+     * rides [search] (exact only where uncapped, the in-memory reference); the
+     * real client overrides it with a server-side grouping over the full match
+     * set, so the orphan-score sweep gets the distinct 30382 authors out of
+     * millions of docs without reconstructing them (which times search out). A
+     * decorator MUST delegate to its inner index, not this default, or it would
+     * ride the capped search.
+     */
+    suspend fun distinctAuthors(query: EventQuery): Set<String> = search(query).mapTo(HashSet()) { it.pubkey }
 }
 
 /** The (id, created_at[, d tag]) projection [EventIndex.visitIds] streams — all a sync diff or projection walk needs. */
