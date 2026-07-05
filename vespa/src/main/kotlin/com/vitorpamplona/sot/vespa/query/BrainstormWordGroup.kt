@@ -185,7 +185,7 @@ internal object BrainstormWordGroup {
         }
 
     private val SEARCH_FIELDS =
-        listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text")
+        listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text", "search_location")
 
     private val OR_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
 

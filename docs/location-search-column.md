@@ -1,7 +1,10 @@
 # Design note: a `location` search column
 
-Status: proposal. Companion to the search-field role work in `SearchExtractors`
-and `vespa/app/schemas/event.sd`.
+Status: **Option A shipped** — the free-text `search_location` column landed
+(filled systemically from every kind's `location` tags; recall + a
+`w_location` ranking term). Option B (geohash proximity) remains a proposal.
+Companion to the search-field role work in `SearchExtractors` and
+`vespa/app/schemas/event.sd`.
 
 ## Problem
 
@@ -63,11 +66,19 @@ likely end state, but it is the largest change.
 ## Recommendation
 
 Ship **A first** — it is the same shape as the `website` routing (one field,
-per-kind extractor branches, reindex to roll out) and immediately makes
-place-name search work for classifieds and calendar events, the highest-traffic
-geo kinds. Treat **B** as a follow-up once there is a client that actually sends
-a geohash query, because it drags in a new query-clause shape (and therefore
-`MockYql` parser work) that A does not.
+reindex to roll out) and immediately makes place-name search work for
+classifieds and calendar events, the highest-traffic geo kinds. Treat **B** as a
+follow-up once there is a client that actually sends a geohash query, because it
+drags in a new query-clause shape (and therefore `MockYql` parser work) that A
+does not.
+
+**Update: A is implemented.** Rather than per-kind branches, `location` is
+filled by a systemic post-pass in `SearchExtractors` that reads every event's
+`location` tags — so classifieds, calendar slots, pictures, and videos are all
+covered at once. `search_location` is a recall field (queried like the other
+tiers) with a `w_location` bm25 term in `tier_text()`/`relevance()`. Geohash is
+deliberately excluded from this text column (it would be bm25 noise); it belongs
+to Option B.
 
 ## Open questions
 

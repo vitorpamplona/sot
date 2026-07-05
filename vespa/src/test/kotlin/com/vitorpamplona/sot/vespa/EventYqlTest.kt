@@ -85,6 +85,7 @@ class EventYqlTest {
         assertTrue("({defaultIndex:\"about\",prefix:true}userInput(@w0))" in q.yql)
         // Recall role: unlabeled.
         assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in q.yql)
+        assertTrue("({defaultIndex:\"search_location\"}userInput(@w0))" in q.yql)
         // 8 chars: one edit of fuzz, not two.
         assertTrue("({defaultIndex:\"name\",fuzzy:{maxEditDistance:1,prefixLength:2},label:\"mtch_fz1\"}userInput(@w0))" in q.yql)
         assertFalse("maxEditDistance:2" in q.yql)

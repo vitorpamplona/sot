@@ -168,6 +168,14 @@ schema event {
             indexing: index | summary
             index: enable-bm25
         }
+
+        # Place names, filled systemically from any kind's `location` tags
+        # (classifieds, calendar events, pictures/videos). Free-text recall only;
+        # geohash-proximity is a separate future column (docs/location-search-column.md).
+        field search_location type string {
+            indexing: index | summary
+            index: enable-bm25
+        }
     }
 
     import field author_ref.quality_scores as author_quality_scores {}
@@ -233,7 +241,7 @@ schema event {
     }
 
     fieldset default {
-        fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text
+        fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text, search_location
     }
 
     fieldset grams {
@@ -287,6 +295,7 @@ schema event {
             # Tier-group weights (sot extension, non-profile kinds).
             query(w_secondary) double: 0.4
             query(w_content) double: 0.15
+            query(w_location) double: 0.3
         }
 
         # The observer's trust in this doc's AUTHOR, via the profile parent.
@@ -420,6 +429,7 @@ schema event {
                 + tier_primary_text()
                 + query(w_secondary) * secondary_text()
                 + query(w_content) * bm25(search_text)
+                + query(w_location) * bm25(search_location)
             }
         }
 
@@ -464,6 +474,7 @@ schema event {
                 + tier_primary_text()
                 + query(w_secondary) * secondary_text()
                 + query(w_content) * bm25(search_text)
+                + query(w_location) * bm25(search_location)
                 + secondary_active() * query(w_about) * about_text()
             }
         }

@@ -111,13 +111,40 @@ import com.vitorpamplona.sot.vespa.doc.SearchFields
  * so it inherits the affiliation-domain treatment. The schema's rank profiles
  * compose the role columns with `max()`/sum, so this cross-kind reuse is safe.
  *
+ * Two signals are filled SYSTEMICALLY for every tier kind, in a post-pass, so
+ * they never depend on a branch remembering them (see [extract]): the event's
+ * hashtags fold into the secondary tier, and its `location` tags into
+ * [SearchFields.location]. The per-kind branches therefore no longer add
+ * hashtags themselves.
+ *
  * Non-searchable kinds return [SearchFields.NONE] and stay invisible to NIP-50.
  *
  * Extractors are derived data: changing one rolls out with
  * `reindexFullTextSearch`, with no resync.
  */
 object SearchExtractors {
-    fun extract(event: Event): SearchFields =
+    fun extract(event: Event): SearchFields = augment(event, base(event))
+
+    /**
+     * Systemic post-pass over the per-kind [base]: fold the event's hashtags
+     * into the secondary tier and its `location` tags into the location column,
+     * for EVERY tier kind at once — so keyword and place-name recall don't
+     * depend on each kind's branch remembering to add them. Profile-shaped kinds
+     * (kind 0, app handlers) own their columns and are left untouched;
+     * non-searchable kinds stay invisible.
+     */
+    private fun augment(
+        event: Event,
+        base: SearchFields,
+    ): SearchFields {
+        if (event !is SearchableEvent || event is MetadataEvent || event is AppDefinitionEvent) return base
+        return base.copy(
+            secondary = join(base.secondary, hashtags(event)),
+            location = base.location ?: join(tagValues(event, "location")),
+        )
+    }
+
+    private fun base(event: Event): SearchFields =
         when (event) {
             // kind 0 -> the profile fields, each in its own role.
             is MetadataEvent -> {
@@ -137,7 +164,7 @@ object SearchExtractors {
             }
 
             is LongTextNoteEvent -> {
-                tiers(event.title(), join(event.summary(), hashtags(event)), event.content)
+                tiers(event.title(), event.summary(), event.content)
             }
 
             is WikiNoteEvent -> {
@@ -188,8 +215,10 @@ object SearchExtractors {
                 tiers(event.title(), null, event.content)
             }
 
+            // Torrents are searched by FILE NAME above all — index the file
+            // list into the secondary tier, trackers as the affiliation URL.
             is TorrentEvent -> {
-                tiers(event.title(), null, event.content)
+                tiers(event.title(), join(tagValues(event, "file")), event.content, website = join(event.trackers()))
             }
 
             is ThreadEvent -> {
@@ -244,8 +273,15 @@ object SearchExtractors {
                 tiers(event.title(), event.summary(), null)
             }
 
+            // Code snippets are searched by language/runtime as much as name —
+            // fold those keywords into the secondary tier, repo as affiliation.
             is CodeSnippetEvent -> {
-                tiers(event.snippetName(), event.snippetDescription(), event.content)
+                tiers(
+                    event.snippetName(),
+                    join(event.snippetDescription(), event.language(), event.extension(), event.runtime()),
+                    event.content,
+                    website = event.repo(),
+                )
             }
 
             is BadgeDefinitionEvent -> {
@@ -277,7 +313,7 @@ object SearchExtractors {
             }
 
             is InterestSetEvent -> {
-                tiers(event.title(), join(event.description(), join(event.publicHashtags())), null)
+                tiers(event.title(), event.description(), null)
             }
 
             is FollowListEvent -> {
@@ -399,7 +435,7 @@ object SearchExtractors {
             // kind 1 LAST among the explicit branches: several kinds extend the
             // text-note base, and their own branches above must win.
             is TextNoteEvent -> {
-                tiers(event.subject(), hashtags(event), event.content)
+                tiers(event.subject(), null, event.content)
             }
 
             // Everything else Quartz can search, current or future: the whole
@@ -431,4 +467,10 @@ object SearchExtractors {
     private fun join(parts: List<String>): String? = clean(parts.joinToString(" "))
 
     private fun hashtags(event: Event): String? = join(event.tags.hashtags())
+
+    /** First value of every tag named [name] (e.g. "location", "file"), non-empty only. */
+    private fun tagValues(
+        event: Event,
+        name: String,
+    ): List<String> = event.tags.mapNotNull { tag -> tag.getOrNull(1)?.takeIf { tag.getOrNull(0) == name && it.isNotEmpty() } }
 }
