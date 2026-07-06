@@ -111,6 +111,15 @@ internal class BlendedPass(
     private val relayLoad = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
     private val recordKinds = IndexableKinds.kinds + DeletionEvent.KIND + RequestToVanishEvent.KIND
 
+    // 10002-lookup health, per pass. A broken aggregator that times out
+    // [LOOKUP_DEAD_AFTER] times is skipped for the rest of the pass so it can't
+    // gate resolution. [knownRelays] accumulates the write relays of lists we DID
+    // resolve — the second-tier lookup pool (most-common first) for authors the
+    // aggregators don't carry.
+    private val lookupTimeouts = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+    private val deadLookups = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+    private val knownRelays = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+
     suspend fun run(initialObservers: Set<HexKey>) =
         coroutineScope {
             syncer.resetSeen() // fresh per-pass duplicate filter
@@ -434,33 +443,72 @@ internal class BlendedPass(
     }
 
     /**
-     * Resolve [authors]' 10002s from the aggregator relays, FIRST-SUCCESS: fan the
-     * lookups out to every index relay in parallel, but cancel the rest the moment
-     * the full set is covered — each list is taken from whichever aggregator serves
-     * it first. A slow or broken aggregator (one that pages-times-out at 10s) can no
-     * longer gate the batch: as soon as the fast ones cover everyone, its in-flight
-     * query is cancelled instead of awaited. Authors no aggregator carries simply
-     * leave [need] non-empty, so those relays run to completion (unavoidable).
+     * Resolve [authors]' 10002s. Tier 1 is the index/aggregator relays; whatever
+     * they don't carry falls to tier 2 — the relays real users actually write to
+     * (surfaced by lists we already resolved, most-common first) — since a missing
+     * author's list may live on a popular relay the aggregators don't mirror.
+     * Authors on no relay we know simply stay unresolved (they fall back to the
+     * index relays for content).
      */
     private suspend fun resolveRelayLists(authors: List<HexKey>) {
-        if (authors.isEmpty() || indexRelays.isEmpty()) return
+        if (authors.isEmpty()) return
         val need = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors) }
+        fanOutLookup(indexRelays, need)
+        if (need.isNotEmpty()) {
+            val extra =
+                knownRelays.entries
+                    .sortedByDescending { it.value.get() }
+                    .map { it.key }
+                    .filterNot { it in indexRelays }
+                    .take(EXPAND_RELAYS)
+            fanOutLookup(extra, need)
+        }
+    }
+
+    /**
+     * Fan a 10002 lookup for [need] out across [relays] in parallel, FIRST-SUCCESS:
+     * each list is taken from whichever relay serves it first, and the stragglers
+     * are cancelled the moment [need] is empty — so no single relay gates the batch.
+     * A relay that times out [LOOKUP_DEAD_AFTER] times is dead-relayed for the rest
+     * of the pass, and the per-call idle timeout is short ([LOOKUP_IDLE_MS]) so even
+     * a first contact with a slow relay costs seconds, not the syncer-wide 10s.
+     */
+    private suspend fun fanOutLookup(
+        relays: List<NormalizedRelayUrl>,
+        need: MutableSet<HexKey>,
+    ) {
+        val live = relays.filterNot { it in deadLookups }
+        if (live.isEmpty() || need.isEmpty()) return
+        val snapshot = need.toList()
         coroutineScope {
             val group = this
-            for (relay in indexRelays) {
+            for (relay in live) {
                 launch {
-                    for (batch in authors.chunked(AUTHORS_PER_FILTER)) {
-                        if (need.isEmpty()) break
-                        syncer.sync(
-                            relay,
-                            Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch),
-                            maxEvents = opts.maxEvents,
-                            onVerified = { events ->
-                                events.forEach { if (it is AdvertisedRelayListEvent) need.remove(it.pubKey) }
-                                // Everyone covered — stop awaiting the stragglers.
-                                if (need.isEmpty()) group.coroutineContext.cancelChildren()
-                            },
-                        )
+                    for (batch in snapshot.chunked(AUTHORS_PER_FILTER)) {
+                        if (need.isEmpty() || relay in deadLookups) break
+                        val stillNeeded = batch.filter { it in need }
+                        if (stillNeeded.isEmpty()) continue
+                        val o =
+                            syncer.sync(
+                                relay,
+                                Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = stillNeeded),
+                                maxEvents = opts.maxEvents,
+                                idleMs = LOOKUP_IDLE_MS,
+                                onVerified = { events ->
+                                    events.forEach {
+                                        if (it is AdvertisedRelayListEvent) {
+                                            need.remove(it.pubKey)
+                                            it.writeRelaysNorm()?.forEach { r -> knownRelays.getOrPut(r) { AtomicInteger() }.incrementAndGet() }
+                                        }
+                                    }
+                                    if (need.isEmpty()) group.coroutineContext.cancelChildren()
+                                },
+                            )
+                        // A timeout (not a clean "I don't have them") counts toward dead-relaying.
+                        if (!o.completed && lookupTimeouts.getOrPut(relay) { AtomicInteger() }.incrementAndGet() >= LOOKUP_DEAD_AFTER) {
+                            deadLookups.add(relay)
+                            break
+                        }
                     }
                 }
             }
@@ -527,4 +575,17 @@ internal class BlendedPass(
             .distinct()
 
     private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""
+
+    companion object {
+        // A 10002 lookup hears back fast or not at all, so give a slow/broken relay
+        // seconds, not the syncer-wide 10s, before moving on.
+        private const val LOOKUP_IDLE_MS = 3_000L
+
+        // Consecutive-ish timeouts before a lookup relay is skipped for the pass.
+        private const val LOOKUP_DEAD_AFTER = 3
+
+        // Tier-2 pool size: the most-common relays real users write to, tried for
+        // authors the aggregators don't carry.
+        private const val EXPAND_RELAYS = 20
+    }
 }

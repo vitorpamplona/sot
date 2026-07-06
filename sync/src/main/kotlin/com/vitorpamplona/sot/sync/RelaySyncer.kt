@@ -145,6 +145,11 @@ class RelaySyncer(
         // `maxEvents` sample over pages is the right tool and never touches the
         // relay's capability flag.
         pagesOnly: Boolean = false,
+        // How long a download may hear NOTHING before we give up on it, for THIS
+        // call. Defaults to the syncer-wide [idleTimeoutMs]; author-bounded lookups
+        // pass a much shorter value so a slow/broken aggregator costs seconds, not
+        // the full 10s, before we move on (and dead-relay it).
+        idleMs: Long = idleTimeoutMs,
         // Fires with each chunk of VERIFIED events as they stream in, before
         // they hit the store. Discovery uses it to feed newly-advertised relays
         // into its worker pool the moment they arrive, with no store re-scan
@@ -157,7 +162,7 @@ class RelaySyncer(
         val scoped = CursorScope.since(filter, state.cursor(relay, scope), slackSecs)
 
         if (pagesOnly || state.relay(relay).negentropyCapable == false) {
-            val pages = pagesStream(relay, scoped, maxEvents, onVerified = onVerified)
+            val pages = pagesStream(relay, scoped, maxEvents, idleMs = idleMs, onVerified = onVerified)
             // A truncated pages download must not advance the cursor, or the
             // missing tail would be since-filtered away forever.
             if (pages.completed) {
@@ -168,14 +173,14 @@ class RelaySyncer(
             return Outcome(pages.inserted, usedNegentropy = false, downloaded = pages.received, completed = pages.completed)
         }
 
-        val neg = negentropyStream(relay, scoped, maxEvents, onVerified = onVerified)
+        val neg = negentropyStream(relay, scoped, maxEvents, idleMs = idleMs, onVerified = onVerified)
         var inserted = neg.streamed.inserted
         var received = neg.streamed.received
         var usedNeg = neg.usedNegentropy
         var completed = neg.streamed.completed
 
         if (looksIncomplete(neg, maxEvents, firstSync)) {
-            val pages = pagesStream(relay, scoped, maxEvents, onVerified = onVerified)
+            val pages = pagesStream(relay, scoped, maxEvents, idleMs = idleMs, onVerified = onVerified)
             if (pages.received > 0) {
                 state.relay(relay).negentropyCapable = false
                 usedNeg = false
@@ -292,6 +297,7 @@ class RelaySyncer(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int,
+        idleMs: Long = idleTimeoutMs,
         collectIds: MutableSet<String>? = null,
         onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): NegentropyStream {
@@ -306,7 +312,7 @@ class RelaySyncer(
                             filter,
                             maxEvents = maxEvents,
                             fetchBatch = fetchBatch,
-                            idleTimeoutMs = idleTimeoutMs,
+                            idleTimeoutMs = idleMs,
                             reconcileConcurrency = reconcileConcurrency,
                             maxConcurrentReqs = maxConcurrentReqs,
                             onProgress = { needSoFar, _ -> need.updateAndGet { maxOf(it, needSoFar) } },
@@ -326,6 +332,7 @@ class RelaySyncer(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int,
+        idleMs: Long = idleTimeoutMs,
         collectIds: MutableSet<String>? = null,
         onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): Streamed {
@@ -342,7 +349,7 @@ class RelaySyncer(
             // nothing. Only a clean finish may advance the cursor; a stall's
             // missing tail must be retried.
             val lastEventMs = AtomicLong(System.currentTimeMillis())
-            client.fetchAllPages(relay, listOf(paged), timeoutMs = idleTimeoutMs) { e ->
+            client.fetchAllPages(relay, listOf(paged), timeoutMs = idleMs) { e ->
                 onEvent(e)
                 // Stamp AFTER onEvent, not before: onEvent blocks under
                 // backpressure (trySendBlocking while the consumer flushes a
@@ -352,7 +359,7 @@ class RelaySyncer(
                 // and we would re-download the same window every pass.
                 lastEventMs.set(System.currentTimeMillis())
             }
-            System.currentTimeMillis() - lastEventMs.get() < idleTimeoutMs
+            System.currentTimeMillis() - lastEventMs.get() < idleMs
         }
     }
 
