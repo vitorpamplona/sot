@@ -21,6 +21,7 @@
 package com.vitorpamplona.sot.sync
 
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
+import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
@@ -421,15 +422,14 @@ internal class BlendedPass(
                 }.distinct()
     }
 
-    /** New scored authors join the records side of the pipeline: resolve their outbox, then fetch their content. */
+    /** New scored authors join the records side of the pipeline: resolve profile + outbox, then fetch their content. */
     private suspend fun registerContentAuthors(authors: List<HexKey>) {
         val fresh = authors.filter(knownContent::add)
         if (fresh.isEmpty()) return
-        // Resolve any 10002s we don't already hold (most are stored by now), from
-        // the index relays, so we know each author's write relays.
-        val known = storedRelayLists(fresh)
-        val missing = fresh.filterNot { it in known }
-        resolveRelayLists(missing)
+        // Pull each author's kind-0 profile AND kind-10002 relay list straight from
+        // the aggregators (purplepag.es et al hold ~everyone's). A profile must not
+        // depend on us happening to fetch content from a relay that has it.
+        resolveIdentity(fresh)
         val byAuthor = storedRelayLists(fresh)
         for (a in fresh) {
             // An author's posts are on all their write relays, so fetch from just
@@ -443,65 +443,82 @@ internal class BlendedPass(
     }
 
     /**
-     * Resolve [authors]' 10002s. Tier 1 is the index/aggregator relays; whatever
-     * they don't carry falls to tier 2 — the relays real users actually write to
-     * (surfaced by lists we already resolved, most-common first) — since a missing
-     * author's list may live on a popular relay the aggregators don't mirror.
-     * Authors on no relay we know simply stay unresolved (they fall back to the
-     * index relays for content).
+     * Resolve [authors]' kind-0 profile AND kind-10002 relay list from the
+     * aggregators, first-success UNION: tier 1 is the index/aggregator relays, then
+     * tier 2 the relays real users write to (surfaced by lists we already resolved).
+     * Each author leaves `needProfile`/`needList` as their events arrive, and we
+     * keep querying until both are covered or the relays are exhausted. Profiles
+     * live on the aggregators (purplepag.es holds ~everyone), so fetching them HERE
+     * — not bundled into a per-author content pull from one write relay — is what
+     * lifts coverage toward 100%. A debug line reports what actually resolved.
      */
-    private suspend fun resolveRelayLists(authors: List<HexKey>) {
+    private suspend fun resolveIdentity(authors: List<HexKey>) {
         if (authors.isEmpty()) return
-        val need = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors) }
-        fanOutLookup(indexRelays, need)
-        if (need.isNotEmpty()) {
-            val extra =
+        val haveProfile = storedProfiles(authors)
+        val haveList = storedRelayLists(authors).keys
+        val needProfile = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors.filterNot { it in haveProfile }) }
+        val needList = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors.filterNot { it in haveList }) }
+        fanOutIdentity(indexRelays, needProfile, needList)
+        if (needProfile.isNotEmpty() || needList.isNotEmpty()) {
+            val tier2 =
                 knownRelays.entries
                     .sortedByDescending { it.value.get() }
                     .map { it.key }
                     .filterNot { it in indexRelays }
                     .take(EXPAND_RELAYS)
-            fanOutLookup(extra, need)
+            fanOutIdentity(tier2, needProfile, needList)
         }
+        val n = authors.size
+        log("  [identity] $n author(s): profiles ${n - needProfile.size}/$n, lists ${n - needList.size}/$n (${deadLookups.size} dead lookup relay(s), ${knownRelays.size} known)")
     }
 
     /**
-     * Fan a 10002 lookup for [need] out across [relays] in parallel, FIRST-SUCCESS:
-     * each list is taken from whichever relay serves it first, and the stragglers
-     * are cancelled the moment [need] is empty — so no single relay gates the batch.
-     * A relay that times out [LOOKUP_DEAD_AFTER] times is dead-relayed for the rest
-     * of the pass, and the per-call idle timeout is short ([LOOKUP_IDLE_MS]) so even
-     * a first contact with a slow relay costs seconds, not the syncer-wide 10s.
+     * One tier's fan-out resolving kind 0 + 10002 for [needProfile]/[needList] in
+     * parallel, FIRST-SUCCESS: each event is taken from whichever relay serves it
+     * first, and the stragglers are cancelled once BOTH needs are empty — so no
+     * single relay gates the batch. A relay that times out [LOOKUP_DEAD_AFTER] times
+     * is dead-relayed for the rest of the pass, and the per-call idle timeout is
+     * short ([LOOKUP_IDLE_MS]) so even a first contact with a slow relay costs
+     * seconds, not the syncer-wide 10s.
      */
-    private suspend fun fanOutLookup(
+    private suspend fun fanOutIdentity(
         relays: List<NormalizedRelayUrl>,
-        need: MutableSet<HexKey>,
+        needProfile: MutableSet<HexKey>,
+        needList: MutableSet<HexKey>,
     ) {
         val live = relays.filterNot { it in deadLookups }
-        if (live.isEmpty() || need.isEmpty()) return
-        val snapshot = need.toList()
+        if (live.isEmpty() || (needProfile.isEmpty() && needList.isEmpty())) return
+        val snapshot = (needProfile + needList).toList()
         coroutineScope {
             val group = this
             for (relay in live) {
                 launch {
                     for (batch in snapshot.chunked(AUTHORS_PER_FILTER)) {
-                        if (need.isEmpty() || relay in deadLookups) break
-                        val stillNeeded = batch.filter { it in need }
-                        if (stillNeeded.isEmpty()) continue
+                        if ((needProfile.isEmpty() && needList.isEmpty()) || relay in deadLookups) break
+                        val want = batch.filter { it in needProfile || it in needList }
+                        if (want.isEmpty()) continue
                         val o =
                             syncer.sync(
                                 relay,
-                                Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = stillNeeded),
+                                Filter(kinds = listOf(MetadataEvent.KIND, AdvertisedRelayListEvent.KIND), authors = want),
                                 maxEvents = opts.maxEvents,
                                 idleMs = LOOKUP_IDLE_MS,
                                 onVerified = { events ->
-                                    events.forEach {
-                                        if (it is AdvertisedRelayListEvent) {
-                                            need.remove(it.pubKey)
-                                            it.writeRelaysNorm()?.forEach { r -> knownRelays.getOrPut(r) { AtomicInteger() }.incrementAndGet() }
+                                    events.forEach { e ->
+                                        when (e) {
+                                            is MetadataEvent -> {
+                                                needProfile.remove(e.pubKey)
+                                            }
+
+                                            is AdvertisedRelayListEvent -> {
+                                                needList.remove(e.pubKey)
+                                                e.writeRelaysNorm()?.forEach { r -> knownRelays.getOrPut(r) { AtomicInteger() }.incrementAndGet() }
+                                            }
+
+                                            else -> {}
                                         }
                                     }
-                                    if (need.isEmpty()) group.coroutineContext.cancelChildren()
+                                    if (needProfile.isEmpty() && needList.isEmpty()) group.coroutineContext.cancelChildren()
                                 },
                             )
                         // A timeout (not a clean "I don't have them") counts toward dead-relaying.
@@ -514,6 +531,13 @@ internal class BlendedPass(
             }
         }
     }
+
+    private suspend fun storedProfiles(authors: List<HexKey>): Set<HexKey> =
+        authors
+            .chunked(AUTHORS_PER_FILTER)
+            .flatMap { batch -> store.query<MetadataEvent>(Filter(kinds = listOf(MetadataEvent.KIND), authors = batch)) }
+            .map { it.pubKey }
+            .toSet()
 
     private suspend fun storedRelayLists(authors: List<HexKey>): Map<HexKey, AdvertisedRelayListEvent> =
         authors
