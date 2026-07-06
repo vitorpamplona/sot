@@ -69,6 +69,14 @@ internal class EventStreamPipeline(
     private val progress: SyncProgress,
     private val verifyEvents: Boolean,
 ) {
+    // Shared across every relay stream this pass: a duplicate the walk re-receives
+    // from another relay is dropped here, before verify and before the store's
+    // existence check. [reset] clears it between passes so it stays pass-scoped.
+    private val seenIds = SeenIds()
+
+    /** Forget every id seen so far — call once at the start of a pass. */
+    fun resetSeen() = seenIds.reset()
+
     /** Deletions serialize inside the store, like inserts — no pipeline-level lock. */
     suspend fun deleteFromStore(filter: Filter) = store.delete(filter)
 
@@ -130,15 +138,22 @@ internal class EventStreamPipeline(
             val completed =
                 try {
                     producer { e ->
+                        // collectIds feeds the negentropy reconcile diff (what the
+                        // relay HAS), so record every id BEFORE the seen-filter, or a
+                        // duplicate we skip would look absent and get wrongly deleted.
                         collectIds?.add(e.id)
                         progress.onEvent()
                         watch.tick(received.incrementAndGet(), needHint())
-                        // A failed send means the consumer closed the channel
-                        // (it died or was cancelled). Stop feeding promptly
-                        // rather than draining the rest of the download into
-                        // the void.
-                        if (channel.trySendBlocking(e).isFailure) throw CancellationException("consumer stopped; aborting download")
-                        progress.onQueued()
+                        // Already handled this id this pass (a copy from another
+                        // relay)? Skip it — no re-verify, no store round trip.
+                        if (seenIds.add(e.id)) {
+                            // A failed send means the consumer closed the channel
+                            // (it died or was cancelled). Stop feeding promptly
+                            // rather than draining the rest of the download into
+                            // the void.
+                            if (channel.trySendBlocking(e).isFailure) throw CancellationException("consumer stopped; aborting download")
+                            progress.onQueued()
+                        }
                     }
                 } finally {
                     watch.done()
