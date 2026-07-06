@@ -610,7 +610,7 @@ internal class BlendedPass(
     companion object {
         // A 10002 lookup hears back fast or not at all, so give a slow/broken relay
         // seconds, not the syncer-wide 10s, before moving on.
-        private const val LOOKUP_IDLE_MS = 3_000L
+        private const val LOOKUP_IDLE_MS = 10_000L
 
         // Consecutive-ish timeouts before a lookup relay is skipped for the pass.
         private const val LOOKUP_DEAD_AFTER = 3

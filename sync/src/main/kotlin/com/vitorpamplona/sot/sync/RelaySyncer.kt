@@ -32,6 +32,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -92,7 +94,14 @@ class RelaySyncer(
     // The id-download REQ pool per session (Quartz default 8 REQs of
     // [fetchBatch] ids each).
     private val maxConcurrentReqs: Int = 8,
+    // Max concurrent downloads allowed to hit ONE relay at a time, across all
+    // callers. Keeps a shared aggregator from being buried under the whole pool's
+    // width; each still fans into up to [maxConcurrentReqs] REQs.
+    private val maxPerRelay: Int = 4,
 ) {
+    // One permit-gate per relay, created on first contact.
+    private val relayGates = java.util.concurrent.ConcurrentHashMap<NormalizedRelayUrl, Semaphore>()
+
     data class Outcome(
         val inserted: Int,
         val usedNegentropy: Boolean,
@@ -155,6 +164,22 @@ class RelaySyncer(
         // into its worker pool the moment they arrive, with no store re-scan
         // per relay.
         onVerified: (suspend (List<Event>) -> Unit)? = null,
+    ): Outcome =
+        // Cap concurrent downloads hitting ONE relay: without this a shared
+        // aggregator can take ~poolWidth simultaneous syncs (each fanning into
+        // maxConcurrentReqs REQs), which overloads it into timing out even though
+        // it answers a single query in well under a second.
+        relayGates.getOrPut(relay) { Semaphore(maxPerRelay) }.withPermit {
+            doSync(relay, filter, maxEvents, pagesOnly, idleMs, onVerified)
+        }
+
+    private suspend fun doSync(
+        relay: NormalizedRelayUrl,
+        filter: Filter,
+        maxEvents: Int,
+        pagesOnly: Boolean,
+        idleMs: Long,
+        onVerified: (suspend (List<Event>) -> Unit)?,
     ): Outcome {
         handshake.awaitOnFirstContact(relay)
         val scope = CursorScope.of(filter)
