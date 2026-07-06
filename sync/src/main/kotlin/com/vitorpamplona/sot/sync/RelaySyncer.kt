@@ -23,6 +23,7 @@ package com.vitorpamplona.sot.sync
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyOrFetchResult
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.EmptyIAuthStatus
@@ -126,12 +127,24 @@ class RelaySyncer(
     }
 
     private val pipeline = EventStreamPipeline(store, log, progress, verifyEvents)
+
+    /** Forget the per-pass seen-id filter — called at the start of each pass. */
+    fun resetSeen() = pipeline.resetSeen()
+
     private val handshake = NostrAuthHandshake(client, auth)
 
     suspend fun sync(
         relay: NormalizedRelayUrl,
         filter: Filter,
         maxEvents: Int = 0,
+        // Skip the negentropy attempt and page directly. Used by the discovery
+        // sample: a BROAD filter (all of kind 10002) matches far more than a
+        // relay's negentropy result cap (strfry blocks at 100k with
+        // "too many query results"), so a NEG-OPEN is guaranteed to fail — and
+        // that failure would wrongly mark the relay pages-only forever. A bounded
+        // `maxEvents` sample over pages is the right tool and never touches the
+        // relay's capability flag.
+        pagesOnly: Boolean = false,
         // Fires with each chunk of VERIFIED events as they stream in, before
         // they hit the store. Discovery uses it to feed newly-advertised relays
         // into its worker pool the moment they arrive, with no store re-scan
@@ -143,7 +156,7 @@ class RelaySyncer(
         val firstSync = state.cursor(relay, scope) == null
         val scoped = CursorScope.since(filter, state.cursor(relay, scope), slackSecs)
 
-        if (state.relay(relay).negentropyCapable == false) {
+        if (pagesOnly || state.relay(relay).negentropyCapable == false) {
             val pages = pagesStream(relay, scoped, maxEvents, onVerified = onVerified)
             // A truncated pages download must not advance the cursor, or the
             // missing tail would be since-filtered away forever.
@@ -174,12 +187,17 @@ class RelaySyncer(
         } else if (usedNeg && neg.downloaded > 0 && state.relay(relay).negentropyCapable == null) {
             state.relay(relay).negentropyCapable = true
         } else if (neg.result?.pagedFallback == true && state.relay(relay).negentropyCapable == null) {
-            // The relay couldn't reconcile at all (Quartz already paged this
-            // filter as the fallback). Remember it: without this, every kind on
-            // every pass re-attempts negentropy and stalls out its idle timeout
-            // first.
-            state.relay(relay).negentropyCapable = false
-            log("  [${relay.displayUrl()}] no negentropy - using pages from now on")
+            // Quartz paged this filter as a fallback. Remember the relay as
+            // pages-only ONLY when it genuinely can't reconcile (UNAVAILABLE: no
+            // NIP-77, a real NEG-ERR, disconnect, timeout) — without that, every
+            // kind re-attempts negentropy and stalls on its idle timeout first.
+            // But OVER_MAX_SYNC_EVENTS is FILTER-specific: our set just exceeded
+            // this relay's negentropy cap; it reconciles narrower filters fine, so
+            // marking it pages-only would poison every later (targeted) query.
+            if (neg.result?.fallbackCause?.reason != NegentropySyncException.Reason.OVER_MAX_SYNC_EVENTS) {
+                state.relay(relay).negentropyCapable = false
+                log("  [${relay.displayUrl()}] no negentropy - using pages from now on")
+            }
         }
 
         state.markSynced(relay, scope, nowSecs())

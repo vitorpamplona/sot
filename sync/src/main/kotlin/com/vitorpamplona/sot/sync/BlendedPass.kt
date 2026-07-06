@@ -35,6 +35,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -71,8 +72,22 @@ internal class BlendedPass(
     private val indexRelays: List<NormalizedRelayUrl>,
     private val house: HouseAccount?,
 ) {
-    private val queue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
-    private val pending = AtomicInteger(0)
+    // Two priority lanes over ONE worker pool. The value chain (10040 -> outbox
+    // -> scores -> content) rides [chainQueue]; the broad relay crawl rides
+    // [discoveryQueue]. Workers always drain the chain first, so a found
+    // observer's scores/content run the instant they're ready instead of waiting
+    // behind thousands of queued discovery sweeps — the crawl fills only the idle
+    // capacity the chain leaves. Both are UNLIMITED, so submit never blocks.
+    private val chainQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+    private val discoveryQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+    // Two independent in-flight counters, one per lane. The chain ADVANCES (drains
+    // its batch buffers into the next stage) whenever the CHAIN alone goes idle
+    // ([chainPending] == 0) — NOT when the whole pool is idle. That's what lets
+    // scores/content flow while thousands of discovery sweeps are still pending;
+    // gating the advance on the global count kept the chain frozen behind the crawl.
+    private val chainPending = AtomicInteger(0)
+    private val discoveryPending = AtomicInteger(0)
     private val known = ConcurrentHashMap.newKeySet<HexKey>()
     private val listsLeft = ConcurrentHashMap<HexKey, AtomicInteger>()
     private val outboxBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
@@ -113,6 +128,7 @@ internal class BlendedPass(
         initialObservers: Set<HexKey>,
         seedRelays: List<NormalizedRelayUrl>,
     ) = coroutineScope {
+        syncer.resetSeen() // fresh per-pass duplicate filter
         registerObservers(initialObservers + storedObservers())
         // Discovery ALWAYS runs, as ordinary units in the SAME pool — never a
         // barrier. The seed relays (and every write relay their 10002s name)
@@ -125,38 +141,82 @@ internal class BlendedPass(
         // discoverable 10002 lands in the no-list fallback, and stored 10040s
         // feed the catch-up; both surface through onIdle. Only a pass that
         // STILL finds nothing after that has nothing to sync.
-        if (pending.get() == 0 && !onIdle()) {
+        if (chainPending.get() == 0 && discoveryPending.get() == 0 && !onIdle()) {
             log("[sync] no observers (no house account, no config extras, no stored 10040s) and no seed relays - nothing to sync")
-            queue.close()
+            closeQueues()
         }
         repeat(opts.relayConcurrency.coerceAtLeast(1)) {
             launch {
-                for (job in queue) {
-                    // Rethrow cancellation so a torn-down pass actually
-                    // unwinds. Only real unit failures are logged and skipped.
-                    try {
-                        job()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        log("  ! chain unit failed: ${e.message}")
-                    }
-                    unitDone()
-                }
+                // Each job carries its own try/catch + lane accounting (see
+                // [submit]/[submitDiscovery]); the worker just runs the next one.
+                while (true) (nextJob() ?: break).invoke()
             }
         }
     }
 
+    /**
+     * The next unit to run, chain-first. A non-blocking peek at [chainQueue] wins
+     * outright when it has work; only when it's empty do we suspend on EITHER lane.
+     * Returns null once both lanes are closed and drained, ending the worker.
+     */
+    private suspend fun nextJob(): (suspend () -> Unit)? =
+        chainQueue.tryReceive().getOrNull() ?: select {
+            chainQueue.onReceiveCatching { it.getOrNull() }
+            discoveryQueue.onReceiveCatching { it.getOrNull() }
+        }
+
     private fun submit(job: suspend () -> Unit) {
-        pending.incrementAndGet()
+        chainPending.incrementAndGet()
         progress.addPhaseItems(1)
-        queue.trySend(job)
+        chainQueue.trySend {
+            runUnit(job)
+            chainDone()
+        }
     }
 
-    /** Pool drained: flush the partial batches; when nothing is left to flush either, the pass is over. */
-    private suspend fun unitDone() {
-        if (pending.decrementAndGet() > 0) return
-        if (!onIdle()) queue.close()
+    /** Low-priority lane: the broad relay crawl, run only on capacity the chain leaves idle. */
+    private fun submitDiscovery(job: suspend () -> Unit) {
+        discoveryPending.incrementAndGet()
+        progress.addPhaseItems(1)
+        discoveryQueue.trySend {
+            runUnit(job)
+            discoveryDone()
+        }
+    }
+
+    /** Run one unit, logging (not propagating) real failures; cancellation tears the pass down. */
+    private suspend fun runUnit(job: suspend () -> Unit) {
+        try {
+            job()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("  ! sync unit failed: ${e.message}")
+        }
+    }
+
+    private fun closeQueues() {
+        chainQueue.close()
+        discoveryQueue.close()
+    }
+
+    /**
+     * A chain unit finished. When the chain alone goes idle, ADVANCE it: drain the
+     * per-relay batch buffers into the next stage (and, once, the stored-10040
+     * catch-up). This runs while discovery is still crawling — the whole point.
+     * The pass ends only when both lanes are idle and there's nothing left to drain.
+     */
+    private suspend fun chainDone() {
+        if (chainPending.decrementAndGet() > 0) return
+        if (onIdle()) return
+        if (discoveryPending.get() == 0) closeQueues()
+    }
+
+    /** A discovery sweep finished. It may have fed the chain (new observers); if not and both lanes are idle, end. */
+    private suspend fun discoveryDone() {
+        if (discoveryPending.decrementAndGet() > 0) return
+        if (chainPending.get() > 0) return // the chain's own drain will finish the pass
+        if (!onIdle()) closeQueues()
     }
 
     private suspend fun onIdle(): Boolean {
@@ -229,7 +289,7 @@ internal class BlendedPass(
             // Skip URLs we structurally can't reach (LAN/CGNAT/loopback/.onion) so
             // a private local relay in someone's 10002 doesn't cost a connect timeout.
             if (!RelayUrls.isPubliclyRoutable(relay) || deadRelays.isDead(relay) || !discoverySeen.add(relay)) continue
-            submit { harvestUnit(relay) }
+            submitDiscovery { harvestUnit(relay) }
         }
     }
 
@@ -245,15 +305,26 @@ internal class BlendedPass(
     private suspend fun harvestUnit(relay: NormalizedRelayUrl) {
         val reached =
             runCatching {
+                // Discovery ONLY needs relay URLs, so take a bounded SAMPLE of the
+                // relay's newest 10002s over pages — NOT the full set. A broad
+                // `kinds:[10002]` filter matches millions on a big relay, which
+                // (a) blows past the relay's negentropy result cap (forcing pages
+                // anyway) and (b) re-downloads the same widely-mirrored lists from
+                // every relay. The 10002s we actually route on are fetched later,
+                // author-targeted ([registerContentAuthors]/[listUnit]), where the
+                // narrow filter lets negentropy do the diff.
                 val h =
                     syncer.sync(
                         relay,
                         Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)),
-                        maxEvents = opts.maxEvents,
+                        maxEvents = DISCOVERY_SAMPLE,
+                        pagesOnly = true,
                         onVerified = { events ->
                             enqueueDiscovery(events.filterIsInstance<AdvertisedRelayListEvent>().flatMap { it.writeRelaysNorm().orEmpty() })
                         },
                     )
+                // 10040 is rare, so this filter matches few events — negentropy
+                // reconciles it cheaply (no cap trouble), so leave it on.
                 val s =
                     syncer.sync(
                         relay,
@@ -498,4 +569,11 @@ internal class BlendedPass(
             .distinct()
 
     private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""
+
+    companion object {
+        // Discovery pulls only this many of a relay's newest 10002s — enough to
+        // surface its relay URLs and snowball the crawl, not its whole (often
+        // 100k+) list. The relay lists we route on come later, author-targeted.
+        private const val DISCOVERY_SAMPLE = 5_000
+    }
 }
