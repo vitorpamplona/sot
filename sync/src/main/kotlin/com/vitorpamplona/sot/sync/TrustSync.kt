@@ -132,12 +132,17 @@ class TrustSync(
         house: HouseAccount? = null,
         seedRelays: List<NormalizedRelayUrl> = emptyList(),
     ) {
-        log("=== scores + records: relay-centric pool (${seedRelays.size} seed / ${indexRelays.size} index relay(s)) ===")
+        // Seed relays are no longer crawled; they join the index/aggregator pool
+        // that resolves any author's 10002 author-bounded. Discovery is the trust
+        // graph itself (each observer's providers name the subjects to index), not
+        // a network-wide relay sweep.
+        val lookupRelays = (indexRelays + seedRelays).distinct()
+        log("=== scores + records: house-rooted pool (${lookupRelays.size} lookup relay(s)) ===")
         progress.startPhase("chain", 0)
         // One relay-centric pool drives BOTH planes: a scored author's content is
         // fetched the moment their score lands, so records never waits for the
         // whole scores plane to finish (see docs/inverted-relay-sync.md).
-        BlendedPass(syncer, store, opts, progress, log, indexRelays, house).run(observers + setOfNotNull(house?.pubkey), seedRelays)
+        BlendedPass(syncer, store, opts, progress, log, lookupRelays, house).run(observers + setOfNotNull(house?.pubkey))
         sweepOrphanScores()
     }
 

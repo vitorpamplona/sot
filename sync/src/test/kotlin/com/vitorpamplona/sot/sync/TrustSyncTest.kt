@@ -143,8 +143,8 @@ class TrustSyncTest {
                     store.insert(score(service1, bob.pubKey, 10, at = 800))
 
                     trustSync(net, store).run(
+                        observers = setOf(observer.pubKey), // the observer is known; the sync resolves their outbox
                         indexRelays = listOf(net.url(index)),
-                        seedRelays = listOf(net.url(index)), // the 10040 hint is how the observer is discovered
                     )
 
                     val lists = store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))

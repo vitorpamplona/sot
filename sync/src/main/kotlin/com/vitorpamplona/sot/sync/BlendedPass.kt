@@ -72,22 +72,21 @@ internal class BlendedPass(
     private val indexRelays: List<NormalizedRelayUrl>,
     private val house: HouseAccount?,
 ) {
-    // Two priority lanes over ONE worker pool. The value chain (10040 -> outbox
-    // -> scores -> content) rides [chainQueue]; the broad relay crawl rides
-    // [discoveryQueue]. Workers always drain the chain first, so a found
-    // observer's scores/content run the instant they're ready instead of waiting
-    // behind thousands of queued discovery sweeps — the crawl fills only the idle
-    // capacity the chain leaves. Both are UNLIMITED, so submit never blocks.
-    private val chainQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
-    private val discoveryQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+    // Two priority lanes over ONE worker pool. The HOUSE's chain rides
+    // [primaryQueue]; every other observer (stored 10040 authors, NIP-42
+    // enrollees) enters on [secondaryQueue]. Workers always drain the primary lane
+    // first, so the house computes first and is available fast, while the others
+    // run on the capacity it leaves — the "second round". Both are UNLIMITED, so
+    // submit never blocks.
+    private val primaryQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+    private val secondaryQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
-    // Two independent in-flight counters, one per lane. The chain ADVANCES (drains
-    // its batch buffers into the next stage) whenever the CHAIN alone goes idle
-    // ([chainPending] == 0) — NOT when the whole pool is idle. That's what lets
-    // scores/content flow while thousands of discovery sweeps are still pending;
-    // gating the advance on the global count kept the chain frozen behind the crawl.
-    private val chainPending = AtomicInteger(0)
-    private val discoveryPending = AtomicInteger(0)
+    // Two independent in-flight counters, one per lane. The pipeline ADVANCES
+    // (drains its batch buffers into the next stage) whenever the PRIMARY lane
+    // alone goes idle ([primaryPending] == 0) — NOT when the whole pool is idle —
+    // so the house's stages progress without waiting on the secondary backlog.
+    private val primaryPending = AtomicInteger(0)
+    private val secondaryPending = AtomicInteger(0)
     private val known = ConcurrentHashMap.newKeySet<HexKey>()
     private val listsLeft = ConcurrentHashMap<HexKey, AtomicInteger>()
     private val outboxBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
@@ -103,19 +102,6 @@ internal class BlendedPass(
     private val serviceRelays = ConcurrentHashMap<HexKey, MutableSet<NormalizedRelayUrl>>()
     private val catchUpRan = AtomicBoolean(false)
 
-    // Dead relays skipped across the discovery crawl AND across passes (most of
-    // the URLs a broad harvest turns up are dead) — the skip lives in the syncer's
-    // persisted state, with a TTL so a relay's downtime is re-checked, not banned.
-    private val deadRelays = DeadRelayCache(syncer.state)
-
-    // The discovery crawl runs as ordinary pool units (no round barrier): each
-    // relay to sweep is submitted like any other work, and every write relay a
-    // harvest turns up snowballs back in mid-flight. [discoverySeen] dedups so a
-    // relay is swept at most once — the ONLY bound on the crawl (there is no relay
-    // budget: we sweep every reachable relay). A single stuck harvest holds only
-    // its own pool slot, so it can never wedge the whole sweep.
-    private val discoverySeen = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
     // The records plane, folded into the SAME pool (no scores->records barrier):
     // a scored author's content is fetched the moment their score lands. Each
     // author is assigned to their least-loaded write relay, so the load spreads.
@@ -124,63 +110,64 @@ internal class BlendedPass(
     private val relayLoad = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
     private val recordKinds = IndexableKinds.kinds + DeletionEvent.KIND + RequestToVanishEvent.KIND
 
-    suspend fun run(
-        initialObservers: Set<HexKey>,
-        seedRelays: List<NormalizedRelayUrl>,
-    ) = coroutineScope {
-        syncer.resetSeen() // fresh per-pass duplicate filter
-        registerObservers(initialObservers + storedObservers())
-        // Discovery ALWAYS runs, as ordinary units in the SAME pool — never a
-        // barrier. The seed relays (and every write relay their 10002s name)
-        // sweep as normal work, snowballing mid-flight; observers found register
-        // immediately and sync alongside. A single stuck harvest holds only its
-        // own pool slot, so it can never wedge the crawl or the pass.
-        if (seedRelays.isNotEmpty()) log("[discovery] crawling from ${seedRelays.size} seed relay(s) - sweeping every reachable relay")
-        enqueueDiscovery(seedRelays)
-        // No initial units doesn't mean no work. An observer with no
-        // discoverable 10002 lands in the no-list fallback, and stored 10040s
-        // feed the catch-up; both surface through onIdle. Only a pass that
-        // STILL finds nothing after that has nothing to sync.
-        if (chainPending.get() == 0 && discoveryPending.get() == 0 && !onIdle()) {
-            log("[sync] no observers (no house account, no config extras, no stored 10040s) and no seed relays - nothing to sync")
-            closeQueues()
-        }
-        repeat(opts.relayConcurrency.coerceAtLeast(1)) {
-            launch {
-                // Each job carries its own try/catch + lane accounting (see
-                // [submit]/[submitDiscovery]); the worker just runs the next one.
-                while (true) (nextJob() ?: break).invoke()
+    suspend fun run(initialObservers: Set<HexKey>) =
+        coroutineScope {
+            syncer.resetSeen() // fresh per-pass duplicate filter
+            // The house is the trust ROOT and the ONLY primary: it computes first
+            // (primary lane) so its 10002/kind-0/10040, scores, and content are
+            // available fast. Every other observer — stored 10040 authors and
+            // NIP-42 enrollees — rides the secondary lane and computes on whatever
+            // capacity the house leaves (the "second round"). There is NO broad
+            // relay crawl: the users we index are exactly the subjects the trust
+            // graph names (each observer's providers' 30382 targets), all fetched
+            // author-bounded, so nothing unbounded (or spammable) enters the sync.
+            val housePk = house?.pubkey
+            registerObservers(listOfNotNull(housePk), primary = true)
+            registerObservers((initialObservers + storedObservers()) - setOfNotNull(housePk), primary = false)
+            // No initial units doesn't mean no work. An observer with no
+            // discoverable 10002 lands in the no-list fallback, and stored 10040s
+            // feed the catch-up; both surface through onIdle. Only a pass that
+            // STILL finds nothing after that has nothing to sync.
+            if (primaryPending.get() == 0 && secondaryPending.get() == 0 && !onIdle()) {
+                log("[sync] no house account, no config extras, and no stored 10040s - nothing to sync")
+                closeQueues()
+            }
+            repeat(opts.relayConcurrency.coerceAtLeast(1)) {
+                launch {
+                    // Each job carries its own try/catch + lane accounting (see
+                    // [submit]/[submitSecondary]); the worker just runs the next one.
+                    while (true) (nextJob() ?: break).invoke()
+                }
             }
         }
-    }
 
     /**
-     * The next unit to run, chain-first. A non-blocking peek at [chainQueue] wins
+     * The next unit to run, primary-first. A non-blocking peek at [primaryQueue] wins
      * outright when it has work; only when it's empty do we suspend on EITHER lane.
      * Returns null once both lanes are closed and drained, ending the worker.
      */
     private suspend fun nextJob(): (suspend () -> Unit)? =
-        chainQueue.tryReceive().getOrNull() ?: select {
-            chainQueue.onReceiveCatching { it.getOrNull() }
-            discoveryQueue.onReceiveCatching { it.getOrNull() }
+        primaryQueue.tryReceive().getOrNull() ?: select {
+            primaryQueue.onReceiveCatching { it.getOrNull() }
+            secondaryQueue.onReceiveCatching { it.getOrNull() }
         }
 
     private fun submit(job: suspend () -> Unit) {
-        chainPending.incrementAndGet()
+        primaryPending.incrementAndGet()
         progress.addPhaseItems(1)
-        chainQueue.trySend {
+        primaryQueue.trySend {
             runUnit(job)
-            chainDone()
+            primaryDone()
         }
     }
 
-    /** Low-priority lane: the broad relay crawl, run only on capacity the chain leaves idle. */
-    private fun submitDiscovery(job: suspend () -> Unit) {
-        discoveryPending.incrementAndGet()
+    /** Secondary lane: a non-house observer's entry, run only on capacity the house leaves idle. */
+    private fun submitSecondary(job: suspend () -> Unit) {
+        secondaryPending.incrementAndGet()
         progress.addPhaseItems(1)
-        discoveryQueue.trySend {
+        secondaryQueue.trySend {
             runUnit(job)
-            discoveryDone()
+            secondaryDone()
         }
     }
 
@@ -196,26 +183,27 @@ internal class BlendedPass(
     }
 
     private fun closeQueues() {
-        chainQueue.close()
-        discoveryQueue.close()
+        primaryQueue.close()
+        secondaryQueue.close()
     }
 
     /**
-     * A chain unit finished. When the chain alone goes idle, ADVANCE it: drain the
-     * per-relay batch buffers into the next stage (and, once, the stored-10040
-     * catch-up). This runs while discovery is still crawling — the whole point.
-     * The pass ends only when both lanes are idle and there's nothing left to drain.
+     * A primary unit finished. When the primary lane alone goes idle, ADVANCE the
+     * pipeline: drain the per-relay batch buffers into the next stage (and, once,
+     * the stored-10040 catch-up). This runs while the secondary lane is still busy,
+     * so the house's stages don't wait on it. The pass ends only when both lanes
+     * are idle and there's nothing left to drain.
      */
-    private suspend fun chainDone() {
-        if (chainPending.decrementAndGet() > 0) return
+    private suspend fun primaryDone() {
+        if (primaryPending.decrementAndGet() > 0) return
         if (onIdle()) return
-        if (discoveryPending.get() == 0) closeQueues()
+        if (secondaryPending.get() == 0) closeQueues()
     }
 
-    /** A discovery sweep finished. It may have fed the chain (new observers); if not and both lanes are idle, end. */
-    private suspend fun discoveryDone() {
-        if (discoveryPending.decrementAndGet() > 0) return
-        if (chainPending.get() > 0) return // the chain's own drain will finish the pass
+    /** A secondary observer's entry finished; if the primary lane is also idle, advance/close. */
+    private suspend fun secondaryDone() {
+        if (secondaryPending.decrementAndGet() > 0) return
+        if (primaryPending.get() > 0) return // the chain's own drain will finish the pass
         if (!onIdle()) closeQueues()
     }
 
@@ -259,85 +247,26 @@ internal class BlendedPass(
     }
 
     /** New observers join the pipeline: their 10002 lookups are submitted immediately. */
-    private suspend fun registerObservers(observers: Collection<HexKey>) {
+    private suspend fun registerObservers(
+        observers: Collection<HexKey>,
+        primary: Boolean = false,
+    ) {
         val fresh = observers.filter(known::add)
         if (fresh.isEmpty()) return
         for (o in fresh) {
             listsLeft[o] = AtomicInteger(indexRelays.size + if (house?.pubkey == o) 1 else 0)
         }
+        // The house's lookups go on the primary lane so it computes first; every
+        // other observer enters on the secondary lane and runs on spare capacity.
+        val enqueue: (suspend () -> Unit) -> Unit = if (primary) ::submit else ::submitSecondary
         for (relay in indexRelays) {
-            fresh.chunked(AUTHORS_PER_FILTER).forEach { batch -> submit { listUnit(relay, batch) } }
+            fresh.chunked(AUTHORS_PER_FILTER).forEach { batch -> enqueue { listUnit(relay, batch) } }
         }
-        house?.takeIf { it.pubkey in fresh }?.let { h -> submit { listUnit(h.relay, listOf(h.pubkey)) } }
+        house?.takeIf { it.pubkey in fresh }?.let { h -> enqueue { listUnit(h.relay, listOf(h.pubkey)) } }
         // Nowhere to look a 10002 up: resolve from whatever the store already has.
         if (indexRelays.isEmpty()) {
             resolveOutboxes(fresh.filter { house?.pubkey != it })
         }
-    }
-
-    /**
-     * Feed [relays] into the discovery crawl as ordinary pool units. A kind-10040
-     * trust list lives on its author's OWN outbox, not the profile directories,
-     * so we cast the widest net: every write relay a harvested 10002 names becomes
-     * a new sweep target. URLs are COLLAPSED to real servers ([RelayUrls]), dead
-     * ones skipped, and each swept at most once ([discoverySeen]). There is NO
-     * relay budget — we sweep every reachable relay. Thread-safe: a harvest's
-     * onVerified snowballs new relays through here from a pool worker.
-     */
-    private fun enqueueDiscovery(relays: Collection<NormalizedRelayUrl>) {
-        for (relay in RelayUrls.collapse(relays)) {
-            // Skip URLs we structurally can't reach (LAN/CGNAT/loopback/.onion) so
-            // a private local relay in someone's 10002 doesn't cost a connect timeout.
-            if (!RelayUrls.isPubliclyRoutable(relay) || deadRelays.isDead(relay) || !discoverySeen.add(relay)) continue
-            submitDiscovery { harvestUnit(relay) }
-        }
-    }
-
-    /**
-     * One discovery sweep, as a pool unit. Pull the relay's FULL kind-10002 set
-     * (10002 is the bootstrap kind — everyone's relay list can be anywhere, so we
-     * take all of it from every relay; no sample cap) and sweep its 10040s. The
-     * write relays the 10002s name snowball into the crawl the moment they arrive
-     * (onVerified — no round barrier), and each new 10040 author registers as an
-     * observer mid-flight. A relay that never becomes reachable is marked dead so
-     * the rest of the crawl skips it.
-     */
-    private suspend fun harvestUnit(relay: NormalizedRelayUrl) {
-        val reached =
-            runCatching {
-                // Discovery ONLY needs relay URLs, so take a bounded SAMPLE of the
-                // relay's newest 10002s over pages — NOT the full set. A broad
-                // `kinds:[10002]` filter matches millions on a big relay, which
-                // (a) blows past the relay's negentropy result cap (forcing pages
-                // anyway) and (b) re-downloads the same widely-mirrored lists from
-                // every relay. The 10002s we actually route on are fetched later,
-                // author-targeted ([registerContentAuthors]/[listUnit]), where the
-                // narrow filter lets negentropy do the diff.
-                val h =
-                    syncer.sync(
-                        relay,
-                        Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)),
-                        maxEvents = DISCOVERY_SAMPLE,
-                        pagesOnly = true,
-                        onVerified = { events ->
-                            enqueueDiscovery(events.filterIsInstance<AdvertisedRelayListEvent>().flatMap { it.writeRelaysNorm().orEmpty() })
-                        },
-                    )
-                // 10040 is rare, so this filter matches few events — negentropy
-                // reconciles it cheaply (no cap trouble), so leave it on.
-                val s =
-                    syncer.sync(
-                        relay,
-                        Filter(kinds = listOf(TrustProviderListEvent.KIND)),
-                        maxEvents = opts.maxEvents,
-                        onVerified = { events -> registerObservers(events.filterIsInstance<TrustProviderListEvent>().map { it.pubKey }) },
-                    )
-                // Reachable if either query terminated cleanly or returned data.
-                // A dead relay times out on both with nothing downloaded.
-                h.completed || h.downloaded > 0 || s.completed || s.downloaded > 0
-            }.getOrDefault(false)
-        if (!reached) deadRelays.markDead(relay)
-        progress.itemDone()
     }
 
     /** One (index relay x observer batch) 10002 lookup; completing an observer's LAST lookup unblocks their outboxes. */
@@ -569,11 +498,4 @@ internal class BlendedPass(
             .distinct()
 
     private fun neg(o: RelaySyncer.Outcome) = if (o.usedNegentropy) " (neg)" else ""
-
-    companion object {
-        // Discovery pulls only this many of a relay's newest 10002s — enough to
-        // surface its relay URLs and snowball the crawl, not its whole (often
-        // 100k+) list. The relay lists we route on come later, author-targeted.
-        private const val DISCOVERY_SAMPLE = 5_000
-    }
 }
