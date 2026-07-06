@@ -458,7 +458,11 @@ internal class BlendedPass(
         val haveList = storedRelayLists(authors).keys
         val needProfile = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors.filterNot { it in haveProfile }) }
         val needList = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors.filterNot { it in haveList }) }
+        val n = authors.size
         fanOutIdentity(indexRelays, needProfile, needList)
+        val t1p = n - needProfile.size
+        val t1l = n - needList.size
+        var tier2Size = 0
         if (needProfile.isNotEmpty() || needList.isNotEmpty()) {
             val tier2 =
                 knownRelays.entries
@@ -466,10 +470,13 @@ internal class BlendedPass(
                     .map { it.key }
                     .filterNot { it in indexRelays }
                     .take(EXPAND_RELAYS)
+            tier2Size = tier2.size
             fanOutIdentity(tier2, needProfile, needList)
         }
-        val n = authors.size
-        log("  [identity] $n author(s): profiles ${n - needProfile.size}/$n, lists ${n - needList.size}/$n (${deadLookups.size} dead lookup relay(s), ${knownRelays.size} known)")
+        log(
+            "  [identity] $n author(s): profiles $t1p->${n - needProfile.size}/$n, lists $t1l->${n - needList.size}/$n " +
+                "(tier2 $tier2Size of ${knownRelays.size} working relays, ${deadLookups.size} dead)",
+        )
     }
 
     /**
@@ -608,8 +615,13 @@ internal class BlendedPass(
         // Consecutive-ish timeouts before a lookup relay is skipped for the pass.
         private const val LOOKUP_DEAD_AFTER = 3
 
-        // Tier-2 pool size: the most-common relays real users write to, tried for
-        // authors the aggregators don't carry.
-        private const val EXPAND_RELAYS = 20
+        // Tier-2 fallback breadth: how many of the working relays (the write relays
+        // real users advertise, most-common first) to try for authors the
+        // aggregators don't carry. Kept moderate on purpose: probing the biggest
+        // relays showed the profiles/lists we miss are genuinely UNPUBLISHED (0/50
+        // sampled missing 10002s existed on purplepag.es/damus/nos.lol/primal), so a
+        // wider fan-out only grinds the unresolvable tail without finding anything.
+        // A resolvable straggler on a popular relay is still caught here.
+        private const val EXPAND_RELAYS = 50
     }
 }
