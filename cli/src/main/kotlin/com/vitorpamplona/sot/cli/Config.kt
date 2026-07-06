@@ -47,6 +47,7 @@ object Config {
             Triple("RELAY_URL", "ws://localhost:7777", "public ws url the relay advertises (NIP-42 + the identity's 10002)"),
             Triple("SYNC_INTERVAL", "15", "minutes between background sync passes in `sot serve`; 0 = serve-only"),
             Triple("SYNC_STATE", "sync-state.json", "where per-relay sync cursors persist (losing it costs a re-download, never correctness)"),
+            Triple("SYNC_RELAY_CONCURRENCY", "128", "how many relays sync in parallel (open websockets at once). 128 saturates a server; drop to ~16 on a home connection whose router chokes on the connection churn"),
             Triple(
                 "SEED_RELAYS",
                 "wss://purplepag.es,wss://relay.damus.io,wss://nos.lol",
@@ -90,6 +91,7 @@ object Config {
     val relayUrl get() = env("RELAY_URL")
     val syncIntervalMinutes get() = env("SYNC_INTERVAL").toInt()
     val syncStatePath get() = env("SYNC_STATE")
+    val syncRelayConcurrency get() = env("SYNC_RELAY_CONCURRENCY").toIntOrNull()?.coerceAtLeast(1) ?: 128
     val seedRelays get() = env("SEED_RELAYS").split(",").map { it.trim() }.filter { it.isNotEmpty() }
     val houseNpub get() = env("HOUSE_NPUB")
     val houseRelay get() = env("HOUSE_RELAY")
