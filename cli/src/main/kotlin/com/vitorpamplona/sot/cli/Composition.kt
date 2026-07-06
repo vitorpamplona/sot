@@ -112,27 +112,46 @@ internal fun housePubkey(): String? {
     }
 }
 
-/** The background/foreground sync composition over a shared [stack]. */
+/**
+ * The house account (pubkey + home relay), or exit. `index` and `serve` REQUIRE
+ * it: the house is the trust ROOT the whole sync builds from — its own 10002 and
+ * 10040 bootstrap the chain, and every other user we index is a subject its trust
+ * graph names. Without it there is nothing to root trust at, so we refuse to
+ * start rather than sync an empty or unanchored graph.
+ */
+internal fun requireHouse(): HouseAccount {
+    val raw = Config.houseNpub.trim()
+    if (raw.isEmpty()) {
+        err("HOUSE_NPUB is required: the house account is the trust root the sync builds from. Set HOUSE_NPUB and HOUSE_RELAY (run `sot init`, or edit .env).")
+        exitProcess(1)
+    }
+    val pubkey =
+        resolvePubkey(raw) ?: run {
+            err("HOUSE_NPUB '$raw' is not a resolvable pubkey (npub or hex).")
+            exitProcess(1)
+        }
+    val relay =
+        RelayUrlNormalizer.normalizeOrNull(Config.houseRelay) ?: run {
+            err("HOUSE_RELAY is required and must be a valid relay url - the house's kind-10002/10040 bootstrap from it. Got '${Config.houseRelay}'.")
+            exitProcess(1)
+        }
+    return HouseAccount(pubkey, relay)
+}
+
+/** The background/foreground sync composition over a shared [stack], rooted at [house]. */
 internal fun syncService(
     stack: Stack,
     identity: Identity,
-): SyncService {
-    val pubkey = housePubkey()
-    val homeRelay = RelayUrlNormalizer.normalizeOrNull(Config.houseRelay)
-    val house = if (pubkey != null && homeRelay != null) HouseAccount(pubkey, homeRelay) else null
-    if (pubkey != null && homeRelay == null) {
-        warn("HOUSE_RELAY '${Config.houseRelay}' is not a valid relay url - the house 10002 will only resolve via the index relays")
-    }
-    return SyncService(
+    house: HouseAccount,
+): SyncService =
+    SyncService(
         store = stack.store,
         identity = identity,
         house = house,
         seedRelays = Config.seedRelays,
-        // A house account without a usable home relay still syncs as a plain observer.
-        extraObservers = setOfNotNull(pubkey.takeIf { house == null }),
+        extraObservers = emptySet(),
         statePath = Config.syncStatePath,
         opts = SyncOptions(relayConcurrency = Config.syncRelayConcurrency),
         log = { println(styleLogLine(it)) },
         gauges = listOf(stack.feedGauge()),
     )
-}

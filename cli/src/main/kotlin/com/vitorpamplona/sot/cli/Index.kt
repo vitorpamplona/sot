@@ -30,11 +30,12 @@ import kotlinx.coroutines.runBlocking
  * double-download. Semantics stay correct, but bandwidth is wasted.
  */
 internal fun index(args: List<String>) {
+    val house = requireHouse() // the trust root; refuse to sync without it
     ensureVespaIsUp(args)
     val identity = serverIdentity()
     val stack = openStack()
     val store = stack.store
-    val sync = syncService(stack, identity)
+    val sync = syncService(stack, identity, house)
     try {
         runBlocking { sync.runOnce() }
         ok("pass complete.")

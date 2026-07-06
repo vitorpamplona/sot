@@ -62,17 +62,18 @@ private val WEB_UI: String? by lazy {
 }
 
 internal fun serve(args: List<String>) {
+    val house = requireHouse() // the trust root; refuse to serve without it
     ensureVespaIsUp(args)
     val identity = serverIdentity()
     logLine("relay identity (NIP-11 self): ${identity.signer.keyPair.pubKey.toNpub()}")
 
     val stack = openStack()
     val store = stack.store
-    val sync = syncService(stack, identity)
+    val sync = syncService(stack, identity, house)
     val relaySrv =
         SotRelayServer(
             store = store,
-            defaultObserver = housePubkey(),
+            defaultObserver = house.pubkey,
             relayUrl = publicRelayUrl(),
             onObserver = sync::enroll,
         )
