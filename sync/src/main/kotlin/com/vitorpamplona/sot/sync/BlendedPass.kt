@@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.store.VespaEventStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -419,13 +420,7 @@ internal class BlendedPass(
         // the index relays, so we know each author's write relays.
         val known = storedRelayLists(fresh)
         val missing = fresh.filterNot { it in known }
-        if (missing.isNotEmpty() && indexRelays.isNotEmpty()) {
-            forEachParallel(indexRelays, opts.concurrency) { relay ->
-                missing.chunked(AUTHORS_PER_FILTER).forEach { batch ->
-                    syncer.sync(relay, Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch), maxEvents = opts.maxEvents)
-                }
-            }
-        }
+        resolveRelayLists(missing)
         val byAuthor = storedRelayLists(fresh)
         for (a in fresh) {
             // An author's posts are on all their write relays, so fetch from just
@@ -435,6 +430,40 @@ internal class BlendedPass(
             val chosen = relays.minByOrNull { relayLoad[it]?.get() ?: 0 } ?: continue
             relayLoad.getOrPut(chosen) { AtomicInteger() }.incrementAndGet()
             bufferedBatch(contentBuf, chosen, a)?.let { batch -> submit { contentUnit(chosen, batch) } }
+        }
+    }
+
+    /**
+     * Resolve [authors]' 10002s from the aggregator relays, FIRST-SUCCESS: fan the
+     * lookups out to every index relay in parallel, but cancel the rest the moment
+     * the full set is covered — each list is taken from whichever aggregator serves
+     * it first. A slow or broken aggregator (one that pages-times-out at 10s) can no
+     * longer gate the batch: as soon as the fast ones cover everyone, its in-flight
+     * query is cancelled instead of awaited. Authors no aggregator carries simply
+     * leave [need] non-empty, so those relays run to completion (unavoidable).
+     */
+    private suspend fun resolveRelayLists(authors: List<HexKey>) {
+        if (authors.isEmpty() || indexRelays.isEmpty()) return
+        val need = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors) }
+        coroutineScope {
+            val group = this
+            for (relay in indexRelays) {
+                launch {
+                    for (batch in authors.chunked(AUTHORS_PER_FILTER)) {
+                        if (need.isEmpty()) break
+                        syncer.sync(
+                            relay,
+                            Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch),
+                            maxEvents = opts.maxEvents,
+                            onVerified = { events ->
+                                events.forEach { if (it is AdvertisedRelayListEvent) need.remove(it.pubKey) }
+                                // Everyone covered — stop awaiting the stragglers.
+                                if (need.isEmpty()) group.coroutineContext.cancelChildren()
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 
