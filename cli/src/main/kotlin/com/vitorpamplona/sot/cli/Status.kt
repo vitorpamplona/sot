@@ -179,19 +179,20 @@ private suspend fun trustGraph(
             .associate { it.pubKey to it.contactMetaData()?.let { md -> md.name ?: md.displayName }?.takeIf(String::isNotBlank) }
 
     println()
-    // Build the rows first so the columns can be sized to the data, then print
-    // fixed-width so name / npub / scores line up as a table.
+    // Only observers the house's graph actually SCORES — the swept-but-disconnected
+    // candidates (0 scores) are just directory noise here. Highest-scored first.
     val rows =
         lists
-            .sortedBy { names[it.pubKey]?.lowercase() ?: "~" }
             .map { list ->
                 val keys = list.rankServiceKeys()
                 val scores = if (keys.isEmpty()) 0 else store.count(Filter(kinds = listOf(ContactCardEvent.KIND), authors = keys))
-                ObserverRow(names[list.pubKey] ?: "(no profile)", Hex.decode(list.pubKey).toNpub(), num(scores), list.pubKey == house)
-            }
+                Triple(list.pubKey, scores, names[list.pubKey] ?: "(no profile)")
+            }.filter { it.second > 0 || it.first == house }
+            .sortedByDescending { it.second }
+            .map { (pk, scores, name) -> ObserverRow(name, Hex.decode(pk).toNpub(), num(scores), pk == house) }
     val nameW = (rows.maxOfOrNull { it.name.length } ?: 4).coerceIn("name".length, 28)
     val scoreW = (rows.maxOfOrNull { it.scores.length } ?: 0).coerceAtLeast("scores".length)
-    println("    imported observers:")
+    println("    imported observers — ${num(rows.size)} scored (of ${num(lists.size)} known):")
     println("      ${"name".padEnd(nameW)}  ${"npub".padEnd(63)}  ${"scores".padStart(scoreW)}")
     for (r in rows) {
         val marker = if (r.house) "  ← house" else ""
