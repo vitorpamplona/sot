@@ -12,6 +12,8 @@ build/
 **/build/
 !gradle/wrapper/
 .kotlin/
+# Machine-local Gradle config (SDK paths etc.) — never commit
+local.properties
 
 # IDE
 .idea/
