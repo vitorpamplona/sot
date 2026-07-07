@@ -170,7 +170,7 @@ private suspend fun trustGraph(
     // Users whose content we've pulled to completion (their contentUnit finished
     // cleanly), from the persisted sync state — the "fully indexed" count.
     val contentDone = runCatching { SyncState.load(Config.syncStatePath).contentDoneCount() }.getOrDefault(0)
-    row("content complete", "${num(contentDone)}  (users we've fully pulled content for)")
+    row("fully indexed", "${num(contentDone)}  (users we've pulled ALL content for; updates at pass end)")
 
     if (lists.isEmpty()) return
     val names =
