@@ -22,6 +22,7 @@
 
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.KSerializer
@@ -99,7 +100,19 @@ data class SyncState(
     val deadUntil: MutableMap<NormalizedRelayUrl, Long> = mutableMapOf(),
     // The last completed pass, for `sot status` freshness/throughput. Null until the first pass ends.
     var lastPass: PassSummary? = null,
+    // Scored authors whose content fetch finished CLEANLY — i.e. we pulled ALL of
+    // their content from their chosen write relay (a timed-out fetch doesn't count;
+    // it retries and only lands here once complete). Persisted so `sot status` can
+    // report "content complete for N users" without running a sync. Monotonic
+    // within a state file; a fresh start (or `sot destroy`) clears it.
+    val contentDone: MutableSet<HexKey> = mutableSetOf(),
 ) {
+    /** Mark [authors] as fully content-indexed (their contentUnit completed cleanly). */
+    fun markContentDone(authors: Collection<HexKey>) = synchronized(contentDone) { contentDone.addAll(authors) }
+
+    /** How many distinct authors we've fully pulled content for. */
+    fun contentDoneCount(): Int = synchronized(contentDone) { contentDone.size }
+
     /** Record the just-finished pass (called from the save path at pass end). */
     fun recordPass(
         endedAtSecs: Long,

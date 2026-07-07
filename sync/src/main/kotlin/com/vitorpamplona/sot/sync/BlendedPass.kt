@@ -579,6 +579,10 @@ internal class BlendedPass(
         authors: List<HexKey>,
     ) {
         val o = syncer.sync(relay, Filter(kinds = recordKinds, authors = authors), maxEvents = opts.maxEvents)
+        // A clean finish means we pulled ALL of these authors' content from this
+        // relay — mark them fully content-indexed. A timeout doesn't count; the
+        // batch retries next pass and only lands here once it completes.
+        if (o.completed) syncer.state.markContentDone(authors)
         log("[records ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${authors.size} author(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
     }
 

@@ -167,6 +167,10 @@ private suspend fun trustGraph(
     row("providers", "${num(serviceKeys.size)}  (distinct 30382 signer keys named)")
     row("scores", "${num(totalScores)}  (kind 30382)")
     row("orphan scores", "${num(totalScores - attributed)}  (30382s no stored 10040 attributes)")
+    // Users whose content we've pulled to completion (their contentUnit finished
+    // cleanly), from the persisted sync state — the "fully indexed" count.
+    val contentDone = runCatching { SyncState.load(Config.syncStatePath).contentDoneCount() }.getOrDefault(0)
+    row("content complete", "${num(contentDone)}  (users we've fully pulled content for)")
 
     if (lists.isEmpty()) return
     val names =
