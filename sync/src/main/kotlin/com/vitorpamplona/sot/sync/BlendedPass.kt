@@ -497,7 +497,10 @@ internal class BlendedPass(
         author: HexKey,
         writeRelays: List<NormalizedRelayUrl>,
     ) {
-        val relays = RelayUrls.publiclyRoutable(writeRelays).ifEmpty { contentRelays }
+        // Cap at [MAX_CONTENT_RELAYS]: content is replicated across the outbox, so a
+        // few relays cover it; fetching every one just re-downloads duplicates the
+        // seen-filter throws away.
+        val relays = RelayUrls.publiclyRoutable(writeRelays).take(MAX_CONTENT_RELAYS).ifEmpty { contentRelays }
         for (relay in relays) {
             bufferedBatch(contentBuf, relay, author)?.let { batch -> submit { contentUnit(relay, batch) } }
         }
@@ -706,5 +709,8 @@ internal class BlendedPass(
         // Short idle window for the tier-2 background chase (vs the 10s tier-1 uses):
         // a lookup answers fast or not at all, so this bounds how long tier-2 can grind.
         private const val TIER2_IDLE_MS = 3_000L
+
+        // Write relays to pull an author's content from — a few cover the replicated outbox.
+        private const val MAX_CONTENT_RELAYS = 4
     }
 }
