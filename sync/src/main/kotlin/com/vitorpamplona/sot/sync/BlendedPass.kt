@@ -426,25 +426,32 @@ internal class BlendedPass(
     private suspend fun registerContentAuthors(authors: List<HexKey>) {
         val fresh = authors.filter(knownContent::add)
         if (fresh.isEmpty()) return
+        val routed = ConcurrentHashMap.newKeySet<HexKey>()
         // Tier 1 (the aggregators — purplepag.es et al hold ~everyone's profile and
-        // list) BLOCKS: it hands us the write relays we route content to, and it's
-        // fast (author-bounded queries answer in ~1s). A profile must not depend on
-        // us happening to fetch content from a relay that has it.
-        resolveIdentity(fresh, tier2 = false)
-        val byAuthor = storedRelayLists(fresh)
-        for (a in fresh) {
-            // An author's posts are on all their write relays, so fetch from just
-            // ONE — the least-loaded reachable one — to spread work across the set;
-            // if none are reachable, fall back to the index relays.
-            val relays = RelayUrls.publiclyRoutable(byAuthor[a]?.writeRelaysNorm().orEmpty()).ifEmpty { indexRelays }
-            val chosen = relays.minByOrNull { relayLoad[it]?.get() ?: 0 } ?: continue
-            relayLoad.getOrPut(chosen) { AtomicInteger() }.incrementAndGet()
-            bufferedBatch(contentBuf, chosen, a)?.let { batch -> submit { contentUnit(chosen, batch) } }
+        // list) routes each author's content the MOMENT their 10002 lands, so
+        // content flows AS tier-1 resolves rather than after the whole batch. A
+        // profile must not depend on us happening to fetch content from a relay
+        // that has it, so profiles come from here too.
+        resolveIdentity(fresh, tier2 = false) { author, writeRelays ->
+            if (routed.add(author)) routeContent(author, writeRelays)
         }
+        // Whoever tier-1 found no list for: route to the index relays now.
+        for (a in fresh) if (routed.add(a)) routeContent(a, emptyList())
         // Tier 2 (chasing stragglers across the broader working-relay list) is
         // best-effort — it mostly finds that the missing lists/profiles are simply
         // unpublished — so it runs in the BACKGROUND and must NEVER block content.
         submitSecondary { resolveIdentity(fresh, tier2 = true) }
+    }
+
+    /** Assign [author]'s content to ONE reachable write relay (least-loaded), or the index relays, buffered into a unit. */
+    private fun routeContent(
+        author: HexKey,
+        writeRelays: List<NormalizedRelayUrl>,
+    ) {
+        val relays = RelayUrls.publiclyRoutable(writeRelays).ifEmpty { indexRelays }
+        val chosen = relays.minByOrNull { relayLoad[it]?.get() ?: 0 } ?: return
+        relayLoad.getOrPut(chosen) { AtomicInteger() }.incrementAndGet()
+        bufferedBatch(contentBuf, chosen, author)?.let { batch -> submit { contentUnit(chosen, batch) } }
     }
 
     /**
@@ -460,6 +467,7 @@ internal class BlendedPass(
     private suspend fun resolveIdentity(
         authors: List<HexKey>,
         tier2: Boolean,
+        onList: ((HexKey, List<NormalizedRelayUrl>) -> Unit)? = null,
     ) {
         if (authors.isEmpty()) return
         // Recompute what's still missing from the store — for the tier-2 background
@@ -482,7 +490,7 @@ internal class BlendedPass(
             }
         val p0 = n - needProfile.size
         val l0 = n - needList.size
-        fanOutIdentity(relays, needProfile, needList)
+        fanOutIdentity(relays, needProfile, needList, onList)
         log(
             "  [identity ${if (tier2) "t2" else "t1"}] $n author(s): profiles $p0->${n - needProfile.size}/$n, " +
                 "lists $l0->${n - needList.size}/$n (${relays.size} relays, ${deadLookups.size} dead)",
@@ -502,6 +510,7 @@ internal class BlendedPass(
         relays: List<NormalizedRelayUrl>,
         needProfile: MutableSet<HexKey>,
         needList: MutableSet<HexKey>,
+        onList: ((HexKey, List<NormalizedRelayUrl>) -> Unit)? = null,
     ) {
         val live = relays.filterNot { it in deadLookups }
         if (live.isEmpty() || (needProfile.isEmpty() && needList.isEmpty())) return
@@ -529,7 +538,9 @@ internal class BlendedPass(
 
                                             is AdvertisedRelayListEvent -> {
                                                 needList.remove(e.pubKey)
-                                                e.writeRelaysNorm()?.forEach { r -> knownRelays.getOrPut(r) { AtomicInteger() }.incrementAndGet() }
+                                                val wr = e.writeRelaysNorm().orEmpty()
+                                                wr.forEach { r -> knownRelays.getOrPut(r) { AtomicInteger() }.incrementAndGet() }
+                                                onList?.invoke(e.pubKey, wr)
                                             }
 
                                             else -> {}
