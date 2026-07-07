@@ -34,11 +34,14 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.store.VespaEventStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -118,15 +121,35 @@ internal class BlendedPass(
     private val contentBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
 
     // Fallback content sources for authors with NO 10002: the big relays that
-    // actually aggregate notes. The profile/index aggregators (purplepag.es) hold
-    // relay lists and profiles — no content — so they were the wrong fallback.
+    // actually aggregate notes (the profile/index aggregators hold no content). A
+    // no-10002 author is spread across a hash-picked [FALLBACK_FANOUT] of these so
+    // the load fans out across the whole set instead of piling every such author
+    // onto the same two or three relays (which then jam the pool).
     private val contentRelays =
-        listOfNotNull(
-            RelayUrlNormalizer.normalizeOrNull("wss://nos.lol"),
-            RelayUrlNormalizer.normalizeOrNull("wss://relay.damus.io"),
-            RelayUrlNormalizer.normalizeOrNull("wss://relay.primal.net"),
-        )
+        listOf(
+            "wss://nos.lol",
+            "wss://relay.damus.io",
+            "wss://relay.primal.net",
+            "wss://nostr.mom",
+            "wss://relay.nostr.band",
+            "wss://nostr.wine",
+            "wss://relay.snort.social",
+            "wss://eden.nostr.land",
+        ).mapNotNull { RelayUrlNormalizer.normalizeOrNull(it) }
     private val recordKinds = IndexableKinds.kinds + DeletionEvent.KIND + RequestToVanishEvent.KIND
+
+    // The content plane runs a dedicated PUMP per relay so relays drain
+    // INDEPENDENTLY: a busy or huge relay never suspends a shared worker that could
+    // be serving another relay (the old shared pool collapsed to ~one relay's worth
+    // of slots). Pumps live in [passScope]; [contentGate] bounds TOTAL concurrent
+    // content fetches, and each pump caps its own relay at [MAX_PER_RELAY_CONTENT].
+    // A relay that keeps returning few events per author is DISCARDED — dropped and
+    // taken off routing — because those authors also ride their other write relays.
+    private lateinit var passScope: CoroutineScope
+    private val contentGate = Semaphore(opts.relayConcurrency.coerceAtLeast(1))
+    private val contentPumps = ConcurrentHashMap<NormalizedRelayUrl, Channel<List<HexKey>>>()
+    private val lowYieldStreak = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+    private val discardedRelays = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
     // 10002-lookup health, per pass. A broken aggregator that times out
     // [LOOKUP_DEAD_AFTER] times is skipped for the rest of the pass so it can't
@@ -139,6 +162,7 @@ internal class BlendedPass(
 
     suspend fun run(initialObservers: Set<HexKey>) =
         coroutineScope {
+            passScope = this // content pumps launch here, so the pass waits for them
             syncer.resetSeen() // fresh per-pass duplicate filter
             // The house is the trust ROOT and the ONLY primary: it computes first
             // (primary lane) so its 10002/kind-0/10040, scores, and content are
@@ -218,6 +242,10 @@ internal class BlendedPass(
     private fun closeQueues() {
         primaryQueue.close()
         secondaryQueue.close()
+        // The chain is done, so no more content will be routed: close every pump's
+        // inbox. Each pump drains whatever it already holds, then exits — and since
+        // pumps are children of [passScope], the pass waits for that content to land.
+        contentPumps.values.forEach { it.close() }
     }
 
     /**
@@ -263,10 +291,11 @@ internal class BlendedPass(
             submit { scoreUnit(relay, batch) }
             submitted = true
         }
-        for ((relay, batch) in drain(contentBuf)) {
-            submit { contentUnit(relay, batch) }
-            submitted = true
-        }
+        // Content rides the per-relay pumps, NOT the shared pool — so draining a
+        // partial batch to a pump does not count as pool work (`submitted`); the
+        // pumps' own lifecycle (closed at [closeQueues], awaited by [passScope])
+        // carries it to completion.
+        for ((relay, batch) in drain(contentBuf)) enqueueContent(relay, batch)
         if (!submitted && catchUpRan.compareAndSet(false, true)) {
             // Phase C over the final store state: hint-only observers and
             // failed outbox units still get their providers.
@@ -497,12 +526,100 @@ internal class BlendedPass(
         author: HexKey,
         writeRelays: List<NormalizedRelayUrl>,
     ) {
-        // Cap at [MAX_CONTENT_RELAYS]: content is replicated across the outbox, so a
-        // few relays cover it; fetching every one just re-downloads duplicates the
-        // seen-filter throws away.
-        val relays = RelayUrls.publiclyRoutable(writeRelays).take(MAX_CONTENT_RELAYS).ifEmpty { contentRelays }
+        // Cap own write relays at [MAX_CONTENT_RELAYS]: content is replicated across
+        // the outbox, so a few cover it. No 10002 -> a hash-spread slice of the
+        // content relays, so no-10002 authors fan out instead of all landing on the
+        // same relays. Each batch goes to that relay's PUMP, not the shared pool.
+        val relays = RelayUrls.publiclyRoutable(writeRelays).take(MAX_CONTENT_RELAYS).ifEmpty { fallbackRelays(author) }
         for (relay in relays) {
-            bufferedBatch(contentBuf, relay, author)?.let { batch -> submit { contentUnit(relay, batch) } }
+            if (relay in discardedRelays) continue
+            bufferedBatch(contentBuf, relay, author)?.let { batch -> enqueueContent(relay, batch) }
+        }
+    }
+
+    /** A hash-picked [FALLBACK_FANOUT] slice of the content relays, so no-10002 authors spread evenly across the whole set. */
+    private fun fallbackRelays(author: HexKey): List<NormalizedRelayUrl> {
+        if (contentRelays.isEmpty()) return emptyList()
+        val start = (author.hashCode() and Int.MAX_VALUE) % contentRelays.size
+        return (0 until FALLBACK_FANOUT.coerceAtMost(contentRelays.size)).map { contentRelays[(start + it) % contentRelays.size] }
+    }
+
+    /** Hand a content batch to its relay's pump, spinning the pump up on first use. */
+    private fun enqueueContent(
+        relay: NormalizedRelayUrl,
+        batch: List<HexKey>,
+    ) {
+        if (relay in discardedRelays) return
+        pumpFor(relay).trySend(batch)
+    }
+
+    // computeIfAbsent (atomic — runs the builder at most once per key) so a race can
+    // never launch a second pump on a channel that isn't in the map: that orphan
+    // would loop on a never-closed inbox forever and the pass would never end.
+    private fun pumpFor(relay: NormalizedRelayUrl): Channel<List<HexKey>> =
+        contentPumps.computeIfAbsent(relay) {
+            Channel<List<HexKey>>(Channel.UNLIMITED).also { ch -> passScope.launch { runPump(relay, ch) } }
+        }
+
+    /**
+     * One relay's content pump. It drains that relay's batch queue, running at most
+     * [MAX_PER_RELAY_CONTENT] fetches for this relay at once and bounded globally by
+     * [contentGate] — so this relay's work overlaps every OTHER relay's pump instead
+     * of queuing behind a shared worker. The enclosing [coroutineScope] awaits the
+     * in-flight fetches before the pump exits, and the pump exits when its inbox is
+     * closed (chain done) and drained.
+     */
+    private suspend fun runPump(
+        relay: NormalizedRelayUrl,
+        inbox: Channel<List<HexKey>>,
+    ) = coroutineScope {
+        val relayGate = Semaphore(MAX_PER_RELAY_CONTENT)
+        for (batch in inbox) {
+            if (relay in discardedRelays) continue
+            relayGate.acquire()
+            launch {
+                try {
+                    contentGate.withPermit { fetchContent(relay, batch) }
+                } catch (e: CancellationException) {
+                    throw e // a real cancellation (pass teardown) must propagate
+                } catch (e: Exception) {
+                    // A single relay's failure must NOT cancel the pass (the pump is a
+                    // child of passScope) — swallow it like the pool's runUnit does.
+                    log("  ! content fetch failed @ ${relay.displayUrl()}: ${e.message}")
+                } finally {
+                    relayGate.release()
+                }
+            }
+        }
+    }
+
+    /** One (relay x author batch) content download, with fast-discard of low-yield relays. */
+    private suspend fun fetchContent(
+        relay: NormalizedRelayUrl,
+        authors: List<HexKey>,
+    ) {
+        val o = syncer.sync(relay, Filter(kinds = recordKinds, authors = authors), maxEvents = opts.maxEvents)
+        // A clean finish means we pulled ALL of these authors' content from this
+        // relay — mark them fully content-indexed. A timeout doesn't count.
+        if (o.completed) syncer.state.markContentDone(authors)
+        log("[records ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${authors.size} author(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
+        // Fast discard: a relay that keeps returning few events per author isn't
+        // holding these authors' content, so it just wastes a pump slot. Drop it (its
+        // authors ride their OTHER write relays). The curated content relays are the
+        // no-10002 safety net and are never discarded.
+        val perAuthor = if (authors.isEmpty()) Int.MAX_VALUE else o.downloaded / authors.size
+        if (perAuthor < DISCARD_YIELD && relay !in contentRelays) {
+            if (lowYieldStreak.getOrPut(relay) { AtomicInteger() }.incrementAndGet() >= DISCARD_AFTER) discardRelay(relay)
+        } else {
+            lowYieldStreak[relay]?.set(0)
+        }
+    }
+
+    /** Stop using [relay] for content this pass: close its pump (drops the queue) and take it off routing. */
+    private fun discardRelay(relay: NormalizedRelayUrl) {
+        if (discardedRelays.add(relay)) {
+            contentPumps[relay]?.close()
+            log("  [${relay.displayUrl()}] low content yield - discarded for this pass")
         }
     }
 
@@ -630,19 +747,6 @@ internal class BlendedPass(
             .flatMap { batch -> store.query<AdvertisedRelayListEvent>(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND), authors = batch)) }
             .associateBy { it.pubKey }
 
-    /** One (relay x author batch) content download: every searchable kind plus the author's own deletions. */
-    private suspend fun contentUnit(
-        relay: NormalizedRelayUrl,
-        authors: List<HexKey>,
-    ) {
-        val o = syncer.sync(relay, Filter(kinds = recordKinds, authors = authors), maxEvents = opts.maxEvents)
-        // A clean finish means we pulled ALL of these authors' content from this
-        // relay — mark them fully content-indexed. A timeout doesn't count; the
-        // batch retries next pass and only lands here once it completes.
-        if (o.completed) syncer.state.markContentDone(authors)
-        log("[records ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${authors.size} author(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
-    }
-
     /** Add [item] under [key]; returns a full batch to flush when the buffer reaches the filter cap. */
     private fun <K> bufferedBatch(
         buffers: ConcurrentHashMap<K, MutableList<HexKey>>,
@@ -712,5 +816,17 @@ internal class BlendedPass(
 
         // Write relays to pull an author's content from — a few cover the replicated outbox.
         private const val MAX_CONTENT_RELAYS = 4
+
+        // Content relays a no-10002 author fans out to (hash-picked from contentRelays).
+        private const val FALLBACK_FANOUT = 2
+
+        // Concurrent content fetches a SINGLE relay's pump runs at once.
+        private const val MAX_PER_RELAY_CONTENT = 4
+
+        // Discard a relay for content after this many consecutive batches that
+        // averaged fewer than DISCARD_YIELD events per author — it clearly isn't
+        // holding these authors' content, so it only wastes a pump slot.
+        private const val DISCARD_YIELD = 3
+        private const val DISCARD_AFTER = 2
     }
 }
