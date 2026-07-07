@@ -112,6 +112,14 @@ internal class BlendedPass(
     private val relayLoad = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
     private val recordKinds = IndexableKinds.kinds + DeletionEvent.KIND + RequestToVanishEvent.KIND
 
+    // What we pull from each scored author's write relay: their content PLUS their
+    // kind-10040 trust list. A scored author who is ALSO an observer (has a 10040)
+    // is discovered here and registered as an observer, so their own trust
+    // perspective gets indexed — this is the web-of-trust expansion out from the
+    // house. The 10040 lives on the author's OUTBOX (their write relay), not the
+    // profile aggregators, which is why it rides with content, not the identity fetch.
+    private val contentKinds = recordKinds + TrustProviderListEvent.KIND
+
     // 10002-lookup health, per pass. A broken aggregator that times out
     // [LOOKUP_DEAD_AFTER] times is skipped for the rest of the pass so it can't
     // gate resolution. [knownRelays] accumulates the write relays of lists we DID
@@ -490,7 +498,11 @@ internal class BlendedPass(
             }
         val p0 = n - needProfile.size
         val l0 = n - needList.size
-        fanOutIdentity(relays, needProfile, needList, onList)
+        // Tier-1 gives slow-but-alive aggregators the full idle window; tier-2 is a
+        // best-effort background straggler chase, so it uses a short one — a relay
+        // either has the list fast or it doesn't, and this keeps tier-2 from
+        // grinding for hours on the unresolvable tail.
+        fanOutIdentity(relays, needProfile, needList, if (tier2) TIER2_IDLE_MS else LOOKUP_IDLE_MS, onList)
         log(
             "  [identity ${if (tier2) "t2" else "t1"}] $n author(s): profiles $p0->${n - needProfile.size}/$n, " +
                 "lists $l0->${n - needList.size}/$n (${relays.size} relays, ${deadLookups.size} dead)",
@@ -510,6 +522,7 @@ internal class BlendedPass(
         relays: List<NormalizedRelayUrl>,
         needProfile: MutableSet<HexKey>,
         needList: MutableSet<HexKey>,
+        idleMs: Long = LOOKUP_IDLE_MS,
         onList: ((HexKey, List<NormalizedRelayUrl>) -> Unit)? = null,
     ) {
         val live = relays.filterNot { it in deadLookups }
@@ -528,7 +541,7 @@ internal class BlendedPass(
                                 relay,
                                 Filter(kinds = listOf(MetadataEvent.KIND, AdvertisedRelayListEvent.KIND), authors = want),
                                 maxEvents = opts.maxEvents,
-                                idleMs = LOOKUP_IDLE_MS,
+                                idleMs = idleMs,
                                 onVerified = { events ->
                                     events.forEach { e ->
                                         when (e) {
@@ -578,7 +591,15 @@ internal class BlendedPass(
         relay: NormalizedRelayUrl,
         authors: List<HexKey>,
     ) {
-        val o = syncer.sync(relay, Filter(kinds = recordKinds, authors = authors), maxEvents = opts.maxEvents)
+        val o =
+            syncer.sync(
+                relay,
+                Filter(kinds = contentKinds, authors = authors),
+                maxEvents = opts.maxEvents,
+                // A scored author who turns out to be an observer (published a 10040)
+                // registers as one the moment it lands, so their perspective indexes.
+                onVerified = { events -> registerObservers(events.filterIsInstance<TrustProviderListEvent>().map { it.pubKey }) },
+            )
         // A clean finish means we pulled ALL of these authors' content from this
         // relay — mark them fully content-indexed. A timeout doesn't count; the
         // batch retries next pass and only lands here once it completes.
@@ -642,11 +663,15 @@ internal class BlendedPass(
 
         // Tier-2 fallback breadth: how many of the working relays (the write relays
         // real users advertise, most-common first) to try for authors the
-        // aggregators don't carry. Kept moderate on purpose: probing the biggest
-        // relays showed the profiles/lists we miss are genuinely UNPUBLISHED (0/50
-        // sampled missing 10002s existed on purplepag.es/damus/nos.lol/primal), so a
-        // wider fan-out only grinds the unresolvable tail without finding anything.
-        // A resolvable straggler on a popular relay is still caught here.
-        private const val EXPAND_RELAYS = 50
+        // aggregators don't carry. Kept SMALL on purpose: probing the biggest relays
+        // showed the profiles/lists we miss are genuinely UNPUBLISHED (0/50 sampled
+        // missing 10002s existed on purplepag.es/damus/nos.lol/primal), so a wide
+        // fan-out only grinds the unresolvable tail for hours without finding
+        // anything. A resolvable straggler on a popular relay is still caught here.
+        private const val EXPAND_RELAYS = 15
+
+        // Short idle window for the tier-2 background chase (vs the 10s tier-1 uses):
+        // a lookup answers fast or not at all, so this bounds how long tier-2 can grind.
+        private const val TIER2_IDLE_MS = 3_000L
     }
 }
