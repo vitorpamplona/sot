@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.displayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
@@ -115,7 +116,16 @@ internal class BlendedPass(
     // author is assigned to their least-loaded write relay, so the load spreads.
     private val knownContent = ConcurrentHashMap.newKeySet<HexKey>()
     private val contentBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
-    private val relayLoad = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+
+    // Fallback content sources for authors with NO 10002: the big relays that
+    // actually aggregate notes. The profile/index aggregators (purplepag.es) hold
+    // relay lists and profiles — no content — so they were the wrong fallback.
+    private val contentRelays =
+        listOfNotNull(
+            RelayUrlNormalizer.normalizeOrNull("wss://nos.lol"),
+            RelayUrlNormalizer.normalizeOrNull("wss://relay.damus.io"),
+            RelayUrlNormalizer.normalizeOrNull("wss://relay.primal.net"),
+        )
     private val recordKinds = IndexableKinds.kinds + DeletionEvent.KIND + RequestToVanishEvent.KIND
 
     // 10002-lookup health, per pass. A broken aggregator that times out
@@ -475,15 +485,22 @@ internal class BlendedPass(
         submitSecondary { resolveIdentity(fresh, tier2 = true) }
     }
 
-    /** Assign [author]'s content to ONE reachable write relay (least-loaded), or the index relays, buffered into a unit. */
+    /**
+     * Fetch [author]'s content from ALL their reachable write relays (deduped by the
+     * seen-filter). A user's notes are spread across their outbox — relays prune, and
+     * only some hold the full history — so picking ONE relay routinely missed most of
+     * their content (the same author had 500 notes on nos.lol and 0 stored because
+     * we'd chosen a different, emptier write relay). No 10002 at all? fall back to the
+     * major CONTENT relays; the profile aggregators hold no notes.
+     */
     private fun routeContent(
         author: HexKey,
         writeRelays: List<NormalizedRelayUrl>,
     ) {
-        val relays = RelayUrls.publiclyRoutable(writeRelays).ifEmpty { indexRelays }
-        val chosen = relays.minByOrNull { relayLoad[it]?.get() ?: 0 } ?: return
-        relayLoad.getOrPut(chosen) { AtomicInteger() }.incrementAndGet()
-        bufferedBatch(contentBuf, chosen, author)?.let { batch -> submit { contentUnit(chosen, batch) } }
+        val relays = RelayUrls.publiclyRoutable(writeRelays).ifEmpty { contentRelays }
+        for (relay in relays) {
+            bufferedBatch(contentBuf, relay, author)?.let { batch -> submit { contentUnit(relay, batch) } }
+        }
     }
 
     /**
