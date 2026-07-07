@@ -426,10 +426,11 @@ internal class BlendedPass(
     private suspend fun registerContentAuthors(authors: List<HexKey>) {
         val fresh = authors.filter(knownContent::add)
         if (fresh.isEmpty()) return
-        // Pull each author's kind-0 profile AND kind-10002 relay list straight from
-        // the aggregators (purplepag.es et al hold ~everyone's). A profile must not
-        // depend on us happening to fetch content from a relay that has it.
-        resolveIdentity(fresh)
+        // Tier 1 (the aggregators — purplepag.es et al hold ~everyone's profile and
+        // list) BLOCKS: it hands us the write relays we route content to, and it's
+        // fast (author-bounded queries answer in ~1s). A profile must not depend on
+        // us happening to fetch content from a relay that has it.
+        resolveIdentity(fresh, tier2 = false)
         val byAuthor = storedRelayLists(fresh)
         for (a in fresh) {
             // An author's posts are on all their write relays, so fetch from just
@@ -440,6 +441,10 @@ internal class BlendedPass(
             relayLoad.getOrPut(chosen) { AtomicInteger() }.incrementAndGet()
             bufferedBatch(contentBuf, chosen, a)?.let { batch -> submit { contentUnit(chosen, batch) } }
         }
+        // Tier 2 (chasing stragglers across the broader working-relay list) is
+        // best-effort — it mostly finds that the missing lists/profiles are simply
+        // unpublished — so it runs in the BACKGROUND and must NEVER block content.
+        submitSecondary { resolveIdentity(fresh, tier2 = true) }
     }
 
     /**
@@ -452,30 +457,35 @@ internal class BlendedPass(
      * — not bundled into a per-author content pull from one write relay — is what
      * lifts coverage toward 100%. A debug line reports what actually resolved.
      */
-    private suspend fun resolveIdentity(authors: List<HexKey>) {
+    private suspend fun resolveIdentity(
+        authors: List<HexKey>,
+        tier2: Boolean,
+    ) {
         if (authors.isEmpty()) return
+        // Recompute what's still missing from the store — for the tier-2 background
+        // pass this runs AFTER tier-1 landed, so it only chases the real remainder.
         val haveProfile = storedProfiles(authors)
         val haveList = storedRelayLists(authors).keys
         val needProfile = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors.filterNot { it in haveProfile }) }
         val needList = ConcurrentHashMap.newKeySet<HexKey>().apply { addAll(authors.filterNot { it in haveList }) }
+        if (needProfile.isEmpty() && needList.isEmpty()) return
         val n = authors.size
-        fanOutIdentity(indexRelays, needProfile, needList)
-        val t1p = n - needProfile.size
-        val t1l = n - needList.size
-        var tier2Size = 0
-        if (needProfile.isNotEmpty() || needList.isNotEmpty()) {
-            val tier2 =
+        val relays =
+            if (!tier2) {
+                indexRelays
+            } else {
                 knownRelays.entries
                     .sortedByDescending { it.value.get() }
                     .map { it.key }
                     .filterNot { it in indexRelays }
                     .take(EXPAND_RELAYS)
-            tier2Size = tier2.size
-            fanOutIdentity(tier2, needProfile, needList)
-        }
+            }
+        val p0 = n - needProfile.size
+        val l0 = n - needList.size
+        fanOutIdentity(relays, needProfile, needList)
         log(
-            "  [identity] $n author(s): profiles $t1p->${n - needProfile.size}/$n, lists $t1l->${n - needList.size}/$n " +
-                "(tier2 $tier2Size of ${knownRelays.size} working relays, ${deadLookups.size} dead)",
+            "  [identity ${if (tier2) "t2" else "t1"}] $n author(s): profiles $p0->${n - needProfile.size}/$n, " +
+                "lists $l0->${n - needList.size}/$n (${relays.size} relays, ${deadLookups.size} dead)",
         )
     }
 
