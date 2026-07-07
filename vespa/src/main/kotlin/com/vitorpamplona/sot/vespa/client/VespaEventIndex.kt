@@ -75,25 +75,24 @@ class VespaEventIndex(
     private val feed: FeedClient =
         FeedClientBuilder
             .create(URI.create(baseUrl))
-            // Bulk ingest keeps thousands of puts in flight; the defaults
-            // (one connection, a slow-ramping throttle window) cap effective
-            // concurrency in the single digits and starve a local engine.
-            .setConnectionsPerEndpoint(8)
-            .setMaxStreamPerConnection(256)
-            // The dynamic throttler STARTS at 2 x connections in flight and
-            // ramps up by probing throughput. A batched writer never sustains
-            // that probe (putAll bursts with query gaps between chunks), so it
-            // idles at the floor: ~20 in flight x ~20ms/write is about 1k/s,
-            // against an engine measured at twice that. Start the window high
-            // instead. The throttler still adapts DOWN if the engine pushes
-            // back. This is an implementation-only knob the API interface
-            // doesn't expose, so apply it reflectively and ignore it if a
-            // future client version renames it.
-            .apply {
-                runCatching {
-                    javaClass.getMethod("setInitialInflightFactor", Int::class.java).invoke(this, 64)
-                }
-            }.setRetryStrategy(
+            // The throttle FLOOR is what pins bulk ingest, and it is hard-wired to
+            // minInflight = 2 x connectionsPerEndpoint. Under our bursty batched
+            // writes (putAll bursts, then a gap while the next chunk dedups) the
+            // dynamic throttler never sustains its upward probe, so it idles at that
+            // floor. At the old 8 connections that floor was ~16 in flight — about
+            // 1.2k docs/s while the engine sat at ~2.4 of 12 cores, ~5x idle. Raising
+            // the connection count raises the floor (64 in flight here) AND the real
+            // HTTP/2 parallelism, so ingest drives the engine harder. The throttler
+            // still adapts DOWN if Vespa pushes back (retries absorb any overshoot).
+            //
+            // The client sizes its own Jetty pool at max(min(cores,64),8) + connections
+            // threads, so on a small-core host too many connections starve that pool
+            // (Jetty reserves 16). 32 keeps headroom. (The old reflective
+            // setInitialInflightFactor knob was dead: the 8.7 throttler ignores it —
+            // the initial target is already maxInflight.)
+            .setConnectionsPerEndpoint(32)
+            .setMaxStreamPerConnection(128)
+            .setRetryStrategy(
                 object : FeedClient.RetryStrategy {
                     // Bounded: a dead Vespa should surface as failed ops, not a hang.
                     override fun retries() = 5
