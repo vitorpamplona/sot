@@ -550,6 +550,9 @@ internal class BlendedPass(
         batch: List<HexKey>,
     ) {
         if (relay in discardedRelays) return
+        // Count the batch here (the pool's submit did this for the old contentUnit)
+        // so the records X/Y meter stays balanced against fetchContent's itemDone().
+        progress.addPhaseItems(1)
         pumpFor(relay).trySend(batch)
     }
 
@@ -575,7 +578,10 @@ internal class BlendedPass(
     ) = coroutineScope {
         val relayGate = Semaphore(MAX_PER_RELAY_CONTENT)
         for (batch in inbox) {
-            if (relay in discardedRelays) continue
+            if (relay in discardedRelays) {
+                progress.itemDone() // counted at enqueue but dropped — keep the meter balanced
+                continue
+            }
             relayGate.acquire()
             launch {
                 try {
