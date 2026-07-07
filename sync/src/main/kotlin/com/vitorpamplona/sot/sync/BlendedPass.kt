@@ -90,6 +90,12 @@ internal class BlendedPass(
     private val primaryPending = AtomicInteger(0)
     private val secondaryPending = AtomicInteger(0)
     private val known = ConcurrentHashMap.newKeySet<HexKey>()
+
+    // Every 10040 author the up-front broad sweep turned up (~all ~200 observers on
+    // Nostr). A CANDIDATE, not yet an observer: only the ones the house's trust
+    // graph actually scores (a scored subject shows up here AND gets a profile doc)
+    // are activated, so we never index a perspective disconnected from the house.
+    private val candidateObservers = ConcurrentHashMap.newKeySet<HexKey>()
     private val listsLeft = ConcurrentHashMap<HexKey, AtomicInteger>()
     private val outboxBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
     private val noList = ConcurrentLinkedQueue<HexKey>()
@@ -111,14 +117,6 @@ internal class BlendedPass(
     private val contentBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
     private val relayLoad = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
     private val recordKinds = IndexableKinds.kinds + DeletionEvent.KIND + RequestToVanishEvent.KIND
-
-    // What we pull from each scored author's write relay: their content PLUS their
-    // kind-10040 trust list. A scored author who is ALSO an observer (has a 10040)
-    // is discovered here and registered as an observer, so their own trust
-    // perspective gets indexed — this is the web-of-trust expansion out from the
-    // house. The 10040 lives on the author's OUTBOX (their write relay), not the
-    // profile aggregators, which is why it rides with content, not the identity fetch.
-    private val contentKinds = recordKinds + TrustProviderListEvent.KIND
 
     // 10002-lookup health, per pass. A broken aggregator that times out
     // [LOOKUP_DEAD_AFTER] times is skipped for the rest of the pass so it can't
@@ -143,6 +141,12 @@ internal class BlendedPass(
             val housePk = house?.pubkey
             registerObservers(listOfNotNull(housePk), primary = true)
             registerObservers((initialObservers + storedObservers()) - setOfNotNull(housePk), primary = false)
+            // kind 10040 is RARE — only ~100-200 people on all of Nostr publish one —
+            // so a BROAD kind-10040 query is cheap and near-complete on a major relay
+            // (nos.lol alone returns ~all of them in under a second). Sweep the lookup
+            // relays for it up front so every observer's perspective indexes fast,
+            // instead of trickling in one-by-one as we happen to fetch their content.
+            for (relay in indexRelays) submitSecondary { sweepObservers(relay) }
             // No initial units doesn't mean no work. An observer with no
             // discoverable 10002 lands in the no-list fallback, and stored 10040s
             // feed the catch-up; both surface through onIdle. Only a pass that
@@ -430,10 +434,30 @@ internal class BlendedPass(
                 }.distinct()
     }
 
-    /** New scored authors join the records side of the pipeline: resolve profile + outbox, then fetch their content. */
+    /**
+     * Broad kind-10040 sweep of one relay. 10040 is rare (~200 people on all of
+     * Nostr), so this is cheap and near-complete on a major relay — it just
+     * COLLECTS candidate observers; [registerContentAuthors] activates only the
+     * ones the house's trust graph actually scores.
+     */
+    private suspend fun sweepObservers(relay: NormalizedRelayUrl) {
+        runCatching {
+            syncer.sync(
+                relay,
+                Filter(kinds = listOf(TrustProviderListEvent.KIND)),
+                onVerified = { events -> candidateObservers.addAll(events.filterIsInstance<TrustProviderListEvent>().map { it.pubKey }) },
+            )
+        }
+    }
+
+    /** New scored authors join the records side: activate any connected observers among them, resolve, then fetch content. */
     private suspend fun registerContentAuthors(authors: List<HexKey>) {
         val fresh = authors.filter(knownContent::add)
         if (fresh.isEmpty()) return
+        // A scored subject that is ALSO a swept observer is CONNECTED to the house
+        // (its trust graph scores them), so index their perspective. The swept
+        // observers the house doesn't score stay dormant — never activated.
+        registerObservers(fresh.filter { it in candidateObservers })
         val routed = ConcurrentHashMap.newKeySet<HexKey>()
         // Tier 1 (the aggregators — purplepag.es et al hold ~everyone's profile and
         // list) routes each author's content the MOMENT their 10002 lands, so
@@ -591,15 +615,7 @@ internal class BlendedPass(
         relay: NormalizedRelayUrl,
         authors: List<HexKey>,
     ) {
-        val o =
-            syncer.sync(
-                relay,
-                Filter(kinds = contentKinds, authors = authors),
-                maxEvents = opts.maxEvents,
-                // A scored author who turns out to be an observer (published a 10040)
-                // registers as one the moment it lands, so their perspective indexes.
-                onVerified = { events -> registerObservers(events.filterIsInstance<TrustProviderListEvent>().map { it.pubKey }) },
-            )
+        val o = syncer.sync(relay, Filter(kinds = recordKinds, authors = authors), maxEvents = opts.maxEvents)
         // A clean finish means we pulled ALL of these authors' content from this
         // relay — mark them fully content-indexed. A timeout doesn't count; the
         // batch retries next pass and only lands here once it completes.
