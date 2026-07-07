@@ -30,6 +30,7 @@ import com.vitorpamplona.sot.sync.HouseAccount
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncOptions
 import com.vitorpamplona.sot.sync.SyncService
+import com.vitorpamplona.sot.vespa.IngestStats
 import com.vitorpamplona.sot.vespa.client.VespaEventIndex
 import com.vitorpamplona.sot.vespa.client.VespaProfileIndex
 import kotlin.system.exitProcess
@@ -153,5 +154,5 @@ internal fun syncService(
         statePath = Config.syncStatePath,
         opts = SyncOptions(relayConcurrency = Config.syncRelayConcurrency),
         log = { println(styleLogLine(it)) },
-        gauges = listOf(stack.feedGauge()),
+        gauges = listOf(stack.feedGauge(), IngestStats::gauge),
     )

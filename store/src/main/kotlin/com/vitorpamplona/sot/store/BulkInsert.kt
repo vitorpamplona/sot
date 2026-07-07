@@ -128,20 +128,18 @@ internal class BulkInsert(
         }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
 
-        // Stage C — tombstone + vanish guards, one pass per distinct owner;
-        // the guard reads fan out (bounded) across owners.
+        // Stage C — tombstone + vanish guards, BATCHED by owner: one deletion query
+        // and one vanish query per CHECK_CHUNK of owners (then bucketed by author),
+        // NOT one pair per owner. A content batch touches ~500 owners; per-owner that
+        // was ~1000 round trips at QUERY_FANOUT=4 — the ingest's real bottleneck —
+        // now it is a handful. (Downstream, an owner whose set still hits GUARD_PAGE
+        // falls back to the exact per-event probe, unchanged.)
         val owners = alive().groupBy { events[it].owner() }
         val guards =
             IngestStats.timed("guards") {
-                owners.keys
-                    .toList()
-                    .mapBounded(QUERY_FANOUT) { owner ->
-                        owner to
-                            Pair(
-                                index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner))),
-                                index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(owner))),
-                            )
-                    }.toMap()
+                val tombs = guardDocs(owners.keys, DeletionEvent.KIND)
+                val vanishes = guardDocs(owners.keys, RequestToVanishEvent.KIND)
+                owners.keys.associateWith { (tombs[it].orEmpty() to vanishes[it].orEmpty()) }
             }
         for ((owner, idxs) in owners) {
             val (tombs, vanishes) = guards.getValue(owner)
@@ -297,6 +295,31 @@ internal class BulkInsert(
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
         return outcome.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
     }
+
+    /**
+     * Every guard event of [kind] (deletion or vanish) for [owners], bucketed by
+     * author. One query per [CHECK_CHUNK] of owners rather than one per owner. A
+     * chunk that comes back at the page cap can't be trusted to carry every owner's
+     * full set (one prolific deleter could crowd the page), so it re-queries that
+     * chunk's owners one at a time — exact, and rare, since content authors seldom
+     * publish deletions.
+     */
+    private suspend fun guardDocs(
+        owners: Collection<String>,
+        kind: Int,
+    ): Map<String, List<EventDoc>> =
+        owners
+            .toList()
+            .chunked(CHECK_CHUNK)
+            .mapBounded(QUERY_FANOUT) { chunk ->
+                val docs = index.search(EventQuery(kinds = listOf(kind), authors = chunk))
+                if (docs.size >= GUARD_PAGE) {
+                    chunk.mapBounded(QUERY_FANOUT) { o -> index.search(EventQuery(kinds = listOf(kind), authors = listOf(o))) }.flatten()
+                } else {
+                    docs
+                }
+            }.flatten()
+            .groupBy { it.pubkey }
 
     private companion object {
         // Ids/authors/d-tags per check query — well under the engine's page cap.
