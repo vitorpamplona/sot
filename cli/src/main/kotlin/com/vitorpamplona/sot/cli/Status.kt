@@ -179,15 +179,33 @@ private suspend fun trustGraph(
             .associate { it.pubKey to it.contactMetaData()?.let { md -> md.name ?: md.displayName }?.takeIf(String::isNotBlank) }
 
     println()
-    println("    imported observers (name  npub  scores):")
-    for (list in lists.sortedBy { names[it.pubKey]?.lowercase() ?: "~" }) {
-        val keys = list.rankServiceKeys()
-        val scores = if (keys.isEmpty()) 0 else store.count(Filter(kinds = listOf(ContactCardEvent.KIND), authors = keys))
-        val name = names[list.pubKey] ?: "(no profile)"
-        val marker = if (list.pubKey == house) "  ← house" else ""
-        println("      $name  ${Hex.decode(list.pubKey).toNpub()}  — ${num(scores)} scores$marker")
+    // Build the rows first so the columns can be sized to the data, then print
+    // fixed-width so name / npub / scores line up as a table.
+    val rows =
+        lists
+            .sortedBy { names[it.pubKey]?.lowercase() ?: "~" }
+            .map { list ->
+                val keys = list.rankServiceKeys()
+                val scores = if (keys.isEmpty()) 0 else store.count(Filter(kinds = listOf(ContactCardEvent.KIND), authors = keys))
+                ObserverRow(names[list.pubKey] ?: "(no profile)", Hex.decode(list.pubKey).toNpub(), num(scores), list.pubKey == house)
+            }
+    val nameW = (rows.maxOfOrNull { it.name.length } ?: 4).coerceIn("name".length, 28)
+    val scoreW = (rows.maxOfOrNull { it.scores.length } ?: 0).coerceAtLeast("scores".length)
+    println("    imported observers:")
+    println("      ${"name".padEnd(nameW)}  ${"npub".padEnd(63)}  ${"scores".padStart(scoreW)}")
+    for (r in rows) {
+        val marker = if (r.house) "  ← house" else ""
+        println("      ${r.name.take(nameW).padEnd(nameW)}  ${r.npub.padEnd(63)}  ${r.scores.padStart(scoreW)}$marker")
     }
 }
+
+/** One row of the `sot status` imported-observers table. [scores] is pre-formatted so the column can size to its width. */
+private data class ObserverRow(
+    val name: String,
+    val npub: String,
+    val scores: String,
+    val house: Boolean,
+)
 
 /**
  * The one question a corpus count can't answer: does a ranked search actually
