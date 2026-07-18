@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -133,6 +134,14 @@ internal class BlendedPass(
     // Authors freshly reconciled THIS pass, for the live coverage gauge. Added to
     // the carried-over [alreadySynced] count, it reads as "done / discovered".
     private val syncedThisPass = ConcurrentHashMap.newKeySet<HexKey>()
+
+    // Best-effort rank per subject, captured for FREE as the 30382s stream through
+    // the score sync (onVerified) — no extra query. registerContentAuthors routes
+    // the highest-rank subjects FIRST, so an interrupted load already has the
+    // most-trusted authors indexed and the coverage % is meaningful within
+    // minutes. Max rank across providers; a subject we never saw a rank for sorts
+    // last (rank 0).
+    private val subjectRank = ConcurrentHashMap<HexKey, Int>()
 
     // Fallback content sources for authors with NO 10002: the big relays that
     // actually aggregate notes (the profile/index aggregators hold no content). A
@@ -446,7 +455,7 @@ internal class BlendedPass(
         if (opts.maxEvents == 0) {
             // Full sync: reconcile the batch's complete id set; absence IS
             // deletion here (the relay is authoritative for this scope).
-            val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores)
+            val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores, onVerified = ::captureRanks)
             // The absence-is-deletion diff is best-effort: it reads the store via
             // a visit, which can 429 under load. A failure here must NOT abort the
             // unit (the scores already landed) or skip the records trigger below.
@@ -472,7 +481,7 @@ internal class BlendedPass(
         } else {
             // Bounded experiment: incremental slice only, no deletion diff (a
             // capped download must never be read as "the rest was deleted").
-            val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents)
+            val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents, onVerified = ::captureRanks)
             log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         }
         // Records plane, in the same pool: the authors these services just scored
@@ -524,7 +533,13 @@ internal class BlendedPass(
         // [knownContent], or a later batch that includes them would also skip them
         // for the wrong reason — harmless here, but the intent is "not our work
         // this pass", tracked in one place.
-        val fresh = authors.filter { it !in alreadySynced && knownContent.add(it) }
+        val fresh =
+            authors
+                .filter { it !in alreadySynced && knownContent.add(it) }
+                // Highest-rank subjects first, so their content is routed (and
+                // fetched, per the pumps' FIFO) before the long tail — an
+                // interrupted load keeps the most-trusted authors.
+                .sortedByDescending { subjectRank[it] ?: 0 }
         if (fresh.isEmpty()) return
         // A scored subject that is ALSO a swept observer is CONNECTED to the house
         // (its trust graph scores them), so index their perspective. The swept
@@ -571,6 +586,20 @@ internal class BlendedPass(
     }
 
     private fun nowSecs() = System.currentTimeMillis() / 1000
+
+    /** Record each 30382's rank for its subject (the `d` tag), keeping the max seen across providers. */
+    private fun captureRanks(events: List<Event>) {
+        for (e in events) {
+            if (e.kind != ContactCardEvent.KIND) continue
+            val subject =
+                e.tags
+                    .firstOrNull { it.size > 1 && it[0] == "d" }
+                    ?.get(1)
+                    ?.takeIf(String::isNotEmpty) ?: continue
+            val rank = (e as? ContactCardEvent)?.rank() ?: continue
+            subjectRank.merge(subject, rank) { a, b -> maxOf(a, b) }
+        }
+    }
 
     /** A hash-picked [FALLBACK_FANOUT] slice of the content relays, so no-10002 authors spread evenly across the whole set. */
     private fun fallbackRelays(author: HexKey): List<NormalizedRelayUrl> {
