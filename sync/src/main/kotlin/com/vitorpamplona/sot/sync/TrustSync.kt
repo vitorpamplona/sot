@@ -88,6 +88,14 @@ data class SyncOptions(
      * is high, it becomes the freshness cadence (the "blend refresh in" slice).
      */
     val refreshTtlSecs: Long = 24 * 3600,
+    /**
+     * The reserved refresh slice: up to this many of the STALEST already-synced
+     * authors are re-pulled at the START of each pass, before the backlog. This
+     * is what "blends refresh in" during a multi-day initial load — freshness
+     * tracks this budget per pass instead of waiting for the whole backlog to
+     * drain. 0 disables the dedicated slice (refresh then rides TTL re-entry only).
+     */
+    val refreshBudget: Int = 50_000,
 )
 
 /**

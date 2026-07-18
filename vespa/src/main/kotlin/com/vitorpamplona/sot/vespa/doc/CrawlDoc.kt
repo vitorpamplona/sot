@@ -94,6 +94,17 @@ interface CrawlIndex : AutoCloseable {
     suspend fun syncedCount(): Int
 
     /**
+     * Up to [limit] already-synced authors whose last clean sync is OLDEST (and at
+     * or before [cutoffSecs]) — the stalest first, so a bounded refresh slice
+     * re-pulls the most out-of-date content each pass. Excludes never-synced
+     * authors (`content_synced_at > 0`).
+     */
+    suspend fun dueForRefresh(
+        cutoffSecs: Long,
+        limit: Int,
+    ): List<HexKey>
+
+    /**
      * The pubkeys whose outbox we RESOLVED at least once (`outbox_checked_at > 0`).
      * Lets the coverage report tell "we looked and found no 10002" (no-outbox)
      * from "we haven't looked yet" (unresolved) during an in-progress load.

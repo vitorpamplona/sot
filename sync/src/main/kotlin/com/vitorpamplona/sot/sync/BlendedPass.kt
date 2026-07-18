@@ -193,6 +193,19 @@ internal class BlendedPass(
             // (correct, only slower), so it must never abort the pass.
             alreadySynced = runCatching { crawl.syncedSince(nowSecs() - opts.refreshTtlSecs) }.getOrDefault(emptySet())
             if (alreadySynced.isNotEmpty()) log("[records] ${alreadySynced.size} author(s) synced within TTL - skipping this pass")
+            // The reserved refresh slice: front-load the stalest already-synced
+            // authors so their NEW posts are re-pulled BEFORE the backlog, instead
+            // of freshness waiting for a multi-day load to drain. They're marked in
+            // [knownContent] so the chain later dedups them; routing them here (on
+            // the secondary lane) reserves a bounded slice of the pass for refresh.
+            if (opts.refreshBudget > 0) {
+                val due = runCatching { crawl.dueForRefresh(nowSecs() - opts.refreshTtlSecs, opts.refreshBudget) }.getOrDefault(emptyList())
+                val toRefresh = due.filter(knownContent::add)
+                if (toRefresh.isNotEmpty()) {
+                    log("[refresh] re-pulling ${toRefresh.size} stalest synced author(s) ahead of the backlog")
+                    submitSecondary { routeAuthors(toRefresh) }
+                }
+            }
             // Live coverage: fully-synced (carried over + this pass) out of the roster
             // discovered so far (skipped + newly routed). A running progress bar for
             // "how much of the observer's network is indexed".
@@ -540,30 +553,40 @@ internal class BlendedPass(
                 // fetched, per the pumps' FIFO) before the long tail — an
                 // interrupted load keeps the most-trusted authors.
                 .sortedByDescending { subjectRank[it] ?: 0 }
-        if (fresh.isEmpty()) return
+        routeAuthors(fresh)
+    }
+
+    /**
+     * Resolve [authors]' outboxes and route their content — the shared body of the
+     * chain path ([registerContentAuthors]) and the refresh slice. Callers have
+     * already deduped via [knownContent] and ordered the list; this just does the
+     * work. Preserves the caller's order (rank for the chain, staleness for refresh).
+     */
+    private suspend fun routeAuthors(authors: List<HexKey>) {
+        if (authors.isEmpty()) return
         // Stamp "we resolved these this pass", so the coverage report can tell a
         // confirmed no-outbox author from one whose 10002 simply hasn't been
         // fetched yet. Best-effort: a failure just leaves them "unresolved".
-        runCatching { crawl.markOutboxChecked(fresh, nowSecs()) }
+        runCatching { crawl.markOutboxChecked(authors, nowSecs()) }
         // A scored subject that is ALSO a swept observer is CONNECTED to the house
         // (its trust graph scores them), so index their perspective. The swept
         // observers the house doesn't score stay dormant — never activated.
-        registerObservers(fresh.filter { it in candidateObservers })
+        registerObservers(authors.filter { it in candidateObservers })
         val routed = ConcurrentHashMap.newKeySet<HexKey>()
         // Tier 1 (the aggregators — purplepag.es et al hold ~everyone's profile and
         // list) routes each author's content the MOMENT their 10002 lands, so
         // content flows AS tier-1 resolves rather than after the whole batch. A
         // profile must not depend on us happening to fetch content from a relay
         // that has it, so profiles come from here too.
-        resolveIdentity(fresh, tier2 = false) { author, writeRelays ->
+        resolveIdentity(authors, tier2 = false) { author, writeRelays ->
             if (routed.add(author)) routeContent(author, writeRelays)
         }
         // Whoever tier-1 found no list for: route to the index relays now.
-        for (a in fresh) if (routed.add(a)) routeContent(a, emptyList())
+        for (a in authors) if (routed.add(a)) routeContent(a, emptyList())
         // Tier 2 (chasing stragglers across the broader working-relay list) is
         // best-effort — it mostly finds that the missing lists/profiles are simply
         // unpublished — so it runs in the BACKGROUND and must NEVER block content.
-        submitSecondary { resolveIdentity(fresh, tier2 = true) }
+        submitSecondary { resolveIdentity(authors, tier2 = true) }
     }
 
     /**

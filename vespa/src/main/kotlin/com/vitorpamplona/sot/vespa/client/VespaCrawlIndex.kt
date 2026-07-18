@@ -154,6 +154,41 @@ class VespaCrawlIndex(
         return countIn(root) ?: 0
     }
 
+    override suspend fun dueForRefresh(
+        cutoffSecs: Long,
+        limit: Int,
+    ): List<HexKey> {
+        if (limit <= 0) return emptyList()
+        val body =
+            buildJsonObject {
+                put("yql", "select * from $DOCTYPE where content_synced_at > 0 and content_synced_at <= $cutoffSecs order by content_synced_at asc limit $limit")
+                put("hits", limit.toString())
+            }.toString()
+        val req =
+            HttpRequest
+                .newBuilder(URI.create("$baseUrl/search/"))
+                .timeout(Duration.ofSeconds(30))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build()
+        val resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+        require(resp.statusCode() < 400) { "vespa crawl refresh ${resp.statusCode()}: ${resp.body().take(300)}" }
+        val children =
+            Json
+                .parseToJsonElement(resp.body())
+                .jsonObject["root"]
+                ?.jsonObject
+                ?.get("children")
+                ?.jsonArray ?: return emptyList()
+        return children.mapNotNull {
+            it.jsonObject["fields"]
+                ?.jsonObject
+                ?.get("pubkey")
+                ?.jsonPrimitive
+                ?.content
+        }
+    }
+
     /** The first `count()` grouping output anywhere under this node (see VespaEventIndex.countIn). */
     private fun countIn(node: kotlinx.serialization.json.JsonElement): Int? =
         when (node) {

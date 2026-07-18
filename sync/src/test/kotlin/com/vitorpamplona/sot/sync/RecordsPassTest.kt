@@ -165,6 +165,41 @@ class RecordsPassTest {
             }
         }
 
+    /**
+     * The refresh slice: once an author's sync ages past the TTL, a later pass
+     * re-pulls their outbox and picks up posts published since. Proves refresh
+     * works end to end (the stalest-first budgeting is unit-tested separately).
+     */
+    @Test
+    fun `a stale synced author is refreshed and new posts land`() =
+        runBlocking {
+            InProcessNet().use { net ->
+                net.store(index).insert(relayList(observer, at = 1_000, outbox))
+                net.store(outbox).insert(providerList(observer, service.pubKey, provider, at = 1_100))
+                net.store(provider).insert(score(service, bob.pubKey, 60, at = 1_200))
+                net.store(index).insert(relayList(bob, at = 1_000, bobOutbox))
+                net.store(bobOutbox).insert(note(bob, "bob's first note", at = 1_300))
+
+                val crawl = InMemoryCrawlIndex()
+                val store = localStore()
+                store.use {
+                    trustSync(net, store, crawl).run(observers = setOf(observer.pubKey), indexRelays = listOf(net.url(index)))
+                    assertEquals(listOf("bob's first note"), store.notesBy(bob.pubKey))
+
+                    // Age bob's sync far past the TTL, then he posts again.
+                    crawl.markSynced(listOf(bob.pubKey), atSecs = 1)
+                    net.store(bobOutbox).insert(note(bob, "bob's second note", at = 1_400))
+
+                    trustSync(net, store, crawl).run(observers = setOf(observer.pubKey), indexRelays = listOf(net.url(index)))
+                    assertEquals(
+                        setOf("bob's first note", "bob's second note"),
+                        store.notesBy(bob.pubKey).toSet(),
+                        "the stale author was refreshed and the new note landed",
+                    )
+                }
+            }
+        }
+
     /** A record deletion published to the author's own outbox erases the note locally (explicit kind 5). */
     @Test
     fun `records plane honours an author's outbox deletion`() =
