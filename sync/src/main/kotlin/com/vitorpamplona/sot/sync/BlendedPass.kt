@@ -120,8 +120,16 @@ internal class BlendedPass(
     // The records plane, folded into the SAME pool (no scores->records barrier):
     // a scored author's content is fetched the moment their score lands. Each
     // author is assigned to their least-loaded write relay, so the load spreads.
-    private val knownContent = ConcurrentHashMap.newKeySet<HexKey>()
+    // The value is the author's content-sync state THIS pass (false = routed but
+    // not yet reconciled, true = reconciled): one roster-scale map serves both
+    // the "seen it this pass" dedup and the live coverage gauge's synced count,
+    // instead of a second parallel set.
+    private val knownContent = ConcurrentHashMap<HexKey, Boolean>()
+    private val syncedThisPass = AtomicInteger(0)
     private val contentBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
+
+    /** First time this pass we've routed [author]; returns true only on the transition. */
+    private fun markSeen(author: HexKey): Boolean = knownContent.putIfAbsent(author, false) == null
 
     // The convergence set: authors whose content we reconciled cleanly within the
     // refresh TTL, loaded ONCE at pass start. They are SKIPPED this pass, so a
@@ -130,18 +138,6 @@ internal class BlendedPass(
     // DURING this pass are deduped by [knownContent] instead, and re-enter next
     // pass's set once their sync ages past the TTL (the refresh cadence).
     @Volatile private var alreadySynced: Set<HexKey> = emptySet()
-
-    // Authors freshly reconciled THIS pass, for the live coverage gauge. Added to
-    // the carried-over [alreadySynced] count, it reads as "done / discovered".
-    private val syncedThisPass = ConcurrentHashMap.newKeySet<HexKey>()
-
-    // Best-effort rank per subject, captured for FREE as the 30382s stream through
-    // the score sync (onVerified) — no extra query. registerContentAuthors routes
-    // the highest-rank subjects FIRST, so an interrupted load already has the
-    // most-trusted authors indexed and the coverage % is meaningful within
-    // minutes. Max rank across providers; a subject we never saw a rank for sorts
-    // last (rank 0).
-    private val subjectRank = ConcurrentHashMap<HexKey, Int>()
 
     // Fallback content sources for authors with NO 10002: the big relays that
     // actually aggregate notes (the profile/index aggregators hold no content). A
@@ -200,7 +196,7 @@ internal class BlendedPass(
             // the secondary lane) reserves a bounded slice of the pass for refresh.
             if (opts.refreshBudget > 0) {
                 val due = runCatching { crawl.dueForRefresh(nowSecs() - opts.refreshTtlSecs, opts.refreshBudget) }.getOrDefault(emptyList())
-                val toRefresh = due.filter(knownContent::add)
+                val toRefresh = due.filter(::markSeen)
                 if (toRefresh.isNotEmpty()) {
                     log("[refresh] re-pulling ${toRefresh.size} stalest synced author(s) ahead of the backlog")
                     submitSecondary { routeAuthors(toRefresh) }
@@ -210,7 +206,7 @@ internal class BlendedPass(
             // discovered so far (skipped + newly routed). A running progress bar for
             // "how much of the observer's network is indexed".
             progress.gauge {
-                val done = alreadySynced.size + syncedThisPass.size
+                val done = alreadySynced.size + syncedThisPass.get()
                 val seen = alreadySynced.size + knownContent.size
                 if (seen == 0) "" else "cov ${SyncProgress.compact(done.toLong())}/${SyncProgress.compact(seen.toLong())}"
             }
@@ -465,10 +461,14 @@ internal class BlendedPass(
         services: List<HexKey>,
     ) {
         val scores = Filter(kinds = listOf(ContactCardEvent.KIND), authors = services)
+        // Rank per subject captured for THIS batch only (freed when the unit ends),
+        // so ordering never accumulates a roster-scale global map. onVerified can
+        // fire from parallel verify workers, hence the concurrent map.
+        val ranks = ConcurrentHashMap<HexKey, Int>()
         if (opts.maxEvents == 0) {
             // Full sync: reconcile the batch's complete id set; absence IS
             // deletion here (the relay is authoritative for this scope).
-            val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores, onVerified = ::captureRanks)
+            val r = syncer.reconcile(relay, scores, forceEnumerate = opts.reconcileScores, onVerified = { captureRanksInto(it, ranks) })
             // The absence-is-deletion diff is best-effort: it reads the store via
             // a visit, which can 429 under load. A failure here must NOT abort the
             // unit (the scores already landed) or skip the records trigger below.
@@ -494,12 +494,12 @@ internal class BlendedPass(
         } else {
             // Bounded experiment: incremental slice only, no deletion diff (a
             // capped download must never be read as "the rest was deleted").
-            val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents, onVerified = ::captureRanks)
+            val o = syncer.sync(relay, scores, maxEvents = opts.maxEvents, onVerified = { captureRanksInto(it, ranks) })
             log("[chain ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${services.size} provider(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         }
         // Records plane, in the same pool: the authors these services just scored
         // become content targets immediately — no waiting for every score to land.
-        registerContentAuthors(scoredSubjects(services))
+        registerContentAuthors(scoredSubjects(services), ranks)
     }
 
     /**
@@ -540,7 +540,10 @@ internal class BlendedPass(
     }
 
     /** New scored authors join the records side: activate any connected observers among them, resolve, then fetch content. */
-    private suspend fun registerContentAuthors(authors: List<HexKey>) {
+    private suspend fun registerContentAuthors(
+        authors: List<HexKey>,
+        ranks: Map<HexKey, Int>,
+    ) {
         // Skip authors reconciled within the TTL (loaded at pass start), THEN dedup
         // the rest within this pass. Order matters: a skipped author must not enter
         // [knownContent], or a later batch that includes them would also skip them
@@ -548,11 +551,12 @@ internal class BlendedPass(
         // this pass", tracked in one place.
         val fresh =
             authors
-                .filter { it !in alreadySynced && knownContent.add(it) }
+                .filter { it !in alreadySynced && markSeen(it) }
                 // Highest-rank subjects first, so their content is routed (and
                 // fetched, per the pumps' FIFO) before the long tail — an
-                // interrupted load keeps the most-trusted authors.
-                .sortedByDescending { subjectRank[it] ?: 0 }
+                // interrupted load keeps the most-trusted authors. Ranks are this
+                // batch's; a subject not in it (or from a prior pass) sorts last.
+                .sortedByDescending { ranks[it] ?: 0 }
         routeAuthors(fresh)
     }
 
@@ -614,8 +618,11 @@ internal class BlendedPass(
 
     private fun nowSecs() = System.currentTimeMillis() / 1000
 
-    /** Record each 30382's rank for its subject (the `d` tag), keeping the max seen across providers. */
-    private fun captureRanks(events: List<Event>) {
+    /** Record each 30382's rank for its subject (the `d` tag) into [target], keeping the max seen. */
+    private fun captureRanksInto(
+        events: List<Event>,
+        target: ConcurrentHashMap<HexKey, Int>,
+    ) {
         for (e in events) {
             if (e.kind != ContactCardEvent.KIND) continue
             val subject =
@@ -624,7 +631,7 @@ internal class BlendedPass(
                     ?.get(1)
                     ?.takeIf(String::isNotEmpty) ?: continue
             val rank = (e as? ContactCardEvent)?.rank() ?: continue
-            subjectRank.merge(subject, rank) { a, b -> maxOf(a, b) }
+            target.merge(subject, rank) { a, b -> maxOf(a, b) }
         }
     }
 
@@ -700,7 +707,10 @@ internal class BlendedPass(
         // relay — mark them fully content-indexed. A timeout doesn't count.
         if (o.completed) {
             syncer.state.markContentDone(authors)
-            syncedThisPass.addAll(authors)
+            // Count each author's FIRST clean reconcile this pass (an author spread
+            // across write relays completes on several — dedup on the false->true
+            // transition so the gauge's synced count stays honest).
+            for (a in authors) if (knownContent.replace(a, false, true)) syncedThisPass.incrementAndGet()
             // The persisted, roster-scale ledger the NEXT pass reads to skip these
             // authors (convergence) and the coverage report groups over. A ledger
             // write failure must not fail the content fetch that already landed.

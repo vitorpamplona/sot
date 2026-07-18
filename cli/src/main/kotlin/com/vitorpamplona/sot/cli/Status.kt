@@ -214,9 +214,10 @@ private data class ObserverRow(
 /**
  * How completely ONE observer's network is indexed — the crawl's real progress
  * bar. Defaults to the house observer; `--observer <npub|hex>` picks another.
- * The roster (scored subjects) is split into outbox-known (a well-defined
- * "fully synced") and no-outbox (measured by posts found), and the ETA projects
- * the whole roster at the recent synced-per-hour rate.
+ * Completion is uniform over the roster (an author with no 10002 is fetched from
+ * the popular relays as a proxy outbox), so "fully synced" means the same for
+ * everyone; "own outbox" is only a diagnostic. The ETA projects the whole roster
+ * at the recent synced-per-hour rate.
  */
 private suspend fun coverage(
     store: VespaEventStore,

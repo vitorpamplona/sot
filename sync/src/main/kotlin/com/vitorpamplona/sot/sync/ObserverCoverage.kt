@@ -51,13 +51,13 @@ data class ObserverCoverage(
     val withOwnOutbox: Int,
     /** Roster members reconciled cleanly at least once, from their outbox OR the popular-relay proxy. */
     val synced: Int,
-    /** Roster members never yet routed for content (no sync attempt) — the not-yet-reached slice of [pending]. */
+    /** Pending members never yet routed for content (no sync attempt) — a strict slice of [pending]. */
     val unreached: Int,
 ) {
     /** Roster members not yet synced — the backlog that drives the ETA. */
     val pending: Int get() = (rosterSize - synced).coerceAtLeast(0)
 
-    /** Pending members we HAVE attempted (routed at least once) but not yet completed. */
+    /** Pending members we HAVE attempted (routed at least once) but not yet completed; [pending] = attempted + [unreached]. */
     val attempted: Int get() = (pending - unreached).coerceAtLeast(0)
 
     /** 0..1 fraction of the whole roster that is fully synced (the completion bar). */
@@ -68,12 +68,8 @@ data class ObserverCoverage(
  * Compute [observer]'s coverage. The roster is the distinct `d`-tag subjects of
  * every kind-30382 signed by the service keys the observer's kind-10040 names;
  * the numerators are the roster intersected with the crawl ledger's synced set,
- * the stored-10002 authors, and the authors we hold content for. All three are
+ * the ledger's outbox-checked set, and the stored-10002 authors. All are
  * whole-corpus groupings, so this is an on-demand report, not a per-tick call.
- *
- * NOTE (v1): no-outbox is `roster − has-10002`, so during an in-progress load an
- * author whose 10002 simply hasn't been fetched yet counts as no-outbox until it
- * lands. The crawl doc's `outbox_checked_at` exists to tighten this later.
  */
 suspend fun observerCoverage(
     observer: HexKey,
@@ -100,6 +96,9 @@ suspend fun observerCoverage(
         rosterSize = roster.size,
         withOwnOutbox = roster.count { it in outboxAll },
         synced = roster.count { it in syncedAll },
-        unreached = roster.count { it !in checkedAll },
+        // A strict slice of pending: not synced AND never routed. Keeping it inside
+        // "not synced" preserves pending = attempted + unreached even if a synced
+        // author is missing its outbox_checked stamp (older ledger / write miss).
+        unreached = roster.count { it !in syncedAll && it !in checkedAll },
     )
 }

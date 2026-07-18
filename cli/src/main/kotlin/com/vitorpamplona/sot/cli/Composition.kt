@@ -72,8 +72,6 @@ internal fun openStack(): Stack {
     return Stack(VespaEventStore(index, relay = publicRelayUrl()), vespa, VespaCrawlIndex(Config.vespaUrl))
 }
 
-internal fun openStore(): VespaEventStore = openStack().store
-
 /** The relay's public url (`RELAY_URL`) — NIP-42's identity and the vanish scope. */
 internal fun publicRelayUrl(): NormalizedRelayUrl =
     RelayUrlNormalizer.normalizeOrNull(Config.relayUrl) ?: run {
