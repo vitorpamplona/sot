@@ -108,10 +108,15 @@ class VespaCrawlIndex(
             }.forEach { it.await() }
     }
 
-    override suspend fun syncedSince(cutoffSecs: Long): Set<HexKey> {
-        val selection = URLEncoder.encode("crawl.content_synced_at>=$cutoffSecs", "UTF-8")
+    override suspend fun syncedSince(cutoffSecs: Long): Set<HexKey> = visitPubkeys("crawl.content_synced_at>=$cutoffSecs")
+
+    override suspend fun outboxCheckedSet(): Set<HexKey> = visitPubkeys("crawl.outbox_checked_at>0")
+
+    /** Visit every crawl doc matching [selection], collecting the pubkey field across all pages. */
+    private suspend fun visitPubkeys(selection: String): Set<HexKey> {
+        val sel = URLEncoder.encode(selection, "UTF-8")
         val fieldSet = URLEncoder.encode("$DOCTYPE:pubkey", "UTF-8")
-        val base = "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid?selection=$selection&wantedDocumentCount=$VISIT_PAGE&fieldSet=$fieldSet"
+        val base = "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid?selection=$sel&wantedDocumentCount=$VISIT_PAGE&fieldSet=$fieldSet"
         val out = HashSet<HexKey>()
         var continuation: String? = null
         while (true) {

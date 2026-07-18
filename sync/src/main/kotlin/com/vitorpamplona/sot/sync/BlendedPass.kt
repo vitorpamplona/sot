@@ -541,6 +541,10 @@ internal class BlendedPass(
                 // interrupted load keeps the most-trusted authors.
                 .sortedByDescending { subjectRank[it] ?: 0 }
         if (fresh.isEmpty()) return
+        // Stamp "we resolved these this pass", so the coverage report can tell a
+        // confirmed no-outbox author from one whose 10002 simply hasn't been
+        // fetched yet. Best-effort: a failure just leaves them "unresolved".
+        runCatching { crawl.markOutboxChecked(fresh, nowSecs()) }
         // A scored subject that is ALSO a swept observer is CONNECTED to the house
         // (its trust graph scores them), so index their perspective. The swept
         // observers the house doesn't score stay dormant — never activated.

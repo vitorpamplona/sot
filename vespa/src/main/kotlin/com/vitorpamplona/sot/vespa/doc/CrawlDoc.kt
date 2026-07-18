@@ -92,4 +92,11 @@ interface CrawlIndex : AutoCloseable {
 
     /** How many authors have a clean content sync (`content_synced_at > 0`). */
     suspend fun syncedCount(): Int
+
+    /**
+     * The pubkeys whose outbox we RESOLVED at least once (`outbox_checked_at > 0`).
+     * Lets the coverage report tell "we looked and found no 10002" (no-outbox)
+     * from "we haven't looked yet" (unresolved) during an in-progress load.
+     */
+    suspend fun outboxCheckedSet(): Set<HexKey>
 }

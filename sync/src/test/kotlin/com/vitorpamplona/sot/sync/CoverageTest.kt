@@ -83,15 +83,34 @@ class CoverageTest {
                 store.insert(carol.sign<TextNoteEvent>(1_300, TextNoteEvent.KIND, arrayOf(), "carol's note"))
                 // alice was reconciled cleanly; bob and carol were not.
                 crawl.markSynced(listOf(alice.pubKey), atSecs = 2_000)
+                // All three were resolved this load (carol resolved to "no 10002").
+                crawl.markOutboxChecked(listOf(alice.pubKey, bob.pubKey, carol.pubKey), atSecs = 2_000)
 
                 val c = observerCoverage(observer.pubKey, store, crawl)
                 assertEquals(1, c.providers, "one rank provider named")
                 assertEquals(3, c.rosterSize, "three scored subjects")
                 assertEquals(2, c.outboxKnown, "alice + bob have a 10002")
-                assertEquals(1, c.noOutbox, "carol has no 10002")
-                assertEquals(1, c.synced, "only alice reconciled cleanly")
+                assertEquals(1, c.noOutbox, "carol resolved to no 10002")
+                assertEquals(0, c.unresolved, "everyone was resolved this load")
+                assertEquals(1, c.syncedWithOutbox, "only alice reconciled cleanly")
                 assertEquals(1, c.pending, "bob is outbox-known but not synced")
                 assertEquals(1, c.postsForNoOutbox, "we hold a post for no-outbox carol")
+            }
+        }
+
+    @Test
+    fun `a scored author not yet resolved counts as unresolved, not no-outbox`() =
+        runBlocking {
+            val store = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val crawl = InMemoryCrawlIndex()
+            store.use {
+                store.insert(providerList())
+                store.insert(score(carol.pubKey, 20)) // no 10002, and never resolved
+
+                val c = observerCoverage(observer.pubKey, store, crawl)
+                assertEquals(1, c.rosterSize)
+                assertEquals(0, c.noOutbox, "not resolved yet, so not confirmed no-outbox")
+                assertEquals(1, c.unresolved, "carol is still awaiting outbox resolution")
             }
         }
 

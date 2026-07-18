@@ -54,5 +54,7 @@ class InMemoryCrawlIndex : CrawlIndex {
 
     override suspend fun syncedCount(): Int = docs.values.count { it.contentSyncedAt > 0 }
 
+    override suspend fun outboxCheckedSet(): Set<String> = docs.values.filter { it.outboxCheckedAt > 0 }.mapTo(HashSet()) { it.pubkey }
+
     override fun close() {}
 }

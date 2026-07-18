@@ -239,7 +239,8 @@ private suspend fun coverage(
     }
     row("roster", "${num(cov.rosterSize)}  (scored subjects to index)")
     row("outbox known", "${num(cov.outboxKnown)} / ${num(cov.rosterSize)}  (have a 10002 to route to)")
-    row("no outbox", "${num(cov.noOutbox)}  (${num(cov.postsForNoOutbox)} with posts found)")
+    row("no outbox", "${num(cov.noOutbox)}  (resolved, no 10002; ${num(cov.postsForNoOutbox)} with posts found)")
+    if (cov.unresolved > 0) row("unresolved", "${num(cov.unresolved)}  (not yet resolved this load)")
     val pct = (cov.syncedFraction * 100).toInt()
     row("fully synced", "${num(cov.syncedWithOutbox)} / ${num(cov.outboxKnown)} outbox-known  ($pct%)")
     row("pending", "${num(cov.pending)}  (outbox-known, not yet synced)")
