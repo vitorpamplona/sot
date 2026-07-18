@@ -34,11 +34,12 @@ import com.vitorpamplona.sot.vespa.doc.CrawlIndex
  * derived from server-side groupings intersected in memory over the observer's
  * roster; nothing is stored per-observer.
  *
- * The roster splits by whether we could find the author's outbox, because the
- * two halves are measured differently: an OUTBOX-KNOWN author has a well-defined
- * "fully synced" (we reconciled their 10002 relays), while a NO-OUTBOX author
- * can only be measured by how many of their posts we scraped from the fallback
- * relays — "did we get everything" is unanswerable without their outbox.
+ * Completion is UNIFORM across the roster: an author with no discoverable 10002
+ * is fetched from the most popular relays AS IF that were their outbox (see
+ * BlendedPass.fallbackRelays), so "fully synced" means the same thing for
+ * everyone — we reconciled their content from their outbox, real or the
+ * popular-relay proxy. Whether they advertise their own 10002 is kept only as a
+ * diagnostic ([withOwnOutbox]); it does not split the completion bar.
  */
 data class ObserverCoverage(
     val observer: HexKey,
@@ -46,22 +47,21 @@ data class ObserverCoverage(
     val providers: Int,
     /** Distinct scored subjects — the denominator, the people we must index. */
     val rosterSize: Int,
-    /** Roster members we hold a kind-10002 for (routable to their own outbox). */
-    val outboxKnown: Int,
-    /** Roster members we RESOLVED but found no 10002 for (fallback-scraped only). */
-    val noOutbox: Int,
-    /** Roster members we haven't resolved yet (no 10002 and not yet checked) — shrinks as the load runs. */
-    val unresolved: Int,
-    /** Outbox-known roster members reconciled cleanly at least once. */
-    val syncedWithOutbox: Int,
-    /** No-outbox roster members we hold at least one post for (the best-effort yardstick). */
-    val postsForNoOutbox: Int,
+    /** Diagnostic: roster members that advertise their own kind-10002 (the rest ride the popular-relay proxy). */
+    val withOwnOutbox: Int,
+    /** Roster members reconciled cleanly at least once, from their outbox OR the popular-relay proxy. */
+    val synced: Int,
+    /** Roster members never yet routed for content (no sync attempt) — the not-yet-reached slice of [pending]. */
+    val unreached: Int,
 ) {
-    /** Outbox-known members not yet synced — the backlog that drives the ETA. */
-    val pending: Int get() = (outboxKnown - syncedWithOutbox).coerceAtLeast(0)
+    /** Roster members not yet synced — the backlog that drives the ETA. */
+    val pending: Int get() = (rosterSize - synced).coerceAtLeast(0)
 
-    /** 0..1 fraction of the OUTBOX-KNOWN roster that is fully synced (the honest completion bar). */
-    val syncedFraction: Double get() = if (outboxKnown == 0) 0.0 else syncedWithOutbox.toDouble() / outboxKnown
+    /** Pending members we HAVE attempted (routed at least once) but not yet completed. */
+    val attempted: Int get() = (pending - unreached).coerceAtLeast(0)
+
+    /** 0..1 fraction of the whole roster that is fully synced (the completion bar). */
+    val syncedFraction: Double get() = if (rosterSize == 0) 0.0 else synced.toDouble() / rosterSize
 }
 
 /**
@@ -79,37 +79,27 @@ suspend fun observerCoverage(
     observer: HexKey,
     store: VespaEventStore,
     crawl: CrawlIndex,
-    contentKinds: List<Int> = IndexableKinds.kinds,
 ): ObserverCoverage {
     val providerKeys =
         store
             .query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(observer)))
             .flatMap { it.rankProviders().map { p -> p.pubkey } }
             .toSet()
-    if (providerKeys.isEmpty()) return ObserverCoverage(observer, 0, 0, 0, 0, 0, 0, 0)
+    if (providerKeys.isEmpty()) return ObserverCoverage(observer, 0, 0, 0, 0, 0)
 
     val roster = store.distinctDTags(Filter(kinds = listOf(ContactCardEvent.KIND), authors = providerKeys.toList()))
-    if (roster.isEmpty()) return ObserverCoverage(observer, providerKeys.size, 0, 0, 0, 0, 0, 0)
+    if (roster.isEmpty()) return ObserverCoverage(observer, providerKeys.size, 0, 0, 0, 0)
 
-    val syncedAll = crawl.syncedSince(1) // content_synced_at >= 1, i.e. ever reconciled
-    val checkedAll = crawl.outboxCheckedSet() // outbox resolved at least once
+    val syncedAll = crawl.syncedSince(1) // content_synced_at >= 1, i.e. ever reconciled (outbox OR proxy)
+    val checkedAll = crawl.outboxCheckedSet() // routed for content at least once
     val outboxAll = store.distinctAuthors(Filter(kinds = listOf(AdvertisedRelayListEvent.KIND)))
-    val postsAll = store.distinctAuthors(Filter(kinds = contentKinds))
-
-    val outboxKnown = roster.count { it in outboxAll }
-    val noOutboxSet = roster.filterTo(HashSet()) { it !in outboxAll && it in checkedAll }
-    val unresolved = roster.count { it !in outboxAll && it !in checkedAll }
-    val syncedWithOutbox = roster.count { it in outboxAll && it in syncedAll }
-    val postsForNoOutbox = noOutboxSet.count { it in postsAll }
 
     return ObserverCoverage(
         observer = observer,
         providers = providerKeys.size,
         rosterSize = roster.size,
-        outboxKnown = outboxKnown,
-        noOutbox = noOutboxSet.size,
-        unresolved = unresolved,
-        syncedWithOutbox = syncedWithOutbox,
-        postsForNoOutbox = postsForNoOutbox,
+        withOwnOutbox = roster.count { it in outboxAll },
+        synced = roster.count { it in syncedAll },
+        unreached = roster.count { it !in checkedAll },
     )
 }

@@ -23,7 +23,6 @@ package com.vitorpamplona.sot.sync
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayInfo
 import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayType
@@ -67,7 +66,7 @@ class CoverageTest {
     ) = service.sign<ContactCardEvent>(1_100, ContactCardEvent.KIND, arrayOf(arrayOf("d", subject), arrayOf("rank", "$rank")), "")
 
     @Test
-    fun `coverage splits roster into outbox-known, no-outbox, synced and pending`() =
+    fun `completion is uniform - proxy-synced no-outbox authors count as fully synced`() =
         runBlocking {
             val store = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             val crawl = InMemoryCrawlIndex()
@@ -76,41 +75,37 @@ class CoverageTest {
                 store.insert(score(alice.pubKey, 90))
                 store.insert(score(bob.pubKey, 50))
                 store.insert(score(carol.pubKey, 20))
-                // alice and bob advertise an outbox; carol does not.
+                // alice and bob advertise their own outbox; carol does not (rides the popular relays).
                 store.insert(relayList(alice, "wss://alice.test"))
                 store.insert(relayList(bob, "wss://bob.test"))
-                // We hold a post for carol (scraped from a fallback), none for the others.
-                store.insert(carol.sign<TextNoteEvent>(1_300, TextNoteEvent.KIND, arrayOf(), "carol's note"))
-                // alice was reconciled cleanly; bob and carol were not.
-                crawl.markSynced(listOf(alice.pubKey), atSecs = 2_000)
-                // All three were resolved this load (carol resolved to "no 10002").
+                // alice synced from her outbox; carol synced from the popular-relay PROXY.
+                // Both count the same. bob is routed but not yet complete.
+                crawl.markSynced(listOf(alice.pubKey, carol.pubKey), atSecs = 2_000)
                 crawl.markOutboxChecked(listOf(alice.pubKey, bob.pubKey, carol.pubKey), atSecs = 2_000)
 
                 val c = observerCoverage(observer.pubKey, store, crawl)
-                assertEquals(1, c.providers, "one rank provider named")
                 assertEquals(3, c.rosterSize, "three scored subjects")
-                assertEquals(2, c.outboxKnown, "alice + bob have a 10002")
-                assertEquals(1, c.noOutbox, "carol resolved to no 10002")
-                assertEquals(0, c.unresolved, "everyone was resolved this load")
-                assertEquals(1, c.syncedWithOutbox, "only alice reconciled cleanly")
-                assertEquals(1, c.pending, "bob is outbox-known but not synced")
-                assertEquals(1, c.postsForNoOutbox, "we hold a post for no-outbox carol")
+                assertEquals(2, c.withOwnOutbox, "alice + bob advertise a 10002")
+                assertEquals(2, c.synced, "alice (own outbox) + carol (proxy) both fully synced")
+                assertEquals(1, c.pending, "only bob is left")
+                assertEquals(0, c.unreached, "everyone was routed at least once")
             }
         }
 
     @Test
-    fun `a scored author not yet resolved counts as unresolved, not no-outbox`() =
+    fun `a scored author never routed counts as unreached`() =
         runBlocking {
             val store = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             val crawl = InMemoryCrawlIndex()
             store.use {
                 store.insert(providerList())
-                store.insert(score(carol.pubKey, 20)) // no 10002, and never resolved
+                store.insert(score(carol.pubKey, 20)) // scored, but never routed for content
 
                 val c = observerCoverage(observer.pubKey, store, crawl)
                 assertEquals(1, c.rosterSize)
-                assertEquals(0, c.noOutbox, "not resolved yet, so not confirmed no-outbox")
-                assertEquals(1, c.unresolved, "carol is still awaiting outbox resolution")
+                assertEquals(0, c.synced)
+                assertEquals(1, c.pending)
+                assertEquals(1, c.unreached, "carol has not been routed yet")
             }
         }
 

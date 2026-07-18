@@ -238,12 +238,10 @@ private suspend fun coverage(
         return
     }
     row("roster", "${num(cov.rosterSize)}  (scored subjects to index)")
-    row("outbox known", "${num(cov.outboxKnown)} / ${num(cov.rosterSize)}  (have a 10002 to route to)")
-    row("no outbox", "${num(cov.noOutbox)}  (resolved, no 10002; ${num(cov.postsForNoOutbox)} with posts found)")
-    if (cov.unresolved > 0) row("unresolved", "${num(cov.unresolved)}  (not yet resolved this load)")
+    row("own outbox", "${num(cov.withOwnOutbox)} / ${num(cov.rosterSize)}  (advertise a 10002; the rest ride the popular relays)")
     val pct = (cov.syncedFraction * 100).toInt()
-    row("fully synced", "${num(cov.syncedWithOutbox)} / ${num(cov.outboxKnown)} outbox-known  ($pct%)")
-    row("pending", "${num(cov.pending)}  (outbox-known, not yet synced)")
+    row("fully synced", "${num(cov.synced)} / ${num(cov.rosterSize)}  ($pct%)")
+    row("pending", "${num(cov.pending)}  (${num(cov.attempted)} attempted, ${num(cov.unreached)} not yet reached)")
     val rate = runCatching { SyncState.load(Config.syncStatePath).syncedPerSec() }.getOrNull()
     if (rate != null && rate > 0) {
         row("rate", "${num((rate * 3600).toLong())} authors/hour synced")
