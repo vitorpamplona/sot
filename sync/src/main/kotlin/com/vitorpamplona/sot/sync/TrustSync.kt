@@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.store.VespaEventStore
+import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
@@ -79,6 +80,14 @@ data class SyncOptions(
     val reconcileScores: Boolean = false,
     /** Verify id + signature before storing. Test-only seam — leave on. */
     val verifyEvents: Boolean = true,
+    /**
+     * How long a clean content sync stays "fresh" before an author re-enters the
+     * backlog for a refresh pull. During the initial load this is what makes the
+     * crawl CONVERGE: an author reconciled within this window is skipped, so each
+     * pass only works the not-yet-synced (or gone-stale) remainder. Once coverage
+     * is high, it becomes the freshness cadence (the "blend refresh in" slice).
+     */
+    val refreshTtlSecs: Long = 24 * 3600,
 )
 
 /**
@@ -119,6 +128,7 @@ class TrustSync(
     private val store: IEventStore,
     private val opts: SyncOptions,
     private val log: (String) -> Unit,
+    private val crawl: CrawlIndex,
     private val progress: SyncProgress = SyncProgress(log = { }),
 ) {
     /**
@@ -142,7 +152,7 @@ class TrustSync(
         // One relay-centric pool drives BOTH planes: a scored author's content is
         // fetched the moment their score lands, so records never waits for the
         // whole scores plane to finish (see docs/inverted-relay-sync.md).
-        BlendedPass(syncer, store, opts, progress, log, lookupRelays, house).run(observers + setOfNotNull(house?.pubkey))
+        BlendedPass(syncer, store, opts, progress, log, lookupRelays, house, crawl).run(observers + setOfNotNull(house?.pubkey))
         sweepOrphanScores()
     }
 

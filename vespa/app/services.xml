@@ -17,6 +17,9 @@
       <!-- Ranking state per pubkey; GLOBAL so event docs can reference it and
            import the trust tensors into their own ranking (parent/child). -->
       <document type="profile" mode="index" global="true" />
+      <!-- Per-pubkey crawl bookkeeping (how completely each author is indexed).
+           Ordinary on-disk doc, written only by the sync side; see crawl.sd. -->
+      <document type="crawl" mode="index" />
     </documents>
 
     <nodes>

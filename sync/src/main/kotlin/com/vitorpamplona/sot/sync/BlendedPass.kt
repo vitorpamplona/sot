@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.store.VespaEventStore
+import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancelChildren
@@ -77,6 +78,7 @@ internal class BlendedPass(
     private val log: (String) -> Unit,
     private val indexRelays: List<NormalizedRelayUrl>,
     private val house: HouseAccount?,
+    private val crawl: CrawlIndex,
 ) {
     // Two priority lanes over ONE worker pool. The HOUSE's chain rides
     // [primaryQueue]; every other observer (stored 10040 authors, NIP-42
@@ -119,6 +121,14 @@ internal class BlendedPass(
     // author is assigned to their least-loaded write relay, so the load spreads.
     private val knownContent = ConcurrentHashMap.newKeySet<HexKey>()
     private val contentBuf = ConcurrentHashMap<NormalizedRelayUrl, MutableList<HexKey>>()
+
+    // The convergence set: authors whose content we reconciled cleanly within the
+    // refresh TTL, loaded ONCE at pass start. They are SKIPPED this pass, so a
+    // load only ever works the not-yet-synced (or gone-stale) remainder — the
+    // fix for "every restart re-processes the whole roster". Authors synced
+    // DURING this pass are deduped by [knownContent] instead, and re-enter next
+    // pass's set once their sync ages past the TTL (the refresh cadence).
+    @Volatile private var alreadySynced: Set<HexKey> = emptySet()
 
     // Fallback content sources for authors with NO 10002: the big relays that
     // actually aggregate notes (the profile/index aggregators hold no content). A
@@ -164,6 +174,12 @@ internal class BlendedPass(
         coroutineScope {
             passScope = this // content pumps launch here, so the pass waits for them
             syncer.resetSeen() // fresh per-pass duplicate filter
+            // Load the "already synced within the TTL" set once: these authors are
+            // skipped this pass so the crawl converges instead of re-pulling the
+            // whole roster every run. A read failure just means we skip nobody
+            // (correct, only slower), so it must never abort the pass.
+            alreadySynced = runCatching { crawl.syncedSince(nowSecs() - opts.refreshTtlSecs) }.getOrDefault(emptySet())
+            if (alreadySynced.isNotEmpty()) log("[records] ${alreadySynced.size} author(s) synced within TTL - skipping this pass")
             // The house is the trust ROOT and the ONLY primary: it computes first
             // (primary lane) so its 10002/kind-0/10040, scores, and content are
             // available fast. Every other observer — stored 10040 authors and
@@ -491,7 +507,12 @@ internal class BlendedPass(
 
     /** New scored authors join the records side: activate any connected observers among them, resolve, then fetch content. */
     private suspend fun registerContentAuthors(authors: List<HexKey>) {
-        val fresh = authors.filter(knownContent::add)
+        // Skip authors reconciled within the TTL (loaded at pass start), THEN dedup
+        // the rest within this pass. Order matters: a skipped author must not enter
+        // [knownContent], or a later batch that includes them would also skip them
+        // for the wrong reason — harmless here, but the intent is "not our work
+        // this pass", tracked in one place.
+        val fresh = authors.filter { it !in alreadySynced && knownContent.add(it) }
         if (fresh.isEmpty()) return
         // A scored subject that is ALSO a swept observer is CONNECTED to the house
         // (its trust graph scores them), so index their perspective. The swept
@@ -536,6 +557,8 @@ internal class BlendedPass(
             bufferedBatch(contentBuf, relay, author)?.let { batch -> enqueueContent(relay, batch) }
         }
     }
+
+    private fun nowSecs() = System.currentTimeMillis() / 1000
 
     /** A hash-picked [FALLBACK_FANOUT] slice of the content relays, so no-10002 authors spread evenly across the whole set. */
     private fun fallbackRelays(author: HexKey): List<NormalizedRelayUrl> {
@@ -607,7 +630,14 @@ internal class BlendedPass(
         val o = syncer.sync(relay, Filter(kinds = recordKinds, authors = authors), maxEvents = opts.maxEvents)
         // A clean finish means we pulled ALL of these authors' content from this
         // relay — mark them fully content-indexed. A timeout doesn't count.
-        if (o.completed) syncer.state.markContentDone(authors)
+        if (o.completed) {
+            syncer.state.markContentDone(authors)
+            // The persisted, roster-scale ledger the NEXT pass reads to skip these
+            // authors (convergence) and the coverage report groups over. A ledger
+            // write failure must not fail the content fetch that already landed.
+            runCatching { crawl.markSynced(authors, nowSecs()) }
+                .onFailure { log("  ! crawl ledger markSynced failed @ ${relay.displayUrl()}: ${it.message}") }
+        }
         log("[records ${progress.itemDone()}/${progress.position().substringAfter('/')}] ${authors.size} author(s) @ ${relay.displayUrl()}: +${o.inserted}/${o.downloaded}${neg(o)}")
         // Fast discard: a relay that keeps returning few events per author isn't
         // holding these authors' content, so it just wastes a pump slot. Drop it (its
