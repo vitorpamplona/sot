@@ -83,6 +83,17 @@ data class PassSummary(
 )
 
 /**
+ * One (time, fully-synced-author-count) reading, sampled at pass end. A rolling
+ * window of these gives the "authors synced per hour" rate `sot status` turns
+ * into an ETA — the count comes from the crawl ledger, so it survives restarts.
+ */
+@Serializable
+data class SyncedSample(
+    val atSecs: Long,
+    val count: Int,
+)
+
+/**
  * Small persisted state that keeps periodic re-runs cheap: which relays speak
  * negentropy and how far each scope has synced. Stored as JSON next to the
  * config. The store holds the events; this holds only the sync bookkeeping.
@@ -106,9 +117,33 @@ data class SyncState(
     // report "content complete for N users" without running a sync. Monotonic
     // within a state file; a fresh start (or `sot destroy`) clears it.
     val contentDone: MutableSet<HexKey> = mutableSetOf(),
+    // Rolling window of (time, synced-author-count) readings, newest last. Sampled
+    // at pass end from the crawl ledger; the slope is the ETA rate. Capped so the
+    // state file can't grow without bound.
+    val syncedSamples: MutableList<SyncedSample> = mutableListOf(),
 ) {
     /** Mark [authors] as fully content-indexed (their contentUnit completed cleanly). */
     fun markContentDone(authors: Collection<HexKey>) = synchronized(contentDone) { contentDone.addAll(authors) }
+
+    /** Append a synced-count reading (pass end), trimming the window to the newest [MAX_SYNCED_SAMPLES]. */
+    fun recordSynced(
+        atSecs: Long,
+        count: Int,
+    ) = synchronized(syncedSamples) {
+        syncedSamples.add(SyncedSample(atSecs, count))
+        while (syncedSamples.size > MAX_SYNCED_SAMPLES) syncedSamples.removeAt(0)
+    }
+
+    /** Fully-synced authors per second across the sample window, or null if too few/flat to tell. */
+    fun syncedPerSec(): Double? =
+        synchronized(syncedSamples) {
+            if (syncedSamples.size < 2) return null
+            val first = syncedSamples.first()
+            val last = syncedSamples.last()
+            val dt = last.atSecs - first.atSecs
+            val dc = last.count - first.count
+            if (dt <= 0 || dc <= 0) null else dc.toDouble() / dt
+        }
 
     /** How many distinct authors we've fully pulled content for. */
     fun contentDoneCount(): Int = synchronized(contentDone) { contentDone.size }
@@ -165,6 +200,9 @@ data class SyncState(
     }
 
     companion object {
+        /** Rolling ETA window size — a dozen pass-end readings is plenty for a slope. */
+        const val MAX_SYNCED_SAMPLES = 12
+
         private val json =
             Json {
                 prettyPrint = true

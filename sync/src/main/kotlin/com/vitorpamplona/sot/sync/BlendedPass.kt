@@ -130,6 +130,10 @@ internal class BlendedPass(
     // pass's set once their sync ages past the TTL (the refresh cadence).
     @Volatile private var alreadySynced: Set<HexKey> = emptySet()
 
+    // Authors freshly reconciled THIS pass, for the live coverage gauge. Added to
+    // the carried-over [alreadySynced] count, it reads as "done / discovered".
+    private val syncedThisPass = ConcurrentHashMap.newKeySet<HexKey>()
+
     // Fallback content sources for authors with NO 10002: the big relays that
     // actually aggregate notes (the profile/index aggregators hold no content). A
     // no-10002 author is spread across a hash-picked [FALLBACK_FANOUT] of these so
@@ -180,6 +184,14 @@ internal class BlendedPass(
             // (correct, only slower), so it must never abort the pass.
             alreadySynced = runCatching { crawl.syncedSince(nowSecs() - opts.refreshTtlSecs) }.getOrDefault(emptySet())
             if (alreadySynced.isNotEmpty()) log("[records] ${alreadySynced.size} author(s) synced within TTL - skipping this pass")
+            // Live coverage: fully-synced (carried over + this pass) out of the roster
+            // discovered so far (skipped + newly routed). A running progress bar for
+            // "how much of the observer's network is indexed".
+            progress.gauge {
+                val done = alreadySynced.size + syncedThisPass.size
+                val seen = alreadySynced.size + knownContent.size
+                if (seen == 0) "" else "cov ${SyncProgress.compact(done.toLong())}/${SyncProgress.compact(seen.toLong())}"
+            }
             // The house is the trust ROOT and the ONLY primary: it computes first
             // (primary lane) so its 10002/kind-0/10040, scores, and content are
             // available fast. Every other observer — stored 10040 authors and
@@ -632,6 +644,7 @@ internal class BlendedPass(
         // relay — mark them fully content-indexed. A timeout doesn't count.
         if (o.completed) {
             syncer.state.markContentDone(authors)
+            syncedThisPass.addAll(authors)
             // The persisted, roster-scale ledger the NEXT pass reads to skip these
             // authors (convergence) and the coverage report groups over. A ledger
             // write failure must not fail the content fetch that already landed.

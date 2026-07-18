@@ -152,6 +152,9 @@ class SyncService(
                 received = progress.receivedTotal(),
                 inserted = progress.insertedTotal(),
             )
+            // A pass-end reading of the ledger's synced count feeds the ETA rate.
+            // A failure here must not lose the cursors, so guard it.
+            runCatching { state.recordSynced(endedMs / 1000, crawl.syncedCount()) }
             SyncState.save(statePath, state)
             log("[state] saved cursors for ${state.relays.size} relay(s)")
         }
