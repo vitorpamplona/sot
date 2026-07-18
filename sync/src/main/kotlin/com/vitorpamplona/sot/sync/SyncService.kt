@@ -79,7 +79,7 @@ class SyncService(
 
     // Quartz's client-side NIP-42: replies to AUTH challenges with a signed
     // kind-22242 and renews the connection's subscriptions once accepted.
-    private val authenticator = RelayAuthenticator(client) { _, template -> listOf(identity.signer.sign(template)) }
+    private val authenticator = RelayAuthenticator(client) { _, template, _ -> listOf(identity.signer.sign(template)) }
 
     private val state = SyncState.load(statePath)
 
