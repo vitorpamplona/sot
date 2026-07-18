@@ -61,7 +61,7 @@ private fun usage() {
             cmd("init", "interactive setup: writes .env (--yes = all defaults, --force = overwrite)"),
             cmd("serve [--up]", "NIP-50 relay + NIP-11 + background trust sync (SYNC_INTERVAL); --up starts Vespa first"),
             cmd("index [--up]", "one trust-sync pass (observers -> outboxes -> providers) into Vespa"),
-            cmd("status", "[--vespa <url>] engine reachability + stored event counts"),
+            cmd("status", "[--vespa <url>] [--observer <npub>] reachability, event counts + coverage"),
             "",
             cmd("up", "start local Vespa (docker compose) and deploy vespa/app"),
             cmd("down", "stop local Vespa"),

@@ -37,6 +37,8 @@ import com.vitorpamplona.sot.store.ObserverContext
 import com.vitorpamplona.sot.store.VespaEventStore
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncState
+import com.vitorpamplona.sot.sync.observerCoverage
+import com.vitorpamplona.sot.vespa.client.VespaCrawlIndex
 import com.vitorpamplona.sot.vespa.client.VespaEventIndex
 import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.runBlocking
@@ -105,6 +107,7 @@ internal fun status(args: List<String>) {
             corpus(store, index)
             byKind(index)
             trustGraph(store, house)
+            coverage(store, stack.crawl, args, house)
             searchHealth(store, house)
             freshness()
             hygiene(index)
@@ -207,6 +210,55 @@ private data class ObserverRow(
     val scores: String,
     val house: Boolean,
 )
+
+/**
+ * How completely ONE observer's network is indexed — the crawl's real progress
+ * bar. Defaults to the house observer; `--observer <npub|hex>` picks another.
+ * Completion is uniform over the roster (an author with no 10002 is fetched from
+ * the popular relays as a proxy outbox), so "fully synced" means the same for
+ * everyone; "own outbox" is only a diagnostic. The ETA projects the whole roster
+ * at the recent synced-per-hour rate.
+ */
+private suspend fun coverage(
+    store: VespaEventStore,
+    crawl: VespaCrawlIndex,
+    args: List<String>,
+    house: String?,
+) {
+    val arg = flag(args, "--observer", "")
+    val observer = if (arg.isNotBlank()) resolvePubkey(arg) else house
+    section("coverage")
+    if (observer == null) {
+        warn(if (arg.isBlank()) "  no observer - set HOUSE_NPUB or pass --observer <npub>" else "  --observer '$arg' is not a resolvable pubkey")
+        return
+    }
+    val cov = observerCoverage(observer, store, crawl)
+    row("observer", Hex.decode(observer).toNpub() + if (observer == house) "  ← house" else "")
+    if (cov.rosterSize == 0) {
+        warn(if (cov.providers == 0) "  no kind-10040 for this observer yet - nothing to index" else "  provider(s) named but no scores synced yet")
+        return
+    }
+    row("roster", "${num(cov.rosterSize)}  (scored subjects to index)")
+    row("own outbox", "${num(cov.withOwnOutbox)} / ${num(cov.rosterSize)}  (advertise a 10002; the rest ride the popular relays)")
+    val pct = (cov.syncedFraction * 100).toInt()
+    row("fully synced", "${num(cov.synced)} / ${num(cov.rosterSize)}  ($pct%)")
+    row("pending", "${num(cov.pending)}  (${num(cov.attempted)} attempted, ${num(cov.unreached)} not yet reached)")
+    val rate = runCatching { SyncState.load(Config.syncStatePath).syncedPerSec() }.getOrNull()
+    if (rate != null && rate > 0) {
+        row("rate", "${num((rate * 3600).toLong())} authors/hour synced")
+        if (cov.pending > 0) row("eta", "~${humanSecs((cov.pending / rate).toLong())}  (at current rate)")
+    } else {
+        row("rate", "computing… (needs 2+ completed passes)")
+    }
+}
+
+/** A coarse duration ("Xm / Xh Ym / Xd Yh") from seconds, for the ETA line. */
+private fun humanSecs(d: Long): String =
+    when {
+        d < 3600 -> "${d / 60}m"
+        d < 86400 -> "${d / 3600}h ${(d % 3600) / 60}m"
+        else -> "${d / 86400}d ${(d % 86400) / 3600}h"
+    }
 
 /**
  * The one question a corpus count can't answer: does a ranked search actually

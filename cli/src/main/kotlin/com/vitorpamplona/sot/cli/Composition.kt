@@ -31,6 +31,7 @@ import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncOptions
 import com.vitorpamplona.sot.sync.SyncService
 import com.vitorpamplona.sot.vespa.IngestStats
+import com.vitorpamplona.sot.vespa.client.VespaCrawlIndex
 import com.vitorpamplona.sot.vespa.client.VespaEventIndex
 import com.vitorpamplona.sot.vespa.client.VespaProfileIndex
 import kotlin.system.exitProcess
@@ -53,21 +54,23 @@ import kotlin.system.exitProcess
 internal class Stack(
     val store: VespaEventStore,
     val vespa: VespaEventIndex,
+    val crawl: VespaCrawlIndex,
 ) : AutoCloseable {
     /** The engine's feed-health status gauge — wire it into every sync's progress line. */
     fun feedGauge(): () -> String = vespa::feedGauge
 
-    override fun close() = store.close()
+    override fun close() {
+        store.close()
+        crawl.close()
+    }
 }
 
 /** The one store: Vespa event index, trust-projection-decorated, Nostr semantics on top. */
 internal fun openStack(): Stack {
     val vespa = VespaEventIndex(Config.vespaUrl)
     val index = TrustProjection(vespa, VespaProfileIndex(Config.vespaUrl))
-    return Stack(VespaEventStore(index, relay = publicRelayUrl()), vespa)
+    return Stack(VespaEventStore(index, relay = publicRelayUrl()), vespa, VespaCrawlIndex(Config.vespaUrl))
 }
-
-internal fun openStore(): VespaEventStore = openStack().store
 
 /** The relay's public url (`RELAY_URL`) — NIP-42's identity and the vanish scope. */
 internal fun publicRelayUrl(): NormalizedRelayUrl =
@@ -147,6 +150,7 @@ internal fun syncService(
 ): SyncService =
     SyncService(
         store = stack.store,
+        crawl = stack.crawl,
         identity = identity,
         house = house,
         seedRelays = Config.seedRelays,

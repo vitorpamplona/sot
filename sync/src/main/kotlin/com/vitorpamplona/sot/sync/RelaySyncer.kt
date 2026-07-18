@@ -272,6 +272,7 @@ class RelaySyncer(
         relay: NormalizedRelayUrl,
         filter: Filter,
         forceEnumerate: Boolean = false,
+        onVerified: (suspend (List<Event>) -> Unit)? = null,
     ): ReconcileOutcome {
         handshake.awaitOnFirstContact(relay)
         val scope = CursorScope.of(filter)
@@ -279,7 +280,7 @@ class RelaySyncer(
         var inserted = 0
 
         if (state.relay(relay).negentropyCapable != false) {
-            val neg = negentropyStream(relay, filter, maxEvents = 0, collectIds = ids)
+            val neg = negentropyStream(relay, filter, maxEvents = 0, collectIds = ids, onVerified = onVerified)
             inserted += neg.streamed.inserted
             if (neg.usedNegentropy && neg.streamed.completed) {
                 state.markSynced(relay, scope, nowSecs())
@@ -291,13 +292,13 @@ class RelaySyncer(
             ids.clear()
         } else if (!forceEnumerate) {
             // Pages-only relay and no authoritative pass requested: plain incremental sync.
-            val o = sync(relay, filter)
+            val o = sync(relay, filter, onVerified = onVerified)
             return ReconcileOutcome(o.inserted, relayIds = null, usedNegentropy = o.usedNegentropy)
         }
 
         // Authoritative enumeration: the relay's complete current set, via pages.
         // Only the (small) id set is held in memory; the events themselves stream.
-        val pages = pagesStream(relay, filter, maxEvents = 0, collectIds = ids)
+        val pages = pagesStream(relay, filter, maxEvents = 0, collectIds = ids, onVerified = onVerified)
         inserted += pages.inserted
         if (!pages.completed) {
             log("  ! ${relay.displayUrl()} enumeration timed out - skipping the deletion diff")

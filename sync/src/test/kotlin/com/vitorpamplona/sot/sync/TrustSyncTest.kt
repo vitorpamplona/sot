@@ -30,6 +30,7 @@ import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayType
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.store.VespaEventStore
+import com.vitorpamplona.sot.vespa.InMemoryCrawlIndex
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -92,7 +93,7 @@ class TrustSyncTest {
     ): TrustSync {
         val opts = SyncOptions(concurrency = 4, fetchTimeoutMs = 15_000)
         val syncer = RelaySyncer(net.client, store, SyncState(), log = { }, idleTimeoutMs = opts.fetchTimeoutMs)
-        return TrustSync(syncer, store, opts, log = { })
+        return TrustSync(syncer, store, opts, log = { }, crawl = InMemoryCrawlIndex())
     }
 
     private suspend fun VespaEventStore.scoreAuthors(): Set<String> = query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.pubKey }.toSet()

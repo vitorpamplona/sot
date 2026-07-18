@@ -72,7 +72,10 @@ class RelaySyncerTest {
             InProcessNet().use { net ->
                 val good = signed(1)
                 // A different author's shape with a garbage signature — the relay serves it anyway.
-                val forged = MetadataEvent(good.id.replaceFirstChar { 'f' }, NostrSignerSync().pubKey, good.createdAt + 1, emptyArray(), """{"name":"evil"}""", "f".repeat(128))
+                // Flip the first id nibble to something guaranteed different, so the forged id never
+                // collides with good.id (a random signer occasionally produces an id already starting 'f').
+                val forgedId = good.id.replaceFirstChar { if (it == 'f') '0' else 'f' }
+                val forged = MetadataEvent(forgedId, NostrSignerSync().pubKey, good.createdAt + 1, emptyArray(), """{"name":"evil"}""", "f".repeat(128))
                 net.store("wss://b.test").insert(good)
                 net.store("wss://b.test").insert(forged)
 

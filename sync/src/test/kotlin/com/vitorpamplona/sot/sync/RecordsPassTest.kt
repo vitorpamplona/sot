@@ -32,7 +32,9 @@ import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayType
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.sot.store.VespaEventStore
+import com.vitorpamplona.sot.vespa.InMemoryCrawlIndex
 import com.vitorpamplona.sot.vespa.InMemoryEventIndex
+import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -88,10 +90,11 @@ class RecordsPassTest {
     private fun trustSync(
         net: InProcessNet,
         store: VespaEventStore,
+        crawl: CrawlIndex = InMemoryCrawlIndex(),
     ): TrustSync {
         val opts = SyncOptions(concurrency = 4, fetchTimeoutMs = 15_000)
         val syncer = RelaySyncer(net.client, store, SyncState(), log = { }, idleTimeoutMs = opts.fetchTimeoutMs)
-        return TrustSync(syncer, store, opts, log = { })
+        return TrustSync(syncer, store, opts, log = { }, crawl = crawl)
     }
 
     private suspend fun VespaEventStore.notesBy(author: HexKey): List<String> = query<TextNoteEvent>(Filter(kinds = listOf(TextNoteEvent.KIND), authors = listOf(author))).map { it.content }
@@ -123,6 +126,76 @@ class RecordsPassTest {
                     assertEquals(2, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))), "both scores synced")
                     assertEquals(listOf("bob writes about coffee"), store.notesBy(bob.pubKey), "bob's note was pulled from his outbox")
                     assertEquals(listOf("carol writes about tea"), store.notesBy(carol.pubKey), "carol's note was pulled from her outbox")
+                }
+            }
+        }
+
+    /**
+     * Convergence: an author reconciled cleanly is stamped in the crawl ledger and
+     * SKIPPED on the next pass (within the TTL). This is what stops every restart
+     * from re-pulling the whole roster — the second pass does no content work for
+     * an already-synced author, so a note added between passes is NOT re-fetched.
+     */
+    @Test
+    fun `a synced author is skipped on the next pass`() =
+        runBlocking {
+            InProcessNet().use { net ->
+                net.store(index).insert(relayList(observer, at = 1_000, outbox))
+                net.store(outbox).insert(providerList(observer, service.pubKey, provider, at = 1_100))
+                net.store(provider).insert(score(service, bob.pubKey, 60, at = 1_200))
+                net.store(index).insert(relayList(bob, at = 1_000, bobOutbox))
+                net.store(bobOutbox).insert(note(bob, "bob's first note", at = 1_300))
+
+                val crawl = InMemoryCrawlIndex()
+                val store = localStore()
+                store.use {
+                    trustSync(net, store, crawl).run(observers = setOf(observer.pubKey), indexRelays = listOf(net.url(index)))
+                    assertEquals(listOf("bob's first note"), store.notesBy(bob.pubKey), "first pass pulls bob's content")
+                    assertEquals(1, crawl.syncedCount(), "bob is stamped as content-synced in the ledger")
+
+                    // Bob posts again, then a second pass runs against the SAME ledger.
+                    net.store(bobOutbox).insert(note(bob, "bob's second note", at = 1_400))
+                    trustSync(net, store, crawl).run(observers = setOf(observer.pubKey), indexRelays = listOf(net.url(index)))
+                    assertEquals(
+                        listOf("bob's first note"),
+                        store.notesBy(bob.pubKey),
+                        "bob was skipped (still within TTL), so his new note was not re-fetched",
+                    )
+                }
+            }
+        }
+
+    /**
+     * The refresh slice: once an author's sync ages past the TTL, a later pass
+     * re-pulls their outbox and picks up posts published since. Proves refresh
+     * works end to end (the stalest-first budgeting is unit-tested separately).
+     */
+    @Test
+    fun `a stale synced author is refreshed and new posts land`() =
+        runBlocking {
+            InProcessNet().use { net ->
+                net.store(index).insert(relayList(observer, at = 1_000, outbox))
+                net.store(outbox).insert(providerList(observer, service.pubKey, provider, at = 1_100))
+                net.store(provider).insert(score(service, bob.pubKey, 60, at = 1_200))
+                net.store(index).insert(relayList(bob, at = 1_000, bobOutbox))
+                net.store(bobOutbox).insert(note(bob, "bob's first note", at = 1_300))
+
+                val crawl = InMemoryCrawlIndex()
+                val store = localStore()
+                store.use {
+                    trustSync(net, store, crawl).run(observers = setOf(observer.pubKey), indexRelays = listOf(net.url(index)))
+                    assertEquals(listOf("bob's first note"), store.notesBy(bob.pubKey))
+
+                    // Age bob's sync far past the TTL, then he posts again.
+                    crawl.markSynced(listOf(bob.pubKey), atSecs = 1)
+                    net.store(bobOutbox).insert(note(bob, "bob's second note", at = 1_400))
+
+                    trustSync(net, store, crawl).run(observers = setOf(observer.pubKey), indexRelays = listOf(net.url(index)))
+                    assertEquals(
+                        setOf("bob's first note", "bob's second note"),
+                        store.notesBy(bob.pubKey).toSet(),
+                        "the stale author was refreshed and the new note landed",
+                    )
                 }
             }
         }

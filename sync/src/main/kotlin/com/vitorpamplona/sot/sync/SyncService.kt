@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +57,7 @@ import kotlin.time.Duration
  */
 class SyncService(
     private val store: IEventStore,
+    private val crawl: CrawlIndex,
     private val identity: Identity,
     private val house: HouseAccount? = null,
     seedRelays: List<String> = emptyList(),
@@ -79,7 +81,7 @@ class SyncService(
 
     // Quartz's client-side NIP-42: replies to AUTH challenges with a signed
     // kind-22242 and renews the connection's subscriptions once accepted.
-    private val authenticator = RelayAuthenticator(client) { _, template -> listOf(identity.signer.sign(template)) }
+    private val authenticator = RelayAuthenticator(client) { _, template, _ -> listOf(identity.signer.sign(template)) }
 
     private val state = SyncState.load(statePath)
 
@@ -108,7 +110,7 @@ class SyncService(
                 auth = authenticator,
             )
         coroutineScopeWithTicker(progress) {
-            TrustSync(syncer, store, opts, log, progress).run(
+            TrustSync(syncer, store, opts, log, crawl, progress).run(
                 observers = HashSet(observers),
                 indexRelays = identity.indexRelays(store),
                 house = house,
@@ -150,6 +152,9 @@ class SyncService(
                 received = progress.receivedTotal(),
                 inserted = progress.insertedTotal(),
             )
+            // A pass-end reading of the ledger's synced count feeds the ETA rate.
+            // A failure here must not lose the cursors, so guard it.
+            runCatching { state.recordSynced(endedMs / 1000, crawl.syncedCount()) }
             SyncState.save(statePath, state)
             log("[state] saved cursors for ${state.relays.size} relay(s)")
         }
@@ -158,5 +163,7 @@ class SyncService(
     override fun close() {
         authenticator.destroy()
         client.close()
+        // [store] and [crawl] are owned by the composition (shared with the relay),
+        // closed there — not here.
     }
 }
