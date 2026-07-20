@@ -4,8 +4,8 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":vespa")) // VespaEventIndex + VespaProfileIndex (the engine clients)
-    implementation(project(":store")) // VespaEventStore (the one store)
+    implementation(libs.vespa.eventstore.engine) // VespaEventIndex + VespaProfileIndex (the engine clients)
+    implementation(libs.vespa.eventstore.store) // VespaEventStore (the one store)
     implementation(project(":relay")) // SotRelayServer + Ktor mount + NIP-11
     implementation(project(":sync")) // Identity + SyncService (serve's background loop, `sot index`)
     implementation(libs.quartz) // NIP-19 parsing (init prompts), Filters (status counts)
@@ -15,8 +15,9 @@ dependencies {
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.websockets)
     testImplementation(kotlin("test"))
-    // UiDemoServer: the web UI over an in-memory relay (no Vespa) for UI development.
-    testImplementation(testFixtures(project(":vespa")))
+    // UiDemoServer runs the web UI over an in-memory relay (no Vespa) using
+    // InMemoryEventIndex — production code in the library's :vespa jar, already on
+    // the classpath via implementation above; no test-fixtures dependency needed.
 }
 
 kotlin {

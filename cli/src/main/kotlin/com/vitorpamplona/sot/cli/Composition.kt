@@ -20,20 +20,20 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.VespaEventStores
+import com.vitorpamplona.quartz.eventstore.store.VespaStore
+import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaCrawlIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.store.VespaEventStores
-import com.vitorpamplona.sot.store.VespaStore
 import com.vitorpamplona.sot.sync.HouseAccount
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncOptions
 import com.vitorpamplona.sot.sync.SyncService
-import com.vitorpamplona.sot.vespa.IngestStats
-import com.vitorpamplona.sot.vespa.client.VespaCrawlIndex
-import com.vitorpamplona.sot.vespa.client.VespaEventIndex
 import kotlin.system.exitProcess
 
 /*

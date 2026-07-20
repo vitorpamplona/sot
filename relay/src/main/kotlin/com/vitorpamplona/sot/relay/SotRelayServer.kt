@@ -20,6 +20,8 @@
  */
 package com.vitorpamplona.sot.relay
 
+import com.vitorpamplona.quartz.eventstore.store.ObserverContext
+import com.vitorpamplona.quartz.eventstore.store.OriginalFilters
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.CountResult
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -37,8 +39,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.policies.VerifyPolicy
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
-import com.vitorpamplona.sot.store.ObserverContext
-import com.vitorpamplona.sot.store.OriginalFilters
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext

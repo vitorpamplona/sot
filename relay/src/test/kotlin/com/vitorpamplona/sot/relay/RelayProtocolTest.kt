@@ -20,18 +20,18 @@
  */
 package com.vitorpamplona.sot.relay
 
+import com.vitorpamplona.quartz.eventstore.store.DEFAULT_MIN_RANK
+import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
-import com.vitorpamplona.sot.store.DEFAULT_MIN_RANK
-import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.vespa.InMemoryEventIndex
-import com.vitorpamplona.sot.vespa.client.EventIndex
-import com.vitorpamplona.sot.vespa.doc.EventDoc
-import com.vitorpamplona.sot.vespa.query.EventQuery
-import com.vitorpamplona.sot.vespa.query.EventYql
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.AfterTest

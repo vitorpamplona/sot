@@ -20,6 +20,11 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.eventstore.store.ObserverContext
+import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaCrawlIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -33,14 +38,9 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
-import com.vitorpamplona.sot.store.ObserverContext
-import com.vitorpamplona.sot.store.VespaEventStore
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncState
 import com.vitorpamplona.sot.sync.observerCoverage
-import com.vitorpamplona.sot.vespa.client.VespaCrawlIndex
-import com.vitorpamplona.sot.vespa.client.VespaEventIndex
-import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
