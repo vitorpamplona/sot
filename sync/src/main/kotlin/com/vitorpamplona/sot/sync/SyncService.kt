@@ -45,7 +45,7 @@ import kotlin.time.Duration
  *
  * It consumes an event store rather than creating one: the composition root
  * creates the store and shares it with the relay. The ranking projection is
- * already wired under the store (`:profile` decorates its EventIndex), so there
+ * already wired under the store (the trust projection decorates its EventIndex (:store)), so there
  * is no separate projection to babysit. Everything inserted here ranks
  * immediately.
  *

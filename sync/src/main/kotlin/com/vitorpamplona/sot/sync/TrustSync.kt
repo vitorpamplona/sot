@@ -128,7 +128,7 @@ data class HouseAccount(
  * no special code: whatever source a 10040 arrives from, the newest wins, and
  * the outbox pass just makes sure the newest is actually seen. Provider
  * switches need no invalidation logic either. The sweep deletes any provider's
- * 30382s the moment no 10040 lists it, and the ranking projection (`:profile`)
+ * 30382s the moment no 10040 lists it, and the ranking projection (:store)
  * re-derives the observer's cells from what remains.
  */
 class TrustSync(

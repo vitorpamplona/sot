@@ -20,6 +20,5 @@ rootProject.name = "sot"
 include(":vespa")
 include(":store")
 include(":relay")
-include(":profile")
 include(":sync")
 include(":cli")

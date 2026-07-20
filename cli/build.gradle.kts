@@ -6,7 +6,6 @@ plugins {
 dependencies {
     implementation(project(":vespa")) // VespaEventIndex + VespaProfileIndex (the engine clients)
     implementation(project(":store")) // VespaEventStore (the one store)
-    implementation(project(":profile")) // TrustProjection decorates the store's index
     implementation(project(":relay")) // SotRelayServer + Ktor mount + NIP-11
     implementation(project(":sync")) // Identity + SyncService (serve's background loop, `sot index`)
     implementation(libs.quartz) // NIP-19 parsing (init prompts), Filters (status counts)

@@ -24,7 +24,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.sot.profile.TrustProjection
+import com.vitorpamplona.sot.store.TrustProjection
 import com.vitorpamplona.sot.store.VespaEventStore
 import com.vitorpamplona.sot.sync.HouseAccount
 import com.vitorpamplona.sot.sync.Identity
@@ -40,7 +40,7 @@ import kotlin.system.exitProcess
  * The composition root: how the pieces plug together, in one place.
  *
  *   VespaEventIndex  (events over Vespa HTTP)
- *        └─ TrustProjection            (:profile — watches 30382/10040 puts
+ *        └─ TrustProjection            (:store — watches 30382/10040 puts
  *           └─ VespaProfileIndex        and removes, rewrites the ranking parents)
  *   VespaEventStore(TrustProjection)   (:store — Nostr semantics, ONE store)
  *        ├─ SotRelayServer             (:relay — serves it)
