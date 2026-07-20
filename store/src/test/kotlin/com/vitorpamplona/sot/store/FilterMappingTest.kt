@@ -86,6 +86,31 @@ class FilterMappingTest {
     }
 
     @Test
+    fun `observer token names the ranking lens and leaves the terms alone`() {
+        val hex = "a".repeat(64)
+        val q = map("vitor observer:$hex")
+        assertEquals("vitor", q.search, "the observer token is an extension, not a search term")
+        assertEquals(hex, q.observer)
+    }
+
+    @Test
+    fun `observer token is lowercased and non-hex is ignored`() {
+        assertEquals("a".repeat(64), map("vitor observer:${"A".repeat(64)}").observer)
+        assertNull(map("vitor observer:not-a-key").observer, "a non-hex observer is dropped")
+        assertNull(map("vitor").observer, "no token, no observer")
+    }
+
+    @Test
+    fun `observer rides alongside a sort and a floor`() {
+        val hex = "b".repeat(64)
+        val q = map("vitor observer:$hex sort:rank filter:rank:gte:5")
+        assertEquals(hex, q.observer)
+        assertEquals(EventYql.RANK_DESC, q.ranking)
+        assertEquals(5.0, q.minRank)
+        assertEquals("vitor", q.search)
+    }
+
+    @Test
     fun `plain filters are never trust-gated`() {
         val none = Filter(kinds = listOf(1)).toEventQuery()!!
         assertNull(none.search)

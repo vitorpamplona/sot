@@ -22,6 +22,7 @@ package com.vitorpamplona.sot.store
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
+import com.vitorpamplona.quartz.utils.Hex
 import com.vitorpamplona.sot.vespa.query.EventQuery
 import com.vitorpamplona.sot.vespa.query.EventYql
 
@@ -50,6 +51,10 @@ import com.vitorpamplona.sot.vespa.query.EventYql
  *    otherwise gated at [DEFAULT_MIN_RANK], and include:spam is its inverse.
  *    Plain filter REQs (no terms, no sort) are never gated: that recall belongs
  *    to NIP-01, not to search.
+ *  - `observer:<64-hex>` names the pubkey whose web-of-trust ranks the hits.
+ *    It is the query-side way to pick the ranking lens (the relay otherwise
+ *    supplies it from the NIP-42 connection); a non-hex value is ignored. With
+ *    no observer resolved, a search degrades to pure-text relevance.
  *
  * Unknown extensions are ignored. A query that is nothing but extensions becomes
  * unconstrained (null terms), not match-nothing.
@@ -61,6 +66,7 @@ internal fun Filter.toEventQuery(): EventQuery? {
     val terms = parsed.terms.ifEmpty { null }
     val sort = parsed.extensions["sort"]?.let(::rankProfileOf)
     val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
+    val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
     val ranked = terms != null || sort != null
     return EventQuery(
         ids = ids.orEmpty(),
@@ -72,6 +78,7 @@ internal fun Filter.toEventQuery(): EventQuery? {
         until = until,
         limit = limit,
         search = terms,
+        observer = observer,
         ranking = sort ?: floor?.let { EventYql.RANK_FILTERED },
         minRank = floor ?: if (ranked && !parsed.includeSpam) DEFAULT_MIN_RANK else null,
     )

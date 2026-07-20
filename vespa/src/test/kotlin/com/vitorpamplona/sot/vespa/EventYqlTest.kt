@@ -69,8 +69,28 @@ class EventYqlTest {
         assertEquals("vitorpamplona", q.params["wj"], "two words get the joined-CamelCase variant")
         assertFalse("wp0" in q.params, "adjacent pairs only appear from three words up")
         assertEquals("2.0", q.params["ranking.features.query(w_gram)"], "no short word: normal gram weight")
-        assertEquals(EventYql.RANK_SEARCH, q.ranking)
+        assertEquals(EventYql.RANK_TEXT, q.ranking, "no observer: search defaults to pure text")
         assertFalse("order by" in q.yql, "ranked queries must not force recency order")
+    }
+
+    @Test
+    fun `an observer switches the search default to the trust profile`() {
+        val text = EventYql.build(EventQuery(search = "vitor"))!!
+        assertEquals(EventYql.RANK_TEXT, text.ranking, "no observer: pure text")
+        assertFalse("query(user_q)" in text.params.keys.joinToString(), "no observer: no trust feature")
+
+        val trust = EventYql.build(EventQuery(search = "vitor", observer = hexA))!!
+        assertEquals(EventYql.RANK_SEARCH, trust.ranking, "observer present: blended trust profile")
+        assertEquals("{$hexA:1.0}", trust.params["ranking.features.query(user_q)"])
+    }
+
+    @Test
+    fun `min_rank is emitted only with an observer to gate against`() {
+        val noObserver = EventYql.build(EventQuery(search = "vitor", minRank = 2.0))!!
+        assertNull(noObserver.params["ranking.features.query(min_rank)"], "no observer: an unguarded floor would drop everything")
+
+        val withObserver = EventYql.build(EventQuery(search = "vitor", observer = hexA, minRank = 2.0))!!
+        assertEquals("2.0", withObserver.params["ranking.features.query(min_rank)"])
     }
 
     @Test

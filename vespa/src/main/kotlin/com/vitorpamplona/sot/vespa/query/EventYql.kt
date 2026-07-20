@@ -69,14 +69,23 @@ object EventYql {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
 
-        val ranking = q.ranking ?: if (q.search.isNullOrBlank()) RANK_UNRANKED else RANK_SEARCH
-        if (ranking != RANK_UNRANKED) {
-            q.observer
-                ?.lowercase()
-                ?.takeIf(Hex::isHex64)
-                ?.let { params["ranking.features.query(user_q)"] = "{$it:1.0}" }
+        // Trust ranking needs an observer: user_q weights the author's scores and
+        // min_rank gates against them. With no observer both are meaningless — and
+        // an unguarded min_rank would gate every hit against a zero score, i.e.
+        // return nothing — so a search with no observer defaults to pure text and
+        // emits neither feature. An explicit sort:/filter: still selects its
+        // profile, but degrades to match-tier order (no trust) without an observer.
+        val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
+        val ranking =
+            q.ranking ?: when {
+                q.search.isNullOrBlank() -> RANK_UNRANKED
+                observer != null -> RANK_SEARCH
+                else -> RANK_TEXT
+            }
+        if (ranking != RANK_UNRANKED && observer != null) {
+            params["ranking.features.query(user_q)"] = "{$observer:1.0}"
+            q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
         }
-        q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
 
         val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
         // No text and no rank profile = plain relay REQ semantics: newest

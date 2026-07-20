@@ -279,8 +279,14 @@ class VespaEventStore(
 
     // ---- queries ------------------------------------------------------------
 
-    /** Map a filter to an [EventQuery] stamped with the current expiry cutoff (NIP-40) and, for searches, the ranking observer. */
-    private fun Filter.toExpiryQuery(observer: String? = null): EventQuery? = toEventQuery()?.copy(notExpiredAt = nowSecs(), observer = observer)
+    /**
+     * Map a filter to an [EventQuery] stamped with the current expiry cutoff
+     * (NIP-40) and, for searches, the ranking observer. An explicit `observer:`
+     * search token wins over the connection [observer] — a client may ask to
+     * rank through any lens (scores are public), so the query's own choice takes
+     * precedence over the authenticated default.
+     */
+    private fun Filter.toExpiryQuery(observer: String? = null): EventQuery? = toEventQuery()?.let { it.copy(notExpiredAt = nowSecs(), observer = it.observer ?: observer) }
 
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 

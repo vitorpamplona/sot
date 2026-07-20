@@ -51,9 +51,10 @@ data class EventQuery(
     val search: String? = null,
     /**
      * RANKING context, never recall: the 64-hex pubkey whose web-of-trust
-     * weighs search hits (the NIP-42-authenticated user, or the operator's
-     * default). Only emitted alongside a search term, as the `user_q` ranking
-     * feature.
+     * weighs search hits (the NIP-42-authenticated user, the NIP-50 `observer:`
+     * search token, or the operator's default). Only emitted alongside a search
+     * term, as the `user_q` ranking feature. When absent, a search falls back to
+     * pure-text relevance ([EventYql.RANK_TEXT]) and no trust gate is applied.
      */
     val observer: String? = null,
     /**
