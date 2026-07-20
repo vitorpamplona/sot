@@ -30,3 +30,17 @@ kotlin {
 tasks.test {
     useJUnitPlatform()
 }
+
+// Bundle the Vespa application package (schemas + rank profiles) into the jar as
+// `vespa-app.zip`, so the library can deploy the schema to a running Vespa. It is
+// zipped at build time from app/ — the very directory the CLI's docker flow
+// deploys — so there is a single source of truth for the schema.
+val vespaAppZip by tasks.registering(Zip::class) {
+    archiveFileName.set("vespa-app.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("vespa-app"))
+    from(layout.projectDirectory.dir("app"))
+}
+
+tasks.named<Copy>("processResources") {
+    from(vespaAppZip)
+}

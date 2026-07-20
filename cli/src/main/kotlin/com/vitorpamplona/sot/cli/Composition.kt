@@ -24,8 +24,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.sot.store.TrustProjection
 import com.vitorpamplona.sot.store.VespaEventStore
+import com.vitorpamplona.sot.store.VespaEventStores
+import com.vitorpamplona.sot.store.VespaStore
 import com.vitorpamplona.sot.sync.HouseAccount
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncOptions
@@ -33,7 +34,6 @@ import com.vitorpamplona.sot.sync.SyncService
 import com.vitorpamplona.sot.vespa.IngestStats
 import com.vitorpamplona.sot.vespa.client.VespaCrawlIndex
 import com.vitorpamplona.sot.vespa.client.VespaEventIndex
-import com.vitorpamplona.sot.vespa.client.VespaProfileIndex
 import kotlin.system.exitProcess
 
 /*
@@ -50,27 +50,36 @@ import kotlin.system.exitProcess
  * download, a relay publish, a kind-5) updates ranking with no extra wiring.
  */
 
-/** The wired storage stack: the store to use, plus the raw engine client for health gauges. */
+/** The wired storage stack: the library store handle, plus the sync-side crawl index. */
 internal class Stack(
-    val store: VespaEventStore,
-    val vespa: VespaEventIndex,
+    private val handle: VespaStore,
     val crawl: VespaCrawlIndex,
 ) : AutoCloseable {
+    /** The concrete store — Vespa-specific methods (e.g. distinctDTags) and the full IEventStore surface. */
+    val store: VespaEventStore get() = handle.store
+
+    /** The raw (non-projected) engine index — status/health metrics query it directly. */
+    val vespa: VespaEventIndex get() = handle.events
+
     /** The engine's feed-health status gauge — wire it into every sync's progress line. */
-    fun feedGauge(): () -> String = vespa::feedGauge
+    fun feedGauge(): () -> String = handle::feedGauge
 
     override fun close() {
-        store.close()
+        handle.close()
         crawl.close()
     }
 }
 
-/** The one store: Vespa event index, trust-projection-decorated, Nostr semantics on top. */
-internal fun openStack(): Stack {
-    val vespa = VespaEventIndex(Config.vespaUrl)
-    val index = TrustProjection(vespa, VespaProfileIndex(Config.vespaUrl))
-    return Stack(VespaEventStore(index, relay = publicRelayUrl()), vespa, VespaCrawlIndex(Config.vespaUrl))
-}
+/**
+ * The one store, wired through the library front door: a VespaEventStore over a
+ * trust-projection-decorated Vespa index. autoDeploy is off here — the CLI owns
+ * schema deployment through `sot up` / `sot deploy` (the docker flow).
+ */
+internal fun openStack(): Stack =
+    Stack(
+        VespaEventStores.open(Config.vespaUrl, relay = publicRelayUrl(), autoDeploy = false),
+        VespaCrawlIndex(Config.vespaUrl),
+    )
 
 /** The relay's public url (`RELAY_URL`) — NIP-42's identity and the vanish scope. */
 internal fun publicRelayUrl(): NormalizedRelayUrl =
