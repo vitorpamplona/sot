@@ -17,15 +17,9 @@ dependencies {
     // dependency direction (:sync -> :store).
     implementation(libs.vespa.eventstore.store)
     testImplementation(kotlin("test"))
-    // Tests run the real protocol against in-process relays backed by the SAME store
-    // implementation the product uses (VespaEventStore over the in-memory reference
-    // index), and drive the crawl ledger through InMemoryCrawlIndex — a test fixture
-    // in the library's :vespa module. JitPack's rewritten Gradle metadata points the
-    // test-fixtures VARIANT at the main jar, so the testFixtures()/capability route
-    // resolves the wrong jar; fetch the test-fixtures artifact directly by classifier
-    // (non-transitive — the main :vespa it needs is already on the test classpath via
-    // the store above).
-    testImplementation("com.github.vitorpamplona.vespa-eventstore:vespa:${libs.versions.vespaEventStore.get()}:test-fixtures@jar")
+    // Tests run the real protocol against in-process relays over the in-memory
+    // reference indexes (InMemoryEventIndex, InMemoryCrawlIndex) — production code in
+    // the library's :vespa jar, already on the test classpath via the store above.
 }
 
 kotlin {
