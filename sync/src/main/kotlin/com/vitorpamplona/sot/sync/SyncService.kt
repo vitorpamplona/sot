@@ -20,7 +20,6 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.quartz.eventstore.vespa.doc.CrawlIndex
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator

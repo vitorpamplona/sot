@@ -22,7 +22,6 @@ package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.eventstore.store.ObserverContext
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
-import com.vitorpamplona.quartz.eventstore.vespa.client.VespaCrawlIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -38,6 +37,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
+import com.vitorpamplona.sot.sync.CrawlIndex
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncState
 import com.vitorpamplona.sot.sync.observerCoverage
@@ -221,7 +221,7 @@ private data class ObserverRow(
  */
 private suspend fun coverage(
     store: VespaEventStore,
-    crawl: VespaCrawlIndex,
+    crawl: CrawlIndex,
     args: List<String>,
     house: String?,
 ) {

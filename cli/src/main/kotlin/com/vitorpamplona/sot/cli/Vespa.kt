@@ -110,10 +110,10 @@ internal fun deploy(args: List<String>): Int {
  * local db. Asks before deleting unless `--yes`.
  */
 internal fun destroy(args: List<String>) {
-    val state = File(Config.syncStatePath)
+    val localFiles = listOf(File(Config.syncStatePath), crawlStatePath().toFile())
 
     println(Ansi.bold("This wipes all local sot state:"))
-    if (state.exists()) hint("  rm ${state.path}") else hint("  (no sync state file at ${state.path})")
+    localFiles.forEach { if (it.exists()) hint("  rm ${it.path}") }
     hint("  docker compose down -v      (stops Vespa and deletes its data volume - THE event store)")
 
     if (!has(args, "--yes")) {
@@ -127,8 +127,8 @@ internal fun destroy(args: List<String>) {
 
     runCatching { run("docker", "compose", "down", "-v") }
         .onFailure { warn("docker compose failed (${it.message}) - remove the vespa_var volume manually") }
-    if (state.exists()) {
-        if (state.delete()) ok("deleted ${state.path}") else err("could not delete ${state.path}")
+    localFiles.filter { it.exists() }.forEach {
+        if (it.delete()) ok("deleted ${it.path}") else err("could not delete ${it.path}")
     }
     ok("Clean slate. Next: `sot up` then `sot serve` (or `sot index`).")
 }

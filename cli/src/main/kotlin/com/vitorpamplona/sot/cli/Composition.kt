@@ -24,16 +24,18 @@ import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStores
 import com.vitorpamplona.quartz.eventstore.store.VespaStore
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
-import com.vitorpamplona.quartz.eventstore.vespa.client.VespaCrawlIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
+import com.vitorpamplona.sot.sync.CrawlIndex
+import com.vitorpamplona.sot.sync.FileCrawlIndex
 import com.vitorpamplona.sot.sync.HouseAccount
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncOptions
 import com.vitorpamplona.sot.sync.SyncService
+import java.nio.file.Path
 import kotlin.system.exitProcess
 
 /*
@@ -53,7 +55,7 @@ import kotlin.system.exitProcess
 /** The wired storage stack: the library store handle, plus the sync-side crawl index. */
 internal class Stack(
     private val handle: VespaStore,
-    val crawl: VespaCrawlIndex,
+    val crawl: CrawlIndex,
 ) : AutoCloseable {
     /** The concrete store — Vespa-specific methods (e.g. distinctDTags) and the full IEventStore surface. */
     val store: VespaEventStore get() = handle.store
@@ -73,13 +75,18 @@ internal class Stack(
 /**
  * The one store, wired through the library front door: a VespaEventStore over a
  * trust-projection-decorated Vespa index. autoDeploy is off here — the CLI owns
- * schema deployment through `sot up` / `sot deploy` (the docker flow).
+ * schema deployment through `sot up` / `sot deploy` (the docker flow). Crawl
+ * bookkeeping is sync state, so it lives in a file next to the sync cursors, not
+ * in the event store.
  */
 internal fun openStack(): Stack =
     Stack(
         VespaEventStores.open(Config.vespaUrl, relay = publicRelayUrl(), autoDeploy = false),
-        VespaCrawlIndex(Config.vespaUrl),
+        FileCrawlIndex(crawlStatePath()),
     )
+
+/** The crawl bookkeeping file — a sibling of the sync-state cursor file. */
+internal fun crawlStatePath(): Path = Path.of(Config.syncStatePath).resolveSibling("crawl-state.json")
 
 /** The relay's public url (`RELAY_URL`) — NIP-42's identity and the vanish scope. */
 internal fun publicRelayUrl(): NormalizedRelayUrl =

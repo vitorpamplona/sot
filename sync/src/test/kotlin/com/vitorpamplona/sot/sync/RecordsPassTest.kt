@@ -21,9 +21,7 @@
 package com.vitorpamplona.sot.sync
 
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
-import com.vitorpamplona.quartz.eventstore.vespa.InMemoryCrawlIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
-import com.vitorpamplona.quartz.eventstore.vespa.doc.CrawlIndex
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
