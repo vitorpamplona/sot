@@ -41,14 +41,16 @@ import kotlin.system.exitProcess
  * The composition root: how the pieces plug together, in one place.
  *
  *   VespaEventIndex  (events over Vespa HTTP)
- *        └─ TrustProjection            (:store — watches 30382/10040 puts
+ *        └─ TrustProjection            (vespa-eventstore — watches 30382/10040 puts
  *           └─ VespaReputationIndex     and removes, rewrites the ranking parents)
- *   NostrEventStore(TrustProjection)   (:store — Nostr semantics, ONE store)
- *        ├─ NostrRelayServer             (:relay — serves it)
- *        └─ SyncService                (:sync — fills it)
+ *   NostrEventStore(TrustProjection)   (vespa-eventstore — Nostr semantics, ONE store)
+ *        └─ SyncService                (:sync — fills it from the network)
+ *
+ * SoT is the CRAWL: it fills the store. The relay that SERVES the store to
+ * clients is a separate app (vespa-relay) pointed at the same Vespa.
  *
  * Because the projection sits UNDER the store, every insert path (a sync
- * download, a relay publish, a kind-5) updates ranking with no extra wiring.
+ * download, a kind-5) updates ranking with no extra wiring.
  */
 
 /** The wired storage stack: the library store handle, plus the sync-side crawl index. */

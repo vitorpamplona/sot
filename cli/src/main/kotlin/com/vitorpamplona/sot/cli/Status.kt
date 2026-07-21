@@ -93,9 +93,6 @@ internal fun status(args: List<String>) {
     val vespaUp = ping("$vespaUrl/ApplicationStatus")
     if (vespaUp) ok("vespa: up at $vespaUrl") else err("vespa: NOT reachable at $vespaUrl")
 
-    val serverUp = ping(Config.serverUrl, accept = "application/nostr+json")
-    if (serverUp) ok("server: up at ${Config.serverUrl}") else warn("server: not reachable at ${Config.serverUrl} (is `sot serve` running?)")
-
     if (!vespaUp) return
     val stack = openStack()
     try {
@@ -321,7 +318,7 @@ private suspend fun config(
 ) {
     section("config")
     row("house", if (house != null) "${Hex.decode(house).toNpub()}  (resolved)" else "${Config.houseNpub.ifBlank { "(unset)" }}  — NOT resolved")
-    row("relay id", "${Config.serverName}  ${Config.relayUrl}")
+    row("identity", "${Config.serverName}  ${Config.relayUrl}")
     row("seed relays", Config.seedRelays.joinToString(", ").ifBlank { "(none)" })
 
     val serverHex =

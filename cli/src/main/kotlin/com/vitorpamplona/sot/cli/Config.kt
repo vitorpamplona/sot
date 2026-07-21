@@ -42,10 +42,8 @@ object Config {
             Triple("VESPA_CONFIG_URL", "http://localhost:19071", "Vespa config server (deploy + readiness)"),
             Triple("VESPA_PORT", "8080", "host port docker publishes Vespa's query/document API on (keep VESPA_URL in sync)"),
             Triple("VESPA_CONFIG_PORT", "19071", "host port docker publishes Vespa's config server on (keep VESPA_CONFIG_URL in sync)"),
-            Triple("SERVER_PORT", "7777", "port for the sot server (NIP-50 relay + NIP-11)"),
-            Triple("SERVER_URL", "http://localhost:7777", "public http url of the server"),
-            Triple("RELAY_URL", "ws://localhost:7777", "public ws url the relay advertises (NIP-42 + the identity's 10002)"),
-            Triple("SYNC_INTERVAL", "15", "minutes between background sync passes in `sot serve`; 0 = serve-only"),
+            Triple("RELAY_URL", "ws://localhost:7777", "the indexer's own ws url: its NIP-42 identity, its kind-10002 outbox, and the NIP-62 vanish scope of the store it writes"),
+            Triple("SYNC_INTERVAL", "15", "minutes between crawl passes in `sot serve`; 0 = one pass then exit"),
             Triple("SYNC_STATE", "sync-state.json", "where per-relay sync cursors persist (losing it costs a re-download, never correctness)"),
             Triple("SYNC_RELAY_CONCURRENCY", "128", "how many relays sync in parallel (open websockets at once). 128 saturates a server; drop to ~16 on a home connection whose router chokes on the connection churn"),
             Triple(
@@ -56,10 +54,9 @@ object Config {
             Triple("HOUSE_NPUB", "", "REQUIRED for index/serve. the house account (npub or hex): the trust ROOT the sync builds from, and the observer behind every unauthenticated search"),
             Triple("HOUSE_RELAY", "", "REQUIRED for index/serve. the house account's home relay — where its kind-10002/10040 bootstrap the trust chain from"),
             Triple("QUARTZ_LOG_LEVEL", "ERROR", "min level for the Nostr library's stderr diagnostics: DEBUG, INFO, WARN, or ERROR"),
-            Triple("SERVER_NAME", "sot", "service name (NIP-11 + the identity's kind 0)"),
-            Triple("SERVER_DESCRIPTION", "Search over Trust - a web-of-trust Nostr search relay", "service description (NIP-11 + kind 0)"),
-            Triple("SERVER_ICON", "", "service icon url (NIP-11 + kind 0)"),
-            Triple("SERVER_PUBKEY", "", "admin contact pubkey, hex (NIP-11 pubkey)"),
+            Triple("SERVER_NAME", "sot", "the indexer identity's kind-0 name"),
+            Triple("SERVER_DESCRIPTION", "Search over Trust - a web-of-trust Nostr search indexer", "the indexer identity's kind-0 about"),
+            Triple("SERVER_ICON", "", "the indexer identity's kind-0 picture url"),
             Triple("SERVER_NSEC", "", "this relay's own identity (nsec or hex secret key): NIP-11 self, NIP-42 auth upstream, signs the kind 0/10002/10086 self-publish; `sot init` generates one"),
         )
     private val defaults = KEYS.associate { it.first to it.second }
@@ -86,8 +83,6 @@ object Config {
 
     val vespaUrl get() = env("VESPA_URL")
     val vespaConfigUrl get() = env("VESPA_CONFIG_URL")
-    val serverPort get() = env("SERVER_PORT").toInt()
-    val serverUrl get() = env("SERVER_URL")
     val relayUrl get() = env("RELAY_URL")
     val syncIntervalMinutes get() = env("SYNC_INTERVAL").toInt()
     val syncStatePath get() = env("SYNC_STATE")
@@ -99,7 +94,6 @@ object Config {
     val serverName get() = env("SERVER_NAME")
     val serverDescription get() = env("SERVER_DESCRIPTION")
     val serverIcon get() = env("SERVER_ICON")
-    val serverPubkey get() = env("SERVER_PUBKEY")
     val serverNsec get() = env("SERVER_NSEC")
 
     /**

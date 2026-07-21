@@ -51,36 +51,29 @@ class InitTest {
     }
 
     @Test
-    fun `a scripted session records answers, normalizes keys, and cascades the port into url defaults`() {
-        val admin = KeyPair()
+    fun `a scripted session records answers and normalizes keys`() {
         val identity = KeyPair()
         val house = KeyPair()
         val env =
             runInit(
                 tempEnv(),
-                "My Search", // service name
+                "My Search", // name
                 "", // description -> default
                 "", // icon -> none
-                admin.pubKey.toHexKey(), // admin contact as hex
-                identity.privKey!!.toNsec(), // pasted identity
+                identity.privKey!!.toNsec(), // pasted identity key
                 house.pubKey.toNpub(), // house account as npub
                 "", // house relay -> default
-                "9999", // port
-                "", // relay url -> follows the port
-                "", // http url -> follows the port
-                "", // vespa
-                "", // seeds
+                "ws://localhost:9999", // the indexer's own relay url
+                "", // vespa -> default
+                "", // seeds -> default
                 "30", // sync interval
             )
         assertEquals("My Search", env["SERVER_NAME"])
-        assertEquals("Search over Trust - a web-of-trust Nostr search relay", env["SERVER_DESCRIPTION"])
-        assertEquals(admin.pubKey.toHexKey(), env["SERVER_PUBKEY"])
+        assertEquals("Search over Trust - a web-of-trust Nostr search indexer", env["SERVER_DESCRIPTION"])
         assertEquals(identity.privKey!!.toNsec(), env["SERVER_NSEC"], "a pasted nsec is kept verbatim")
         assertEquals(house.pubKey.toHexKey(), env["HOUSE_NPUB"], "npub input normalizes to hex")
         assertEquals("wss://relay.damus.io", env["HOUSE_RELAY"])
-        assertEquals("9999", env["SERVER_PORT"])
-        assertEquals("ws://localhost:9999", env["RELAY_URL"], "the chosen port cascades into the url defaults")
-        assertEquals("http://localhost:9999", env["SERVER_URL"])
+        assertEquals("ws://localhost:9999/", env["RELAY_URL"], "a non-blank url is normalized (trailing slash)")
         assertEquals("30", env["SYNC_INTERVAL"])
     }
 
@@ -92,8 +85,7 @@ class InitTest {
                 "", // name
                 "", // description
                 "", // icon
-                "", // admin contact
-                "definitely-not-an-nsec", // identity: rejected, re-asked...
+                "definitely-not-an-nsec", // identity key: rejected, re-asked...
                 "", // ...Enter generates a fresh key
                 "not a pubkey!!", // house: rejected, re-asked...
                 // queue runs dry here: EOF -> every remaining question takes its default
@@ -103,7 +95,7 @@ class InitTest {
         assertNotNull(Identity.signerFromSecret(nsec), "...and it parses back")
         assertEquals("", env["HOUSE_NPUB"], "the invalid house answer never lands")
         assertEquals("", env["HOUSE_RELAY"], "no house account, no home relay question")
-        assertEquals("7777", env["SERVER_PORT"])
+        assertEquals("ws://localhost:7777", env["RELAY_URL"])
         assertEquals("15", env["SYNC_INTERVAL"])
     }
 

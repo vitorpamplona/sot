@@ -56,10 +56,10 @@ private fun usage() {
 
     println(
         listOf(
-            Ansi.bold("sot") + Ansi.dim(" - web-of-trust Nostr search relay"),
+            Ansi.bold("sot") + Ansi.dim(" - web-of-trust trust-sync indexer for a Nostr search relay"),
             "",
             cmd("init", "interactive setup: writes .env (--yes = all defaults, --force = overwrite)"),
-            cmd("serve [--up]", "NIP-50 relay + NIP-11 + background trust sync (SYNC_INTERVAL); --up starts Vespa first"),
+            cmd("serve [--up]", "run the trust-sync crawl on a loop (SYNC_INTERVAL); --up starts Vespa first"),
             cmd("index [--up]", "one trust-sync pass (observers -> outboxes -> providers) into Vespa"),
             cmd("status", "[--vespa <url>] [--observer <npub>] reachability, event counts + coverage"),
             "",
