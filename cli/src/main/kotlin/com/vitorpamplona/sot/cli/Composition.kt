@@ -43,7 +43,7 @@ import kotlin.system.exitProcess
  *
  *   VespaEventIndex  (events over Vespa HTTP)
  *        └─ TrustProjection            (:store — watches 30382/10040 puts
- *           └─ VespaProfileIndex        and removes, rewrites the ranking parents)
+ *           └─ VespaReputationIndex     and removes, rewrites the ranking parents)
  *   VespaEventStore(TrustProjection)   (:store — Nostr semantics, ONE store)
  *        ├─ SotRelayServer             (:relay — serves it)
  *        └─ SyncService                (:sync — fills it)
