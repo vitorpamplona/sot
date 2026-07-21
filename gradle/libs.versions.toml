@@ -3,7 +3,7 @@ kotlin = "2.4.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
 quartz = "0d534a3149"
 # The extracted Vespa event-store library, from JitPack (vespa-eventstore @ commit).
-vespaEventStore = "0ec0cfa6ad"
+vespaEventStore = "ef8b1faad5"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
