@@ -63,10 +63,10 @@ private fun usage() {
             cmd("index [--up]", "one trust-sync pass (observers -> outboxes -> providers) into Vespa"),
             cmd("status", "[--vespa <url>] [--observer <npub>] reachability, event counts + coverage"),
             "",
-            cmd("up", "start local Vespa (docker compose) and deploy vespa/app"),
+            cmd("up", "start local Vespa (docker compose) and deploy the bundled schema"),
             cmd("down", "stop local Vespa"),
             cmd("destroy", "[--yes] wipe sync state + Vespa's data volume (THE event store)"),
-            cmd("deploy", "[--app <dir>] [--config <url>] redeploy the Vespa app package"),
+            cmd("deploy", "[--config <url>] redeploy the bundled Vespa app package"),
         ).joinToString("\n"),
     )
 }
