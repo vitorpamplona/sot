@@ -1,39 +1,47 @@
 # SoT — Search over Trust
 
-SoT is a search engine for [Nostr](https://nostr.com), the open social network.
-It answers one question: **when you search, whose posts show up first?** SoT's
-answer is *the people you trust*. Two users running the same search see
-different rankings, because each result is ordered by the searcher's own web of
-trust.
+Search over Trust is a search engine for [Nostr](https://nostr.com), the open
+social network. It answers one question: **when you search, whose posts show up
+first?** The answer is *the people you trust*. Two users running the same search
+see different rankings, because each result is ordered by the searcher's own web
+of trust.
 
-You don't need a new app to use it. SoT is a Nostr **relay** — the kind of
-server every Nostr client already knows how to talk to. Point a client at it,
-run a search, and get back trust-ranked results. The web page in `web/` is just
-one such client; you could use any other.
+The system is three pieces sharing one [Vespa](https://vespa.ai):
+
+- **[vespa-eventstore](https://github.com/vitorpamplona/vespa-eventstore)** — the
+  store. A Vespa-backed Nostr event store with trust-ranked NIP-50 search.
+- **[vespa-relay](https://github.com/vitorpamplona/vespa-relay)** — the relay.
+  The standalone app clients talk to (NIP-01 filters + NIP-50 search over
+  websockets); it also serves the web search UI.
+- **SoT** (this repo) — the crawl. The trust-sync service that walks the Nostr web
+  of trust and fills the store; the relay ranks searches out of what it puts in.
+
+This repo is the crawl. To run the whole thing you also stand up vespa-relay (to
+serve) and a Vespa (the shared store).
 
 ## How it works
 
 Three ideas hold the whole system together.
 
-**1. The search engine is the database.** SoT stores every Nostr event inside
-[Vespa](https://vespa.ai), a search engine, and searches it right there. There
+**1. The search engine is the database.** Every Nostr event lives inside
+[Vespa](https://vespa.ai), a search engine, and search runs right there. There
 is no second database and no index to keep in sync — one copy of the data.
 Events are stored as plain fields (`id`, `pubkey`, `kind`, `tags`, `content`,
-`sig`, …), not as opaque blobs. When a client asks for an event back, SoT
+`sig`, …), not as opaque blobs. When a client asks for an event back, the store
 rebuilds it from those fields, and the rebuilt event still carries its original,
 valid signature.
 
 **2. The relay is the only API.** Everything happens over the standard Nostr
 websocket protocol. Clients publish events, run filters, and search using
 [NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) — no
-separate HTTP search endpoint to learn. The relay also serves its own web UI at
-`GET /`.
+separate HTTP search endpoint to learn. The relay (**vespa-relay**) also serves
+the web search UI at `GET /`.
 
 **3. Ranking follows trust.** Every search is ranked for a specific **observer**
 — the person doing the searching. When a user logs in (NIP-07 in the browser →
-NIP-42 auth on the relay), the relay ranks results by *that user's* trust
+NIP-42 auth on **vespa-relay**), the relay ranks results by *that user's* trust
 scores. Anonymous searches fall back to a **house account** the operator
-configures. Trust scores come from Nostr itself: other services publish
+configures. SoT (this repo) is what puts those scores there: other services publish
 [NIP-85](https://github.com/nostr-protocol/nips/blob/master/85.md) trust
 assertions about authors, SoT syncs them in, and the ranking math (borrowed from
 [Brainstorm](https://github.com/Pretty-Good-Freedom-Tech/brainstorm)) multiplies
@@ -189,25 +197,25 @@ data), and `SERVER_NSEC` (the relay's own key, generated for you). See
 
 ## The code
 
-The storage engine and the relay are **separate, reusable libraries** — consumed
-from JitPack, pinned by commit in `gradle/libs.versions.toml`. SoT itself is just
-the crawl and the CLI on top. Dependencies flow one way:
-`:cli` → (`:sync`, vespa-relay) → vespa-eventstore (`:store` → `:vespa`).
+The store is a **reusable library** (vespa-eventstore), consumed from JitPack and
+pinned by commit in `gradle/libs.versions.toml`. The relay is a **separate
+application** (vespa-relay) you run alongside — SoT doesn't link it. SoT itself is
+the crawl and the CLI. Dependencies flow one way:
+`:cli` → `:sync` → vespa-eventstore (`:store` → `:vespa`).
 
-The libraries (each its own repo):
+The companion projects (each its own repo):
 
-| library | what it does |
+| project | what it is |
 | --- | --- |
-| [vespa-eventstore](https://github.com/vitorpamplona/vespa-eventstore) | The Vespa-backed Quartz `IEventStore` with trust-ranked NIP-50 search. `:vespa` owns all Vespa access — the schema (`app/`), `EventDoc`, `EventQuery` → `EventYql` (with `FuzzyWordGroup` building the fuzzy word matching), the `EventIndex`/`ReputationIndex` ports, and the `VespaEventIndex`/`VespaReputationIndex` clients. `:store` is `NostrEventStore` (all the Nostr insert rules — supersession, kind-5 deletion + tombstones, kind-62 vanish, NIP-40 expiry, gift-wrap ownership — over any `EventIndex`), the `TrustProjection` (recomputes each subject's `reputation` document whenever a kind 30382/10040 changes), `SearchExtractors`, `BulkInsert`, and the `VespaEventStore.open` front door. |
-| [vespa-relay](https://github.com/vitorpamplona/vespa-relay) | `NostrRelayServer` — Quartz's protocol engine over the store: full filter subscriptions, live updates, publish gating, COUNT (NIP-45), server-side sync (NIP-77), the NIP-11 info document, and a Ktor websocket mount. NIP-42 login switches the ranking observer for that connection; an `onObserver` callback lets the app enroll logins for sync. |
+| [vespa-eventstore](https://github.com/vitorpamplona/vespa-eventstore) | **Library.** The Vespa-backed Quartz `IEventStore` with trust-ranked NIP-50 search. `:vespa` owns all Vespa access — the schema (`app/`), `EventDoc`, `EventQuery` → `EventYql` (with `FuzzyWordGroup` building the fuzzy word matching), the `EventIndex`/`ReputationIndex` ports, and the `VespaEventIndex`/`VespaReputationIndex` clients. `:store` is `NostrEventStore` (all the Nostr insert rules — supersession, kind-5 deletion + tombstones, kind-62 vanish, NIP-40 expiry, gift-wrap ownership — over any `EventIndex`), the `TrustProjection` (recomputes each subject's `reputation` document whenever a kind 30382/10040 changes), `SearchExtractors`, `BulkInsert`, and the `VespaEventStore.open` front door. |
+| [vespa-relay](https://github.com/vitorpamplona/vespa-relay) | **Application.** The standalone relay you run to serve clients: `NostrRelayServer` (Quartz's protocol engine over the store — filters, search, live subscriptions, COUNT, NIP-77) plus a Ktor server (`serveRelay`), the NIP-11 doc, and the bundled web search UI. Points at the same Vespa SoT fills. Not a dependency of SoT. |
 
 SoT's own modules:
 
 | module | what it does |
 | --- | --- |
-| `:sync` | Downloads from the network in two planes (see [How the sync fills the store](#how-the-sync-fills-the-store)). `RelaySyncer` orchestrates each download (negentropy or paged fallback, per-source cursors) and streams verified events into the store. `Identity` is the relay's own key and first-run self-publish. `TrustSync` / `BlendedPass` walk the trust chain in the right order (find each observer's relays, then their trust lists, then the individual assertions) and clean up assertions that no longer apply; `RecordsPass` then pulls the searchable content for the scored authors, highest-trust-first (off unless `SYNC_RECORDS=true`). The crawl's own bookkeeping lives in a local file (`CrawlIndex`), not in Vespa. `SyncService` runs it once or on a loop and enrolls newly-logged-in users. |
-| `:cli` | The `sot` binary and the composition root that wires everything together. Commands: `init` (interactive setup), `serve`, `index` (one sync pass), `status`, and `up` / `down` / `deploy` / `destroy` for the local Vespa. |
-| `web/` | `index.html` — the search UI, itself a Nostr client. It opens a websocket to the server that served it and speaks NIP-50 directly: kind chips are filters, the sort menu and "unranked too" checkbox map to NIP-50 options, and "Search as me" is the NIP-07 → NIP-42 login that makes the results ranked by you. |
+| `:sync` | Downloads from the network in two planes (see [How the sync fills the store](#how-the-sync-fills-the-store)). `RelaySyncer` orchestrates each download (negentropy or paged fallback, per-source cursors) and streams verified events into the store. `Identity` is the indexer's own key and first-run self-publish. `TrustSync` / `BlendedPass` walk the trust chain in the right order (find each observer's relays, then their trust lists, then the individual assertions) and clean up assertions that no longer apply; `RecordsPass` then pulls the searchable content for the scored authors, highest-trust-first (off unless `SYNC_RECORDS=true`). The crawl's own bookkeeping lives in a local file (`CrawlIndex`), not in Vespa. `SyncService` walks the house's trust graph once or on a loop. |
+| `:cli` | The `sot` binary and the composition root that wires everything together. Commands: `init` (interactive setup), `serve` (the crawl on a loop), `index` (one crawl pass), `status`, and `up` / `down` / `deploy` / `destroy` for the local Vespa. |
 
 ## Nostr NIPs
 
