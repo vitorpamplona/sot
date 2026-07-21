@@ -20,6 +20,8 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -31,10 +33,6 @@ import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayInfo
 import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayType
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.vespa.InMemoryCrawlIndex
-import com.vitorpamplona.sot.vespa.InMemoryEventIndex
-import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -85,11 +83,11 @@ class RecordsPassTest {
         at: Long,
     ) = signer.sign<TextNoteEvent>(at, TextNoteEvent.KIND, arrayOf(), content)
 
-    private fun localStore() = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+    private fun localStore() = NostrEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
     private fun trustSync(
         net: InProcessNet,
-        store: VespaEventStore,
+        store: NostrEventStore,
         crawl: CrawlIndex = InMemoryCrawlIndex(),
     ): TrustSync {
         val opts = SyncOptions(concurrency = 4, fetchTimeoutMs = 15_000)
@@ -97,7 +95,7 @@ class RecordsPassTest {
         return TrustSync(syncer, store, opts, log = { }, crawl = crawl)
     }
 
-    private suspend fun VespaEventStore.notesBy(author: HexKey): List<String> = query<TextNoteEvent>(Filter(kinds = listOf(TextNoteEvent.KIND), authors = listOf(author))).map { it.content }
+    private suspend fun NostrEventStore.notesBy(author: HexKey): List<String> = query<TextNoteEvent>(Filter(kinds = listOf(TextNoteEvent.KIND), authors = listOf(author))).map { it.content }
 
     /** Scores plane scores bob and carol; the records plane then pulls their notes from their own outboxes. */
     @Test

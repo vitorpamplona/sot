@@ -2,6 +2,8 @@
 kotlin = "2.4.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
 quartz = "0d534a3149"
+# The extracted Vespa event-store library, from JitPack (vespa-eventstore @ commit).
+vespaEventStore = "afa1b4627c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
@@ -17,6 +19,11 @@ ktlint = "1.8.0"
 
 [libraries]
 quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "quartz" }
+# The event store, from JitPack. `store` is the IEventStore + open() front door;
+# `engine` (the :vespa module) carries the doc/query types and the testFixtures
+# (InMemoryEventIndex, MockVespaEngine).
+vespa-eventstore-store = { module = "com.github.vitorpamplona.vespa-eventstore:store", version.ref = "vespaEventStore" }
+vespa-eventstore-engine = { module = "com.github.vitorpamplona.vespa-eventstore:vespa", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }

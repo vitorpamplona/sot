@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -33,8 +34,6 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancelChildren
@@ -511,7 +510,7 @@ internal class BlendedPass(
      */
     private suspend fun scoredSubjects(services: List<HexKey>): List<HexKey> {
         val filter = Filter(kinds = listOf(ContactCardEvent.KIND), authors = services)
-        return (store as? VespaEventStore)?.distinctDTags(filter)?.toList()
+        return (store as? NostrEventStore)?.distinctDTags(filter)?.toList()
             ?: store
                 .query<ContactCardEvent>(filter)
                 .filter { it.rank() != null }

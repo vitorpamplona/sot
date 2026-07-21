@@ -53,24 +53,21 @@ internal fun init(
     ask.intro()
 
     // -- service identity ---------------------------------------------------
-    ask.section("service", "What this relay calls itself - NIP-11 and the identity's kind-0 profile.")
-    answers["SERVER_NAME"] = ask("service name", "sot")
-    answers["SERVER_DESCRIPTION"] = ask("service description", "Search over Trust - a web-of-trust Nostr search relay")
-    answers["SERVER_ICON"] = ask("service icon url", "")
-    // Validators only see non-blank input (Enter already took the default),
-    // and they normalize as they accept: npub/nip05 -> hex, urls -> canonical.
-    answers["SERVER_PUBKEY"] = ask("admin contact (npub, hex, or name@domain)", "") { resolvePubkey(it) }
+    ask.section("identity", "The indexer's own kind-0 profile, self-published on first run.")
+    answers["SERVER_NAME"] = ask("name", "sot")
+    answers["SERVER_DESCRIPTION"] = ask("description", "Search over Trust - a web-of-trust Nostr search indexer")
+    answers["SERVER_ICON"] = ask("icon url", "")
 
-    // -- the relay's own key ------------------------------------------------
-    ask.section("relay key", "Signs NIP-42 auth to upstream relays and the self-published kind 0/10002/10086.")
+    // -- the indexer's own key ----------------------------------------------
+    ask.section("identity key", "Signs NIP-42 auth to upstream relays and the self-published kind 0/10002/10086.")
     val pastedNsec =
-        ask("relay identity (nsec or hex secret)", "", defaultLabel = "generate a new key") { raw ->
+        ask("identity key (nsec or hex secret)", "", defaultLabel = "generate a new key") { raw ->
             if (Identity.signerFromSecret(raw) != null) raw else null
         }
     val signer = if (pastedNsec.isEmpty()) null else Identity.signerFromSecret(pastedNsec)
     val keyPair = signer?.keyPair ?: KeyPair()
     answers["SERVER_NSEC"] = keyPair.privKey!!.toNsec()
-    ask.note("this relay is ${keyPair.pubKey.toNpub()}")
+    ask.note("this indexer is ${keyPair.pubKey.toNpub()}")
 
     // -- the house account --------------------------------------------------
     ask.section("house account", "The observer behind UNAUTHENTICATED searches: results rank by this user's web of trust. NIP-42-authenticated users always rank by their own.")
@@ -84,23 +81,20 @@ internal fun init(
         }
 
     // -- network ------------------------------------------------------------
-    ask.section("network", "Ports and public urls. The indexer relay list is NOT config: `sot serve` publishes a kind-10086 the operator can supersede from any Nostr client.")
-    val port = ask("server port", "7777") { it.toIntOrNull()?.toString() }
-    answers["SERVER_PORT"] = port
-    answers["RELAY_URL"] = ask("public relay url", "ws://localhost:$port", validate = ::validRelay)
-    answers["SERVER_URL"] = ask("public http url", "http://localhost:$port")
+    ask.section("network", "The indexer's own relay url and the Vespa endpoint. The indexer relay list is NOT config: `sot serve` publishes a kind-10086 the operator can supersede from any Nostr client.")
+    answers["RELAY_URL"] = ask("the indexer's own relay url", "ws://localhost:7777", validate = ::validRelay)
     answers["VESPA_URL"] = ask("vespa endpoint", "http://localhost:8080")
     answers["SEED_RELAYS"] =
         ask("seed relays for 10040 hints (comma-separated)", "wss://purplepag.es,wss://relay.damus.io,wss://nos.lol") { raw ->
             val urls = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
             if (urls.all { RelayUrlNormalizer.normalizeOrNull(it) != null }) urls.joinToString(",") else null
         }
-    answers["SYNC_INTERVAL"] = ask("minutes between sync passes (0 = serve-only)", "15") { it.toIntOrNull()?.toString() }
+    answers["SYNC_INTERVAL"] = ask("minutes between crawl passes (0 = one pass then exit)", "15") { it.toIntOrNull()?.toString() }
 
     f.writeText(Config.renderDotenv(answers))
     println()
     ok("wrote $path")
-    hint("relay identity: ${keyPair.pubKey.toNpub()}")
+    hint("indexer identity: ${keyPair.pubKey.toNpub()}")
     if (house.isEmpty()) {
         hint("no house account: unauthenticated searches rank untrusted until one is set (HOUSE_NPUB) or a user AUTHs.")
     } else {

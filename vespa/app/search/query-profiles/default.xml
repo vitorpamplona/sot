@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8" ?>
-<!-- VespaEventIndex pages unlimited queries at up to 10k hits (Vespa's own
-     default cap is 400); a full-corpus walk should use a visit instead. -->
-<query-profile id="default">
-    <field name="maxHits">10000</field>
-    <field name="maxOffset">10000</field>
-</query-profile>

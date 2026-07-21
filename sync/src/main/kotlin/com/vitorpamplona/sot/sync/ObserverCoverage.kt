@@ -20,13 +20,12 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 
 /**
  * A snapshot of how completely ONE observer's network is indexed — the numbers
@@ -73,7 +72,7 @@ data class ObserverCoverage(
  */
 suspend fun observerCoverage(
     observer: HexKey,
-    store: VespaEventStore,
+    store: NostrEventStore,
     crawl: CrawlIndex,
 ): ObserverCoverage {
     val providerKeys =

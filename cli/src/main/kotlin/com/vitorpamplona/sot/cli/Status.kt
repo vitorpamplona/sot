@@ -20,6 +20,10 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.ObserverContext
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -33,14 +37,10 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
-import com.vitorpamplona.sot.store.ObserverContext
-import com.vitorpamplona.sot.store.VespaEventStore
+import com.vitorpamplona.sot.sync.CrawlIndex
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncState
 import com.vitorpamplona.sot.sync.observerCoverage
-import com.vitorpamplona.sot.vespa.client.VespaCrawlIndex
-import com.vitorpamplona.sot.vespa.client.VespaEventIndex
-import com.vitorpamplona.sot.vespa.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
@@ -93,9 +93,6 @@ internal fun status(args: List<String>) {
     val vespaUp = ping("$vespaUrl/ApplicationStatus")
     if (vespaUp) ok("vespa: up at $vespaUrl") else err("vespa: NOT reachable at $vespaUrl")
 
-    val serverUp = ping(Config.serverUrl, accept = "application/nostr+json")
-    if (serverUp) ok("server: up at ${Config.serverUrl}") else warn("server: not reachable at ${Config.serverUrl} (is `sot serve` running?)")
-
     if (!vespaUp) return
     val stack = openStack()
     try {
@@ -120,7 +117,7 @@ internal fun status(args: List<String>) {
 
 /** Overall size: raw event count, content vs plumbing, and how many distinct authors carry that content. */
 private suspend fun corpus(
-    store: VespaEventStore,
+    store: NostrEventStore,
     index: VespaEventIndex,
 ) {
     val content = EventQuery(notKinds = PLUMBING_KINDS)
@@ -153,7 +150,7 @@ private suspend fun byKind(index: VespaEventIndex) {
  * 10040 attributes). Then each imported observer with its name, npub, and score count.
  */
 private suspend fun trustGraph(
-    store: VespaEventStore,
+    store: NostrEventStore,
     house: String?,
 ) {
     val lists = store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
@@ -220,8 +217,8 @@ private data class ObserverRow(
  * at the recent synced-per-hour rate.
  */
 private suspend fun coverage(
-    store: VespaEventStore,
-    crawl: VespaCrawlIndex,
+    store: NostrEventStore,
+    crawl: CrawlIndex,
     args: List<String>,
     house: String?,
 ) {
@@ -266,7 +263,7 @@ private fun humanSecs(d: Long): String =
  * observer and contrasts gated hits with raw (ungated) text recall.
  */
 private suspend fun searchHealth(
-    store: VespaEventStore,
+    store: NostrEventStore,
     house: String?,
 ) {
     section("search health")
@@ -316,12 +313,12 @@ private suspend fun hygiene(index: VespaEventIndex) {
 
 /** Echo the resolved identity/relay config so an operator can confirm it's pointed where they think. */
 private suspend fun config(
-    store: VespaEventStore,
+    store: NostrEventStore,
     house: String?,
 ) {
     section("config")
     row("house", if (house != null) "${Hex.decode(house).toNpub()}  (resolved)" else "${Config.houseNpub.ifBlank { "(unset)" }}  — NOT resolved")
-    row("relay id", "${Config.serverName}  ${Config.relayUrl}")
+    row("identity", "${Config.serverName}  ${Config.relayUrl}")
     row("seed relays", Config.seedRelays.joinToString(", ").ifBlank { "(none)" })
 
     val serverHex =

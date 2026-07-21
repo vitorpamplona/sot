@@ -1,9 +1,10 @@
 # Local single-node Vespa engine. The application package (schema + rank
-# profiles under ./vespa/app) is deployed by the CLI, not by a compose sidecar:
+# profiles) ships inside the vespa-eventstore library jar and is deployed by the
+# CLI, not by a compose sidecar:
 #
-#   sot up                       # start the engine, then deploy ./vespa/app
+#   sot up                       # start the engine, then deploy the bundled schema
 #   docker compose up -d vespa   # just the engine (deploy separately)
-#   sot deploy                   # (re)deploy after editing vespa/app/schemas/doc.sd
+#   sot deploy                   # (re)deploy the bundled schema
 
 services:
   vespa:

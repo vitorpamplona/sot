@@ -20,57 +20,74 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.sot.profile.TrustProjection
-import com.vitorpamplona.sot.store.VespaEventStore
+import com.vitorpamplona.sot.sync.CrawlIndex
+import com.vitorpamplona.sot.sync.FileCrawlIndex
 import com.vitorpamplona.sot.sync.HouseAccount
 import com.vitorpamplona.sot.sync.Identity
 import com.vitorpamplona.sot.sync.SyncOptions
 import com.vitorpamplona.sot.sync.SyncService
-import com.vitorpamplona.sot.vespa.IngestStats
-import com.vitorpamplona.sot.vespa.client.VespaCrawlIndex
-import com.vitorpamplona.sot.vespa.client.VespaEventIndex
-import com.vitorpamplona.sot.vespa.client.VespaProfileIndex
+import java.nio.file.Path
 import kotlin.system.exitProcess
 
 /*
  * The composition root: how the pieces plug together, in one place.
  *
  *   VespaEventIndex  (events over Vespa HTTP)
- *        └─ TrustProjection            (:profile — watches 30382/10040 puts
- *           └─ VespaProfileIndex        and removes, rewrites the ranking parents)
- *   VespaEventStore(TrustProjection)   (:store — Nostr semantics, ONE store)
- *        ├─ SotRelayServer             (:relay — serves it)
- *        └─ SyncService                (:sync — fills it)
+ *        └─ TrustProjection            (vespa-eventstore — watches 30382/10040 puts
+ *           └─ VespaReputationIndex     and removes, rewrites the ranking parents)
+ *   NostrEventStore(TrustProjection)   (vespa-eventstore — Nostr semantics, ONE store)
+ *        └─ SyncService                (:sync — fills it from the network)
+ *
+ * SoT is the CRAWL: it fills the store. The relay that SERVES the store to
+ * clients is a separate app (vespa-relay) pointed at the same Vespa.
  *
  * Because the projection sits UNDER the store, every insert path (a sync
- * download, a relay publish, a kind-5) updates ranking with no extra wiring.
+ * download, a kind-5) updates ranking with no extra wiring.
  */
 
-/** The wired storage stack: the store to use, plus the raw engine client for health gauges. */
+/** The wired storage stack: the library store handle, plus the sync-side crawl index. */
 internal class Stack(
-    val store: VespaEventStore,
-    val vespa: VespaEventIndex,
-    val crawl: VespaCrawlIndex,
+    private val handle: VespaEventStore,
+    val crawl: CrawlIndex,
 ) : AutoCloseable {
+    /** The concrete store — Vespa-specific methods (e.g. distinctDTags) and the full IEventStore surface. */
+    val store: NostrEventStore get() = handle.store
+
+    /** The raw (non-projected) engine index — status/health metrics query it directly. */
+    val vespa: VespaEventIndex get() = handle.events
+
     /** The engine's feed-health status gauge — wire it into every sync's progress line. */
-    fun feedGauge(): () -> String = vespa::feedGauge
+    fun feedGauge(): () -> String = handle::feedGauge
 
     override fun close() {
-        store.close()
+        handle.close()
         crawl.close()
     }
 }
 
-/** The one store: Vespa event index, trust-projection-decorated, Nostr semantics on top. */
-internal fun openStack(): Stack {
-    val vespa = VespaEventIndex(Config.vespaUrl)
-    val index = TrustProjection(vespa, VespaProfileIndex(Config.vespaUrl))
-    return Stack(VespaEventStore(index, relay = publicRelayUrl()), vespa, VespaCrawlIndex(Config.vespaUrl))
-}
+/**
+ * The one store, wired through the library front door: a NostrEventStore over a
+ * trust-projection-decorated Vespa index. autoDeploy is off here — the CLI owns
+ * schema deployment through `sot up` / `sot deploy` (the docker flow). Crawl
+ * bookkeeping is sync state, so it lives in a file next to the sync cursors, not
+ * in the event store.
+ */
+internal fun openStack(): Stack =
+    Stack(
+        VespaEventStore.open(Config.vespaUrl, relay = publicRelayUrl(), autoDeploy = false),
+        FileCrawlIndex(crawlStatePath()),
+    )
+
+/** The crawl bookkeeping file — a sibling of the sync-state cursor file. */
+internal fun crawlStatePath(): Path = Path.of(Config.syncStatePath).resolveSibling("crawl-state.json")
 
 /** The relay's public url (`RELAY_URL`) — NIP-42's identity and the vanish scope. */
 internal fun publicRelayUrl(): NormalizedRelayUrl =

@@ -20,6 +20,8 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -28,9 +30,6 @@ import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayInfo
 import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayType
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.vespa.InMemoryCrawlIndex
-import com.vitorpamplona.sot.vespa.InMemoryEventIndex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -68,7 +67,7 @@ class CoverageTest {
     @Test
     fun `completion is uniform - proxy-synced no-outbox authors count as fully synced`() =
         runBlocking {
-            val store = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val store = NostrEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             val crawl = InMemoryCrawlIndex()
             store.use {
                 store.insert(providerList())
@@ -95,7 +94,7 @@ class CoverageTest {
     @Test
     fun `a scored author never routed counts as unreached`() =
         runBlocking {
-            val store = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val store = NostrEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             val crawl = InMemoryCrawlIndex()
             store.use {
                 store.insert(providerList())
@@ -112,7 +111,7 @@ class CoverageTest {
     @Test
     fun `an observer with no 10040 has an empty roster`() =
         runBlocking {
-            val store = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val store = NostrEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             val crawl = InMemoryCrawlIndex()
             store.use {
                 val c = observerCoverage(observer.pubKey, store, crawl)

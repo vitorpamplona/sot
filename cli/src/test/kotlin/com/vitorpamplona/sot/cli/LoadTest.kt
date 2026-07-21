@@ -138,7 +138,7 @@ object LoadTest {
             val progress = SyncProgress(log = log)
             progress.gauge(stack.feedGauge())
             progress.gauge {
-                com.vitorpamplona.sot.vespa.IngestStats
+                com.vitorpamplona.quartz.eventstore.vespa.IngestStats
                     .gauge()
             }
             val syncer = RelaySyncer(client, store, state, log, idleTimeoutMs = 30_000, progress = progress, reconcileConcurrency = reconcileConcurrency)

@@ -25,7 +25,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +44,7 @@ import kotlin.time.Duration
  *
  * It consumes an event store rather than creating one: the composition root
  * creates the store and shares it with the relay. The ranking projection is
- * already wired under the store (`:profile` decorates its EventIndex), so there
+ * already wired under the store (the trust projection decorates its EventIndex (:store)), so there
  * is no separate projection to babysit. Everything inserted here ranks
  * immediately.
  *

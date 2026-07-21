@@ -56,17 +56,17 @@ private fun usage() {
 
     println(
         listOf(
-            Ansi.bold("sot") + Ansi.dim(" - web-of-trust Nostr search relay"),
+            Ansi.bold("sot") + Ansi.dim(" - web-of-trust trust-sync indexer for a Nostr search relay"),
             "",
             cmd("init", "interactive setup: writes .env (--yes = all defaults, --force = overwrite)"),
-            cmd("serve [--up]", "NIP-50 relay + NIP-11 + background trust sync (SYNC_INTERVAL); --up starts Vespa first"),
+            cmd("serve [--up]", "run the trust-sync crawl on a loop (SYNC_INTERVAL); --up starts Vespa first"),
             cmd("index [--up]", "one trust-sync pass (observers -> outboxes -> providers) into Vespa"),
             cmd("status", "[--vespa <url>] [--observer <npub>] reachability, event counts + coverage"),
             "",
-            cmd("up", "start local Vespa (docker compose) and deploy vespa/app"),
+            cmd("up", "start local Vespa (docker compose) and deploy the bundled schema"),
             cmd("down", "stop local Vespa"),
             cmd("destroy", "[--yes] wipe sync state + Vespa's data volume (THE event store)"),
-            cmd("deploy", "[--app <dir>] [--config <url>] redeploy the Vespa app package"),
+            cmd("deploy", "[--config <url>] redeploy the bundled Vespa app package"),
         ).joinToString("\n"),
     )
 }

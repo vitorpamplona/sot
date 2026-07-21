@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -31,8 +32,6 @@ import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import com.vitorpamplona.sot.store.VespaEventStore
-import com.vitorpamplona.sot.vespa.doc.CrawlIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
@@ -128,7 +127,7 @@ data class HouseAccount(
  * no special code: whatever source a 10040 arrives from, the newest wins, and
  * the outbox pass just makes sure the newest is actually seen. Provider
  * switches need no invalidation logic either. The sweep deletes any provider's
- * 30382s the moment no 10040 lists it, and the ranking projection (`:profile`)
+ * 30382s the moment no 10040 lists it, and the ranking projection (:store)
  * re-derives the observer's cells from what remains.
  */
 class TrustSync(
@@ -184,7 +183,7 @@ class TrustSync(
         // enumeration only for a non-Vespa store (none in production/tests).
         val storedAuthors =
             when (store) {
-                is VespaEventStore -> store.distinctAuthors(Filter(kinds = listOf(ContactCardEvent.KIND)))
+                is NostrEventStore -> store.distinctAuthors(Filter(kinds = listOf(ContactCardEvent.KIND)))
                 else -> store.query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.pubKey }.toSet()
             }
         val orphans = storedAuthors.filterNot { it in referenced }

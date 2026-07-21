@@ -21,105 +21,51 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.sot.relay.SotRelayServer
-import com.vitorpamplona.sot.relay.nostrRelay
-import com.vitorpamplona.sot.relay.relayInfoJson
-import io.ktor.http.ContentType
-import io.ktor.server.application.install
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
-import io.ktor.server.response.respondText
-import io.ktor.server.routing.get
-import io.ktor.server.routing.routing
-import io.ktor.server.websocket.WebSockets
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration.Companion.minutes
 
 /*
- * `sot serve` — THE long-running process: one Ktor app on one port
- * ([Config.serverPort]).
- *   WS   /  -> the NIP-50 relay (:relay; full filters, search, COUNT, NIP-77)
- *   GET  /  -> NIP-11 (Accept: application/nostr+json), else the web UI
- * Unless SYNC_INTERVAL=0, it also runs the background sync loop (:sync). Relay
- * and sync share the ONE Vespa-backed store, and the trust projection sits
- * under it. So a user who NIP-42-authenticates gets enrolled as an observer,
- * their trust chain syncs on the next pass, and their searches rank by it.
+ * `sot serve` — the long-running CRAWL service: it fills the Vespa store from the
+ * network on a loop (every SYNC_INTERVAL minutes), self-publishing the identity's
+ * kind 0 / 10002 / 10086 on first run.
  *
- * The web UI (bundled from `web/index.html`) is itself a Nostr client: it talks
- * NIP-50 to the SAME websocket endpoint. There is no http search API to serve;
- * the relay is the API.
+ * It does NOT serve clients — that is the relay, a SEPARATE app (vespa-relay).
+ * The two share the ONE Vespa-backed store: this side writes trust data and
+ * content IN; the relay reads and ranks OUT. The trust projection sits under the
+ * store, so every event the crawl inserts updates ranking with no extra wiring.
+ *
+ * With SYNC_INTERVAL=0 there is no loop to run, so this makes a single pass and
+ * exits (the same as `sot index`).
  */
-private val WEB_UI: String? by lazy {
-    Thread
-        .currentThread()
-        .contextClassLoader
-        ?.getResource("index.html")
-        ?.readText()
-}
-
 internal fun serve(args: List<String>) {
-    val house = requireHouse() // the trust root; refuse to serve without it
+    val house = requireHouse() // the trust root; refuse to crawl without it
     ensureVespaIsUp(args)
     val identity = serverIdentity()
-    logLine("relay identity (NIP-11 self): ${identity.signer.keyPair.pubKey.toNpub()}")
+    logLine("crawl identity (self): ${identity.signer.keyPair.pubKey.toNpub()}")
 
     val stack = openStack()
-    val store = stack.store
     val sync = syncService(stack, identity, house)
-    val relaySrv =
-        SotRelayServer(
-            store = store,
-            defaultObserver = house.pubkey,
-            relayUrl = publicRelayUrl(),
-            onObserver = sync::enroll,
-        )
-
-    val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     val syncMinutes = Config.syncIntervalMinutes
+
     if (syncMinutes > 0) {
-        logLine("background sync: every ${syncMinutes}m (SYNC_INTERVAL=0 to disable)")
-        syncScope.launch { sync.runForever(syncMinutes.minutes) }
+        logLine("crawl service: syncing every ${syncMinutes}m (SYNC_INTERVAL)")
+        Runtime.getRuntime().addShutdownHook(
+            Thread {
+                sync.close()
+                stack.close()
+            },
+        )
+        runBlocking { sync.runForever(syncMinutes.minutes) }
     } else {
-        logLine("background sync: disabled (SYNC_INTERVAL=0)")
-    }
-
-    Runtime.getRuntime().addShutdownHook(
-        Thread {
-            syncScope.cancel()
+        logLine("SYNC_INTERVAL=0: one crawl pass, then exit")
+        try {
+            runBlocking { sync.runOnce() }
+            ok("pass complete.")
+        } finally {
             sync.close()
-            relaySrv.close()
-            store.close()
-        },
-    )
-
-    embeddedServer(Netty, port = Config.serverPort) {
-        install(WebSockets)
-        routing {
-            nostrRelay(relaySrv)
-            get("/") {
-                val accept = call.request.headers["Accept"] ?: ""
-                if (accept.contains("application/nostr+json")) {
-                    call.respondText(
-                        relayInfoJson(
-                            name = Config.serverName,
-                            description = Config.serverDescription,
-                            icon = Config.serverIcon,
-                            contactPubkey = Config.serverPubkey,
-                            selfPubkey = identity.pubkey,
-                        ),
-                        ContentType.parse("application/nostr+json"),
-                    )
-                } else {
-                    WEB_UI?.let { call.respondText(it, ContentType.Text.Html) }
-                        ?: call.respondText("${Config.serverName} - a NIP-50 search relay; connect a WebSocket here (${Config.relayUrl}).")
-                }
-            }
+            stack.close()
         }
-    }.start(wait = true)
+    }
 }
 
 /** Timestamped, styled log line for the long-running commands. */

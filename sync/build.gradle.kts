@@ -15,12 +15,11 @@ dependencies {
     // VespaEventStore: the orphan-score sweep needs its grouping distinctAuthors
     // (a full 30382 enumeration times Vespa out at scale). Matches the intended
     // dependency direction (:sync -> :store).
-    implementation(project(":store"))
+    implementation(libs.vespa.eventstore.store)
     testImplementation(kotlin("test"))
-    // Tests run the real protocol against in-process relays backed by the SAME
-    // store implementation the product uses: VespaEventStore over the in-memory
-    // reference index.
-    testImplementation(testFixtures(project(":vespa")))
+    // Tests run the real protocol against in-process relays over the in-memory
+    // reference indexes (InMemoryEventIndex, InMemoryCrawlIndex) — production code in
+    // the library's :vespa jar, already on the test classpath via the store above.
 }
 
 kotlin {

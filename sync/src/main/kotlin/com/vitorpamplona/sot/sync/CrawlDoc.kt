@@ -18,54 +18,32 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.sot.vespa.doc
+package com.vitorpamplona.sot.sync
 
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 
 /**
- * One pubkey's CRAWL bookkeeping — how completely SoT has indexed this author's
- * content. NOT an event and NOT ranking state (see [ProfileDoc]); a separate
- * `crawl` document written only by the sync side.
+ * One pubkey's CRAWL bookkeeping — how completely the sync has indexed this
+ * author's content. This is sync state, not event data or ranking state, so it
+ * lives OUTSIDE the event store (a local file; see [FileCrawlIndex]).
  *
  * [contentSyncedAt] is the epoch-second of the last CLEAN outbox reconcile
  * (`0` = never); [outboxCheckedAt] the last time the author's 10002 was resolved
- * (`0` = never looked). Both default to `0` so an absent doc reads as "brand
+ * (`0` = never looked). Both default to `0` so an absent entry reads as "brand
  * new, nothing done yet".
  */
 data class CrawlDoc(
     val pubkey: HexKey,
     val contentSyncedAt: Long = 0,
     val outboxCheckedAt: Long = 0,
-) {
-    fun indexFields(): JsonObject =
-        buildJsonObject {
-            put("pubkey", JsonPrimitive(pubkey))
-            put("content_synced_at", JsonPrimitive(contentSyncedAt))
-            put("outbox_checked_at", JsonPrimitive(outboxCheckedAt))
-        }
-
-    companion object {
-        fun fromSummary(fields: JsonObject): CrawlDoc =
-            CrawlDoc(
-                pubkey = fields.getValue("pubkey").jsonPrimitive.content,
-                contentSyncedAt = fields["content_synced_at"]?.jsonPrimitive?.long ?: 0,
-                outboxCheckedAt = fields["outbox_checked_at"]?.jsonPrimitive?.long ?: 0,
-            )
-    }
-}
+)
 
 /**
- * The engine port for the `crawl` bookkeeping documents. All writes are
- * create-if-missing partial updates of a single field, so the two writers
- * ([markSynced], [markOutboxChecked]) never clobber each other's field.
- *
- * The in-memory reference implementation lives in testFixtures; the real one is
- * [com.vitorpamplona.sot.vespa.client.VespaCrawlIndex].
+ * The port for the crawl bookkeeping. All writes are create-if-missing single-
+ * field stamps, so the two writers ([markSynced], [markOutboxChecked]) never
+ * clobber each other's field. [FileCrawlIndex] is the persistent implementation;
+ * [InMemoryCrawlIndex] (test sources) is the reference the ledger tests assert
+ * against.
  */
 interface CrawlIndex : AutoCloseable {
     suspend fun get(pubkey: HexKey): CrawlDoc?

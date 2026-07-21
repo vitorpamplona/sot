@@ -20,7 +20,6 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.sot.vespa.InMemoryCrawlIndex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
