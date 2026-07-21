@@ -20,18 +20,10 @@
  */
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.quartz.nip19Bech32.toNpub
+import com.vitorpamplona.quartz.eventstore.relay.Nip11Info
 import com.vitorpamplona.quartz.eventstore.relay.NostrRelayServer
-import com.vitorpamplona.quartz.eventstore.relay.nostrRelay
-import com.vitorpamplona.quartz.eventstore.relay.relayInfoJson
-import io.ktor.http.ContentType
-import io.ktor.server.application.install
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
-import io.ktor.server.response.respondText
-import io.ktor.server.routing.get
-import io.ktor.server.routing.routing
-import io.ktor.server.websocket.WebSockets
+import com.vitorpamplona.quartz.eventstore.relay.serveRelay
+import com.vitorpamplona.quartz.nip19Bech32.toNpub
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -96,30 +88,21 @@ internal fun serve(args: List<String>) {
         },
     )
 
-    embeddedServer(Netty, port = Config.serverPort) {
-        install(WebSockets)
-        routing {
-            nostrRelay(relaySrv)
-            get("/") {
-                val accept = call.request.headers["Accept"] ?: ""
-                if (accept.contains("application/nostr+json")) {
-                    call.respondText(
-                        relayInfoJson(
-                            name = Config.serverName,
-                            description = Config.serverDescription,
-                            icon = Config.serverIcon,
-                            contactPubkey = Config.serverPubkey,
-                            selfPubkey = identity.pubkey,
-                        ),
-                        ContentType.parse("application/nostr+json"),
-                    )
-                } else {
-                    WEB_UI?.let { call.respondText(it, ContentType.Text.Html) }
-                        ?: call.respondText("${Config.serverName} - a NIP-50 search relay; connect a WebSocket here (${Config.relayUrl}).")
-                }
-            }
-        }
-    }.start(wait = true)
+    // serveRelay (vespa-relay) owns the Ktor server: the NIP-50 websocket, the
+    // NIP-11 doc, and the web UI as the landing page. It blocks until shutdown.
+    serveRelay(
+        relay = relaySrv,
+        port = Config.serverPort,
+        nip11 =
+            Nip11Info(
+                name = Config.serverName,
+                description = Config.serverDescription,
+                icon = Config.serverIcon,
+                contactPubkey = Config.serverPubkey,
+                selfPubkey = identity.pubkey,
+            ),
+        landingPage = WEB_UI,
+    )
 }
 
 /** Timestamped, styled log line for the long-running commands. */

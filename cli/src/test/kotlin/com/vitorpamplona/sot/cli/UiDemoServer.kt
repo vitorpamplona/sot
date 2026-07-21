@@ -20,13 +20,13 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.eventstore.relay.NostrRelayServer
+import com.vitorpamplona.quartz.eventstore.relay.nostrRelay
+import com.vitorpamplona.quartz.eventstore.relay.relayInfoJson
 import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import com.vitorpamplona.quartz.eventstore.relay.NostrRelayServer
-import com.vitorpamplona.quartz.eventstore.relay.nostrRelay
-import com.vitorpamplona.quartz.eventstore.relay.relayInfoJson
 import io.ktor.http.ContentType
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
