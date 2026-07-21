@@ -13,8 +13,8 @@ trust score the searching user (the **observer**) has for its author.
 Two design choices shape everything:
 
 - **Vespa is the event store.** There's no SQLite and no separate index to keep
-  in sync — one copy of the data. `VespaEventStore` implements Quartz's
-  `IEventStore` directly on Vespa documents.
+  in sync — one copy of the data. `NostrEventStore` implements Quartz's
+  `IEventStore` directly on Vespa documents (via the `VespaEventStore.open` handle).
 - **The relay is the API.** Clients speak plain NIP-01 filters and NIP-50
   search over websockets. There is no HTTP search endpoint. Even the bundled web
   UI is just another Nostr client talking to the relay.
@@ -27,72 +27,87 @@ proposals.
 
 ## Module map & dependency direction
 
-Dependencies flow one way: `:cli` → (`:relay`, `:sync`) → `:store` → `:profile`
-→ `:vespa`. Notes:
+The storage engine and the relay live in **separate, reusable library repos**,
+consumed from JitPack (pinned by commit in `gradle/libs.versions.toml`). SoT is
+just the crawl (`:sync`) and the CLI (`:cli`) on top. Dependencies flow one way:
+`:cli` → (`:sync`, vespa-relay) → vespa-eventstore (`:store` → `:vespa`). Notes:
 
-- **`:vespa` may use Quartz.** It owns all Vespa access and is free to reuse
-  Quartz's Nostr primitives (Hex, event helpers) instead of re-implementing
-  them. (Earlier it was Nostr-agnostic; that constraint has been dropped.)
+- **The store is engine-agnostic.** `NostrEventStore` enforces Nostr rules over
+  any `EventIndex`; `VespaEventStore` (the handle from `VespaEventStore.open`) is
+  the Vespa composition. Tests run the store over `InMemoryEventIndex`.
 - **The trust projection sits UNDER the store** (it decorates the store's
   `EventIndex`), so ranking updates follow every insert and delete automatically.
+- **`onObserver` is the only relay→app seam.** The relay knows nothing about the
+  crawl; it emits authenticated pubkeys through a callback the composition root
+  wires to sync enrollment.
+
+### Libraries (external repos, package `com.vitorpamplona.quartz.eventstore.*`)
 
 ```
-vespa    All Vespa access (com.vitorpamplona.sot.vespa), in sub-packages:
-           doc/   — the stored shapes: EventDoc (event <-> document +
-                    complete-event reconstruction), ProfileDoc, SearchFields.
-           query/ — EventQuery -> YQL: EventYql builds the filter,
-                    BrainstormWordGroup the per-word fuzzy recall, EventSelection
-                    the document-visit selection.
-           client/— the EventIndex/ProfileIndex ports and the real clients
-                    (VespaEventIndex/VespaProfileIndex).
-           root   — shared helpers (Concurrency, IngestStats, Patterns).
-           app/ — the Vespa application package: event.sd (lossless NIP-01
-           fields + per-kind search fields + rank profiles) and profile.sd (the
-           global trust-tensor doc every event references for ranking).
-           testFixtures: InMemoryEventIndex (the reference implementation) +
-           MockVespaEngine (parses the emitted YQL back and must agree with it).
-         Depends on: kotlinx-serialization, vespa-feed-client, quartz, (test) jetty.
-store    VespaEventStore : IEventStore (com.vitorpamplona.sot.store) — the one
-           store. Enforces Nostr rules on insert (supersession, kind-5 deletion
-           + tombstones, kind-62 vanish, NIP-40 expiry, gift-wrap ownership).
-           BulkInsert is the batched fast path behind batchInsert (same rules,
-           batched I/O — the sync-scale ingest path). Also: Filter -> EventQuery
-           mapping (with the NIP-50 extensions), SearchExtractors (each Quartz
-           SearchableEvent kind -> the schema's per-kind search fields),
-           negentropy snapshots, and ObserverContext (the per-connection
-           ranking observer, carried on the coroutine context).
-         Depends on: :vespa, quartz.
-profile  TrustProjection (com.vitorpamplona.sot.profile): an EventIndex
-           decorator that watches 30382/10040 puts and removes and rewrites the
-           profile parent docs (observer-keyed quality_scores/follower_counts).
-           Because it sits under the store, every deletion path updates ranking
-           with no special-case code.
-         Depends on: :vespa, quartz.
-relay    SotRelayServer (com.vitorpamplona.sot.relay): Quartz's protocol engine
-           (RelayServerBase + LiveEventStore) over the store — full-filter REQs,
-           live subscriptions, VerifyPolicy-gated publishes, NIP-45 COUNT,
-           server-side NIP-77, the NIP-11 doc, mounted on a Ktor websocket.
-           NIP-42 auth switches the ranking observer per connection and fires
-           onObserver (which enrolls the user for sync).
-         Depends on: :store, quartz, ktor.
-sync     The trust-sync side (com.vitorpamplona.sot.sync): RelaySyncer
-           downloads events (NIP-77 negentropy or paged fallback, per-scope
-           cursors) and streams them through EventStreamPipeline (bounded-channel
-           verify -> batchInsert); NostrAuthHandshake handles NIP-42 first
-           contact. Identity is the relay's own key: it authenticates upstream
-           and, on first run, self-publishes its kind 0 / 10002 / 10086 into its
-           own store — the stored 10086 IS the indexer configuration. TrustSync +
-           BlendedPass walk the trust chain in dependency order: seed 10040 hints
-           -> observer 10002s -> observer outboxes (the authoritative 10040) ->
-           provider 30382s + reconcile -> orphan sweep. SyncService runs it once
-           or on a loop and enrolls new observers.
-         Depends on: :vespa via :store (tests), quartz, okhttp.
-cli      `sot` — the one executable and composition root. Wires
-           TrustProjection(VespaEventIndex) under VespaEventStore, shared by
-           SotRelayServer and SyncService. Commands: init (interactive setup) |
-           serve | index | status | up | down | destroy | deploy. Config
+vespa-eventstore  (github.com/vitorpamplona/vespa-eventstore)
+  :vespa  All Vespa access (…eventstore.vespa), in sub-packages:
+            doc/   — the stored shapes: EventDoc (event <-> document +
+                     complete-event reconstruction), ReputationDoc/ReputationCells,
+                     SearchFields.
+            query/ — EventQuery -> YQL: EventYql builds the filter (plus the
+                     grouping/count variants via one grouping() helper),
+                     FuzzyWordGroup the per-word fuzzy recall, EventSelection the
+                     document-visit selection.
+            client/— the EventIndex/ReputationIndex ports (+ DocRef) and the real
+                     clients (VespaEventIndex/VespaReputationIndex).
+            root   — shared helpers (Concurrency, IngestStats, Patterns, VespaApp).
+            app/ — the Vespa application package: event.sd (lossless NIP-01 fields
+                   + per-kind search fields + rank profiles) and reputation.sd (the
+                   global trust-tensor doc every event references for ranking).
+            main also holds InMemoryEventIndex (the reference impl, also used in
+                   production for the bulk replay snapshot). testFixtures:
+                   MockVespaEngine (parses the emitted YQL back and must agree with
+                   it) + InMemoryReputationIndex.
+  :store  NostrEventStore : IEventStore (…eventstore.store) — the one store,
+            engine-AGNOSTIC. Enforces Nostr rules on insert (supersession, kind-5
+            deletion + tombstones, kind-62 vanish, NIP-40 expiry, gift-wrap
+            ownership). BulkInsert is the batched fast path behind batchInsert.
+            Also: Filter -> EventQuery mapping (with the NIP-50 extensions),
+            SearchExtractors (each Quartz SearchableEvent kind -> the schema's
+            per-kind search fields), negentropy snapshots, ObserverContext +
+            OriginalFilters (per-connection ranking observer + pre-strip filters,
+            carried on the coroutine context), the TrustProjection (an EventIndex
+            decorator that watches 30382/10040 puts and removes and rewrites the
+            reputation parent docs — observer-keyed influence_scores/
+            follower_counts), and VespaEventStore.open (the front door / handle).
+
+vespa-relay  (github.com/vitorpamplona/vespa-relay)
+  :relay  NostrRelayServer (…eventstore.relay): Quartz's protocol engine
+            (RelayServerBase + LiveEventStore) over the store — full-filter REQs,
+            live subscriptions, VerifyPolicy-gated publishes, NIP-45 COUNT,
+            server-side NIP-77, the NIP-11 doc (relayInfoJson), and the Ktor
+            websocket mount (Route.nostrRelay). NIP-42 auth switches the ranking
+            observer per connection and fires onObserver (the app enrolls the user
+            for sync). Depends on vespa-eventstore.
+```
+
+### SoT modules (this repo, package `com.vitorpamplona.sot.*`)
+
+```
+sync     The trust-sync side (…sot.sync): RelaySyncer downloads events (NIP-77
+           negentropy or paged fallback, per-scope cursors) and streams them
+           through EventStreamPipeline (bounded-channel verify -> batchInsert);
+           NostrAuthHandshake handles NIP-42 first contact. Identity is the relay's
+           own key: it authenticates upstream and, on first run, self-publishes its
+           kind 0 / 10002 / 10086 into its own store — the stored 10086 IS the
+           indexer configuration. TrustSync + BlendedPass walk the trust chain in
+           dependency order: seed 10040 hints -> observer 10002s -> observer
+           outboxes (the authoritative 10040) -> provider 30382s + reconcile ->
+           orphan sweep. The crawl's bookkeeping is a local file (CrawlIndex /
+           FileCrawlIndex), NOT a Vespa doctype. SyncService runs it once or on a
+           loop and enrolls new observers.
+         Depends on: vespa-eventstore (:store), quartz, okhttp.
+cli      `sot` — the one executable and composition root. openStack() wires
+           VespaEventStore.open (TrustProjection under the store) + FileCrawlIndex,
+           shared by NostrRelayServer and SyncService. Commands: init (interactive
+           setup) | serve | index | status | up | down | destroy | deploy. Config
            resolves env -> .env -> default. Bundles web/index.html.
-         Depends on: all of the above.
+         Depends on: vespa-eventstore, vespa-relay, :sync.
 web      index.html — the search UI, itself a Nostr client. It opens a websocket
            to the server that served it and speaks NIP-50 REQs directly: kind
            chips are literal kinds filters, NIP-07 -> NIP-42 login makes results
@@ -103,17 +118,17 @@ web      index.html — the search UI, itself a Nostr client. It opens a websock
 ## Data flow
 
 - **Ingest**: relays --(RelaySyncer: verify, then batchInsert)-->
-  `VespaEventStore` --(insert rules + SearchExtractors + owner/expires_at
-  derivation)--> `TrustProjection(VespaEventIndex)` --> Vespa. A 30382 or 10040
-  write recomputes the subject's `profile` doc (its trust tensors) on the way
-  through.
-- **Query**: REQ/COUNT --> `SotRelayServer` --> `ObserverContext(observer)` -->
+  `NostrEventStore` --(insert rules + SearchExtractors + owner/expires_at
+  derivation)--> `TrustProjection(VespaEventIndex, VespaReputationIndex)` -->
+  Vespa. A 30382 or 10040 write recomputes the subject's `reputation` doc (its
+  trust tensors) on the way through.
+- **Query**: REQ/COUNT --> `NostrRelayServer` --> `ObserverContext(observer)` -->
   store --> `EventYql` --> Vespa `/search/` --> complete events rebuilt from the
   stored fields (signature-valid). Search results keep Vespa's relevance order
   (NIP-50); plain filters keep recency order.
 - **Observer-keyed trust (NIP-85)**: kind 10040 maps a service key -> observer;
   kind 30382 (signed by the service key) carries the score; scores live as
-  `quality_scores{OBSERVER}` cells on the SUBJECT's profile doc, keyed by the
+  `influence_scores{OBSERVER}` cells on the SUBJECT's reputation doc, keyed by the
   10040 *author*, not the 30382 signer. The authoritative 10040 is the one on the
   observer's own OUTBOX relay — which is why sync fetches 10002s first.
 
@@ -134,7 +149,7 @@ too (`gradle …` instead of `./gradlew …`).
 ./gradlew :cli:installDist      # build the CLI
 export PATH="$PWD/cli/build/install/sot/bin:$PATH"
 sot init                        # interactive setup -> .env (--yes = all defaults)
-sot up                          # docker compose up Vespa + deploy vespa/app
+sot up                          # docker compose up Vespa + deploy the bundled schema
 sot serve                       # ONE port (SERVER_PORT): relay + NIP-11 + web UI
                                 # + background trust sync every SYNC_INTERVAL min
 sot index                       # one trust-sync pass, then exit
@@ -184,12 +199,12 @@ reads the newest one back).
   extensions), 62 (vanish, inclusive), 65 (outbox routing in sync), 77
   (negentropy: server-side AND as the sync transport), 85 (trusted assertions),
   plus kind 10086 (IndexerRelayListEvent — the indexer configuration).
-- The Vespa schemas and rank profiles live in `vespa/app/`. They come from
-  Brainstorm's ranking design (multiplicative `wot_mult` trust, IDF identity
-  fields, gram safety nets), extended with generic tiers for non-profile kinds so
-  a single `search` rank profile can rank a mixed-kind result set. Change the
-  schema and `EventYql`/`BrainstormWordGroup` together; `MockVespaEngine`'s parser
-  is the drift alarm.
+- The Vespa schemas and rank profiles live in the **vespa-eventstore** repo
+  (`vespa/app/`), not here. They come from Brainstorm's ranking design
+  (multiplicative `wot_mult` trust, IDF identity fields, gram safety nets),
+  extended with generic tiers for non-profile kinds so a single `search` rank
+  profile can rank a mixed-kind result set. In that repo, change the schema and
+  `EventYql`/`FuzzyWordGroup` together; `MockVespaEngine`'s parser is the drift alarm.
 
 ## Gotchas
 
@@ -197,7 +212,8 @@ reads the newest one back).
   the `sort:`/`filter:rank:`/`include:spam` tokens from every REQ's search. The
   relay backend carries the pre-strip filters in `OriginalFilters` (a
   coroutine-context element, like the observer) and the store restores them. The
-  session-level test in `RelayProtocolTest` is the net for future Quartz bumps.
+  session-level test (`RelayProtocolTest`, in the vespa-relay repo) is the net for
+  future Quartz bumps.
 - **Signature verification happens at ingest** (RelaySyncer drops forged events;
   the relay's VerifyPolicy gates publishes). The store itself NEVER verifies —
   don't insert unverified network input directly.

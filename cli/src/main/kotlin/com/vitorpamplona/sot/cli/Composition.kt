@@ -44,7 +44,7 @@ import kotlin.system.exitProcess
  *        └─ TrustProjection            (:store — watches 30382/10040 puts
  *           └─ VespaReputationIndex     and removes, rewrites the ranking parents)
  *   NostrEventStore(TrustProjection)   (:store — Nostr semantics, ONE store)
- *        ├─ SotRelayServer             (:relay — serves it)
+ *        ├─ NostrRelayServer             (:relay — serves it)
  *        └─ SyncService                (:sync — fills it)
  *
  * Because the projection sits UNDER the store, every insert path (a sync

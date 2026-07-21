@@ -6,7 +6,7 @@ plugins {
 dependencies {
     implementation(libs.vespa.eventstore.engine) // VespaEventIndex + VespaProfileIndex (the engine clients)
     implementation(libs.vespa.eventstore.store) // VespaEventStore (the one store)
-    implementation(project(":relay")) // SotRelayServer + Ktor mount + NIP-11
+    implementation(libs.vespa.relay.relay) // NostrRelayServer + Ktor mount + NIP-11
     implementation(project(":sync")) // Identity + SyncService (serve's background loop, `sot index`)
     implementation(libs.quartz) // NIP-19 parsing (init prompts), Filters (status counts)
     implementation(libs.okhttp) // Quartz's Nip05Client fetcher (init resolves name@domain)

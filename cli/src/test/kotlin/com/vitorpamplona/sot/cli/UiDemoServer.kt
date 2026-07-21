@@ -24,9 +24,9 @@ import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import com.vitorpamplona.sot.relay.SotRelayServer
-import com.vitorpamplona.sot.relay.nostrRelay
-import com.vitorpamplona.sot.relay.relayInfoJson
+import com.vitorpamplona.quartz.eventstore.relay.NostrRelayServer
+import com.vitorpamplona.quartz.eventstore.relay.nostrRelay
+import com.vitorpamplona.quartz.eventstore.relay.relayInfoJson
 import io.ktor.http.ContentType
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
@@ -53,7 +53,7 @@ object UiDemoServer {
         val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
         runBlocking { seed(store) }
         val relaySrv =
-            SotRelayServer(
+            NostrRelayServer(
                 store = store,
                 defaultObserver = null,
                 relayUrl = relayUrl,

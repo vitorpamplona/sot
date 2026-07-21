@@ -17,6 +17,5 @@ dependencyResolutionManagement {
 rootProject.name = "sot"
 
 // The product: Vespa IS the event store, NIP-50 is the API (see README.md).
-include(":relay")
 include(":sync")
 include(":cli")

@@ -189,18 +189,23 @@ data), and `SERVER_NSEC` (the relay's own key, generated for you). See
 
 ## The code
 
-The project is split into small modules with a strict one-way dependency flow:
-`:cli` → (`:relay`, `:sync`) → `:store` → `:profile` → `:vespa`. `:vespa` owns
-all Vespa access; it may use Quartz's Nostr primitives (Hex, event helpers)
-where they save re-implementing the same thing.
+The storage engine and the relay are **separate, reusable libraries** — consumed
+from JitPack, pinned by commit in `gradle/libs.versions.toml`. SoT itself is just
+the crawl and the CLI on top. Dependencies flow one way:
+`:cli` → (`:sync`, vespa-relay) → vespa-eventstore (`:store` → `:vespa`).
+
+The libraries (each its own repo):
+
+| library | what it does |
+| --- | --- |
+| [vespa-eventstore](https://github.com/vitorpamplona/vespa-eventstore) | The Vespa-backed Quartz `IEventStore` with trust-ranked NIP-50 search. `:vespa` owns all Vespa access — the schema (`app/`), `EventDoc`, `EventQuery` → `EventYql` (with `FuzzyWordGroup` building the fuzzy word matching), the `EventIndex`/`ReputationIndex` ports, and the `VespaEventIndex`/`VespaReputationIndex` clients. `:store` is `NostrEventStore` (all the Nostr insert rules — supersession, kind-5 deletion + tombstones, kind-62 vanish, NIP-40 expiry, gift-wrap ownership — over any `EventIndex`), the `TrustProjection` (recomputes each subject's `reputation` document whenever a kind 30382/10040 changes), `SearchExtractors`, `BulkInsert`, and the `VespaEventStore.open` front door. |
+| [vespa-relay](https://github.com/vitorpamplona/vespa-relay) | `NostrRelayServer` — Quartz's protocol engine over the store: full filter subscriptions, live updates, publish gating, COUNT (NIP-45), server-side sync (NIP-77), the NIP-11 info document, and a Ktor websocket mount. NIP-42 login switches the ranking observer for that connection; an `onObserver` callback lets the app enroll logins for sync. |
+
+SoT's own modules:
 
 | module | what it does |
 | --- | --- |
-| `:vespa` | All talking to Vespa. Holds the Vespa schema (`app/`), maps an event to/from a stored document (`EventDoc`), turns a query into Vespa's query language (`EventQuery` → `EventYql`, with `BrainstormWordGroup` building the fuzzy word matching), and defines the `EventIndex` interface the store uses. `VespaEventIndex` is the real client; the testFixtures hold an in-memory version that serves as the reference for how queries should behave. |
-| `:store` | `VespaEventStore` — the one event store, enforcing all Nostr rules on the way in: newer replaceable events supersede older ones, deletions (kind 5) and tombstones, account vanish (kind 62), expiry (NIP-40), gift-wrap ownership. It maps Nostr filters to `EventQuery`, extracts searchable text per event kind (`SearchExtractors`), and offers a batched fast path (`BulkInsert`) for high-volume sync. |
-| `:profile` | Keeps trust scores up to date. `TrustProjection` wraps the store's index and, whenever a trust assertion (kind 30382 / 10040) is added or removed, recomputes the subject's trust tensors on their `profile` document — so every insert and delete path updates ranking with no special-case code. |
-| `:relay` | `SotRelayServer` — the Nostr protocol engine (built on Quartz's relay base) over the store: full filter subscriptions, live updates, publish gating, COUNT (NIP-45), server-side sync (NIP-77), the NIP-11 info document, mounted on a Ktor websocket. NIP-42 login switches the ranking observer for that connection. |
-| `:sync` | Downloads from the network in two planes (see [How the sync fills the store](#how-the-sync-fills-the-store)). `RelaySyncer` orchestrates each download (negentropy or paged fallback, per-source cursors) and streams verified events into the store. `Identity` is the relay's own key and first-run self-publish. `TrustSync` / `BlendedPass` walk the trust chain in the right order (find each observer's relays, then their trust lists, then the individual assertions) and clean up assertions that no longer apply; `RecordsPass` then pulls the searchable content for the scored authors, highest-trust-first (off unless `SYNC_RECORDS=true`). `SyncService` runs it once or on a loop and enrolls newly-logged-in users. |
+| `:sync` | Downloads from the network in two planes (see [How the sync fills the store](#how-the-sync-fills-the-store)). `RelaySyncer` orchestrates each download (negentropy or paged fallback, per-source cursors) and streams verified events into the store. `Identity` is the relay's own key and first-run self-publish. `TrustSync` / `BlendedPass` walk the trust chain in the right order (find each observer's relays, then their trust lists, then the individual assertions) and clean up assertions that no longer apply; `RecordsPass` then pulls the searchable content for the scored authors, highest-trust-first (off unless `SYNC_RECORDS=true`). The crawl's own bookkeeping lives in a local file (`CrawlIndex`), not in Vespa. `SyncService` runs it once or on a loop and enrolls newly-logged-in users. |
 | `:cli` | The `sot` binary and the composition root that wires everything together. Commands: `init` (interactive setup), `serve`, `index` (one sync pass), `status`, and `up` / `down` / `deploy` / `destroy` for the local Vespa. |
 | `web/` | `index.html` — the search UI, itself a Nostr client. It opens a websocket to the server that served it and speaks NIP-50 directly: kind chips are filters, the sort menu and "unranked too" checkbox map to NIP-50 options, and "Search as me" is the NIP-07 → NIP-42 login that makes the results ranked by you. |
 

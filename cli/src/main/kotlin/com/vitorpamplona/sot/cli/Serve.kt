@@ -21,9 +21,9 @@
 package com.vitorpamplona.sot.cli
 
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.sot.relay.SotRelayServer
-import com.vitorpamplona.sot.relay.nostrRelay
-import com.vitorpamplona.sot.relay.relayInfoJson
+import com.vitorpamplona.quartz.eventstore.relay.NostrRelayServer
+import com.vitorpamplona.quartz.eventstore.relay.nostrRelay
+import com.vitorpamplona.quartz.eventstore.relay.relayInfoJson
 import io.ktor.http.ContentType
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
@@ -71,7 +71,7 @@ internal fun serve(args: List<String>) {
     val store = stack.store
     val sync = syncService(stack, identity, house)
     val relaySrv =
-        SotRelayServer(
+        NostrRelayServer(
             store = store,
             defaultObserver = house.pubkey,
             relayUrl = publicRelayUrl(),
