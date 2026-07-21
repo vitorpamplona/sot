@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
@@ -72,7 +72,7 @@ data class ObserverCoverage(
  */
 suspend fun observerCoverage(
     observer: HexKey,
-    store: VespaEventStore,
+    store: NostrEventStore,
     crawl: CrawlIndex,
 ): ObserverCoverage {
     val providerKeys =

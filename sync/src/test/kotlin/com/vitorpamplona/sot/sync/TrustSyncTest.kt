@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -84,18 +84,18 @@ class TrustSyncTest {
         at: Long,
     ): ContactCardEvent = signer.sign(at, ContactCardEvent.KIND, arrayOf(arrayOf("d", subject), arrayOf("rank", "$rank")), "")
 
-    private fun localStore() = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+    private fun localStore() = NostrEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
     private fun trustSync(
         net: InProcessNet,
-        store: VespaEventStore,
+        store: NostrEventStore,
     ): TrustSync {
         val opts = SyncOptions(concurrency = 4, fetchTimeoutMs = 15_000)
         val syncer = RelaySyncer(net.client, store, SyncState(), log = { }, idleTimeoutMs = opts.fetchTimeoutMs)
         return TrustSync(syncer, store, opts, log = { }, crawl = InMemoryCrawlIndex())
     }
 
-    private suspend fun VespaEventStore.scoreAuthors(): Set<String> = query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.pubKey }.toSet()
+    private suspend fun NostrEventStore.scoreAuthors(): Set<String> = query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.pubKey }.toSet()
 
     /** The proposal's bootstrap: house 10002 from the HOME relay -> outbox 10040 -> provider 30382s. */
     @Test

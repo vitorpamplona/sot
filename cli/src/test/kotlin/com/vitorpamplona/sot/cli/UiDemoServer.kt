@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.sot.cli
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -50,7 +50,7 @@ object UiDemoServer {
     fun main(args: Array<String>) {
         val port = args.firstOrNull()?.toIntOrNull() ?: 7788
         val relayUrl = RelayUrlNormalizer.normalize("ws://127.0.0.1:$port")
-        val store = VespaEventStore(InMemoryEventIndex(), relay = relayUrl)
+        val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
         runBlocking { seed(store) }
         val relaySrv =
             SotRelayServer(
@@ -82,7 +82,7 @@ object UiDemoServer {
         }.start(wait = true)
     }
 
-    private suspend fun seed(store: VespaEventStore) {
+    private suspend fun seed(store: NostrEventStore) {
         val vitor = NostrSignerSync()
         val bob = NostrSignerSync()
 

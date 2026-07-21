@@ -59,7 +59,7 @@ internal class Streamed(
  * the channel, so a producer parked in the non-cancellable [trySendBlocking]
  * unblocks instead of deadlocking forever.
  *
- * Write serialization is the STORE's job, not this class's: [VespaEventStore]
+ * Write serialization is the STORE's job, not this class's: [NostrEventStore]
  * takes its writer lock only for the supersession resolve + the writes, running
  * dedup/guards beside them, so parallel relay syncs overlap their read checks
  * instead of queuing behind one pipeline-wide mutex.

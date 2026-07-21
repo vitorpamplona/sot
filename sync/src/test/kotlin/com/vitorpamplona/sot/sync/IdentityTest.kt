@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
@@ -41,7 +41,7 @@ import kotlin.test.assertTrue
 class IdentityTest {
     private val self = RelayUrlNormalizer.normalize("wss://sot.example.com")
 
-    private fun store() = VespaEventStore(InMemoryEventIndex(), relay = self)
+    private fun store() = NostrEventStore(InMemoryEventIndex(), relay = self)
 
     private fun identity(signer: NostrSignerSync = NostrSignerSync()) = Identity(signer, selfRelayUrl = self, name = "sot-test")
 

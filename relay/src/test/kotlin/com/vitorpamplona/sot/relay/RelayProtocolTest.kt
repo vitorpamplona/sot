@@ -21,7 +21,7 @@
 package com.vitorpamplona.sot.relay
 
 import com.vitorpamplona.quartz.eventstore.store.DEFAULT_MIN_RANK
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -42,7 +42,7 @@ import kotlin.test.fail
 
 /**
  * The whole relay stack, driven over the wire protocol: Quartz's engine ->
- * ObserverRoutingBackend -> VespaEventStore -> a recording in-memory index.
+ * ObserverRoutingBackend -> NostrEventStore -> a recording in-memory index.
  * Sessions speak raw NIP-01 JSON through [SotRelayServer.connect], exactly
  * what the websocket route feeds them.
  */
@@ -78,7 +78,7 @@ class RelayProtocolTest {
     }
 
     private val index = RecordingIndex()
-    private val store = VespaEventStore(index, relay = relayUrl)
+    private val store = NostrEventStore(index, relay = relayUrl)
     private val server = SotRelayServer(store, defaultObserver, relayUrl)
     private val signer = NostrSignerSync()
 

@@ -20,9 +20,8 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStores
-import com.vitorpamplona.quartz.eventstore.store.VespaStore
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -44,7 +43,7 @@ import kotlin.system.exitProcess
  *   VespaEventIndex  (events over Vespa HTTP)
  *        └─ TrustProjection            (:store — watches 30382/10040 puts
  *           └─ VespaReputationIndex     and removes, rewrites the ranking parents)
- *   VespaEventStore(TrustProjection)   (:store — Nostr semantics, ONE store)
+ *   NostrEventStore(TrustProjection)   (:store — Nostr semantics, ONE store)
  *        ├─ SotRelayServer             (:relay — serves it)
  *        └─ SyncService                (:sync — fills it)
  *
@@ -54,11 +53,11 @@ import kotlin.system.exitProcess
 
 /** The wired storage stack: the library store handle, plus the sync-side crawl index. */
 internal class Stack(
-    private val handle: VespaStore,
+    private val handle: VespaEventStore,
     val crawl: CrawlIndex,
 ) : AutoCloseable {
     /** The concrete store — Vespa-specific methods (e.g. distinctDTags) and the full IEventStore surface. */
-    val store: VespaEventStore get() = handle.store
+    val store: NostrEventStore get() = handle.store
 
     /** The raw (non-projected) engine index — status/health metrics query it directly. */
     val vespa: VespaEventIndex get() = handle.events
@@ -73,7 +72,7 @@ internal class Stack(
 }
 
 /**
- * The one store, wired through the library front door: a VespaEventStore over a
+ * The one store, wired through the library front door: a NostrEventStore over a
  * trust-projection-decorated Vespa index. autoDeploy is off here — the CLI owns
  * schema deployment through `sot up` / `sot deploy` (the docker flow). Crawl
  * bookkeeping is sync state, so it lives in a file next to the sync cursors, not
@@ -81,7 +80,7 @@ internal class Stack(
  */
 internal fun openStack(): Stack =
     Stack(
-        VespaEventStores.open(Config.vespaUrl, relay = publicRelayUrl(), autoDeploy = false),
+        VespaEventStore.open(Config.vespaUrl, relay = publicRelayUrl(), autoDeploy = false),
         FileCrawlIndex(crawlStatePath()),
     )
 

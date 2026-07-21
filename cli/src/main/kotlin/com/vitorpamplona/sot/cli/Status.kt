@@ -20,8 +20,8 @@
  */
 package com.vitorpamplona.sot.cli
 
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.store.ObserverContext
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -120,7 +120,7 @@ internal fun status(args: List<String>) {
 
 /** Overall size: raw event count, content vs plumbing, and how many distinct authors carry that content. */
 private suspend fun corpus(
-    store: VespaEventStore,
+    store: NostrEventStore,
     index: VespaEventIndex,
 ) {
     val content = EventQuery(notKinds = PLUMBING_KINDS)
@@ -153,7 +153,7 @@ private suspend fun byKind(index: VespaEventIndex) {
  * 10040 attributes). Then each imported observer with its name, npub, and score count.
  */
 private suspend fun trustGraph(
-    store: VespaEventStore,
+    store: NostrEventStore,
     house: String?,
 ) {
     val lists = store.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND)))
@@ -220,7 +220,7 @@ private data class ObserverRow(
  * at the recent synced-per-hour rate.
  */
 private suspend fun coverage(
-    store: VespaEventStore,
+    store: NostrEventStore,
     crawl: CrawlIndex,
     args: List<String>,
     house: String?,
@@ -266,7 +266,7 @@ private fun humanSecs(d: Long): String =
  * observer and contrasts gated hits with raw (ungated) text recall.
  */
 private suspend fun searchHealth(
-    store: VespaEventStore,
+    store: NostrEventStore,
     house: String?,
 ) {
     section("search health")
@@ -316,7 +316,7 @@ private suspend fun hygiene(index: VespaEventIndex) {
 
 /** Echo the resolved identity/relay config so an operator can confirm it's pointed where they think. */
 private suspend fun config(
-    store: VespaEventStore,
+    store: NostrEventStore,
     house: String?,
 ) {
     section("config")

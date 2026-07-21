@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -183,7 +183,7 @@ class TrustSync(
         // enumeration only for a non-Vespa store (none in production/tests).
         val storedAuthors =
             when (store) {
-                is VespaEventStore -> store.distinctAuthors(Filter(kinds = listOf(ContactCardEvent.KIND)))
+                is NostrEventStore -> store.distinctAuthors(Filter(kinds = listOf(ContactCardEvent.KIND)))
                 else -> store.query<ContactCardEvent>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.pubKey }.toSet()
             }
         val orphans = storedAuthors.filterNot { it in referenced }

@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -35,12 +35,12 @@ import kotlin.test.assertTrue
  * Smoke tests for the ported [RelaySyncer] over the v2 stack — the full
  * behavioral suite lives with v1's `:indexer` (the port is verbatim except
  * the store type); what needs re-proving here is that the real protocol runs
- * against a [VespaEventStore] on BOTH sides, and that the verify gate holds.
+ * against a [NostrEventStore] on BOTH sides, and that the verify gate holds.
  */
 class RelaySyncerTest {
     private val kind0 = Filter(kinds = listOf(MetadataEvent.KIND))
 
-    private fun localStore() = VespaEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+    private fun localStore() = NostrEventStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
     private fun signed(
         i: Int,

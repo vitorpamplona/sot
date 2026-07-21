@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.sot.sync
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -41,7 +41,7 @@ import java.util.concurrent.ConcurrentHashMap
  * An in-process Nostr NETWORK: any number of REAL relays (Quartz's
  * [NostrServer] — REQs, pagination, and NIP-77 negentropy all run the real
  * protocol), each keyed by its url and backed by the SAME store
- * implementation the product uses — [VespaEventStore] over the in-memory
+ * implementation the product uses — [NostrEventStore] over the in-memory
  * reference index. One [client] dials them all; the [WebsocketBuilder]
  * routes each connection to its url's server, so the trust-sync chain's
  * relay ROUTING (index vs outbox vs provider) is actually exercised. A url
@@ -52,12 +52,12 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal class InProcessNet : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val relays = ConcurrentHashMap<String, Pair<NostrServer, VespaEventStore>>()
+    private val relays = ConcurrentHashMap<String, Pair<NostrServer, NostrEventStore>>()
 
     fun url(u: String): NormalizedRelayUrl = RelayUrlNormalizer.normalize(u)
 
     /** The store behind [u]'s relay — seed it with what that relay should hold. */
-    fun store(u: String): VespaEventStore = entry(url(u)).second
+    fun store(u: String): NostrEventStore = entry(url(u)).second
 
     val client =
         NostrClient(
@@ -70,9 +70,9 @@ internal class InProcessNet : AutoCloseable {
             scope,
         )
 
-    private fun entry(url: NormalizedRelayUrl): Pair<NostrServer, VespaEventStore> =
+    private fun entry(url: NormalizedRelayUrl): Pair<NostrServer, NostrEventStore> =
         relays.getOrPut(url.url) {
-            val store = VespaEventStore(InMemoryEventIndex(), relay = url)
+            val store = NostrEventStore(InMemoryEventIndex(), relay = url)
             NostrServer(store, policyBuilder = { PassThroughPolicy() }) to store
         }
 
